@@ -279,4 +279,4 @@ If you find this tool useful, consider a donation:
 | Currency | Address |
 |----------|---------|
 | **USDC** (ERC-20) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
-| **ETH** (ERC-20) | `0x888bd2370990a2bd6dbc33a7619375889aecef36` |
+| **ETH** (ERC-20) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
