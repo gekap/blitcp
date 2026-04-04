@@ -102,6 +102,37 @@ HASH_ALGO = "xxh128"            # try xxhash first, fallback to sha256
 FileEntry = namedtuple("FileEntry", ["src", "rel", "size", "physical_offset", "content_hash"])
 
 # ════════════════════════════════════════════════════════════════════════════
+# STRUCTURED LOG — collects per-file actions for --log-file output
+# ════════════════════════════════════════════════════════════════════════════
+_log_entries = []
+_log_enabled = False
+_log_lock = threading.Lock()
+
+
+def _log(action, rel_path, size, **extra):
+    """Append a log entry if logging is enabled. Thread-safe."""
+    if not _log_enabled:
+        return
+    entry = {"action": action, "path": rel_path, "size": size}
+    entry.update(extra)
+    with _log_lock:
+        _log_entries.append(entry)
+
+
+def write_log_file(path, summary):
+    """Write JSON log with per-file entries and summary."""
+    import datetime
+    log = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "summary": summary,
+        "files": _log_entries,
+    }
+    with open(path, "w") as f:
+        json.dump(log, f, indent=2)
+    print(f"  Log:     {C.BOLD}{path}{C.RESET}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # TERMINAL OUTPUT
 # ════════════════════════════════════════════════════════════════════════════
 _is_tty = sys.stdout.isatty()
@@ -276,6 +307,9 @@ class DedupDB:
         self.db_path = db_path
         # Prefix to convert dest-relative → mount-relative
         self._prefix = os.path.relpath(self.dst_root, self.mount)
+        # Reject if db_path is a symlink (prevents symlink attack to write elsewhere)
+        if os.path.islink(db_path):
+            raise OSError(f"Refusing to open dedup DB: {db_path} is a symlink")
         # Create DB with restrictive permissions (owner-only) to avoid race
         old_umask = os.umask(0o077)
         try:
@@ -379,8 +413,9 @@ class DedupDB:
             return c.fetchall()
 
     def close(self):
-        self.conn.commit()
-        self.conn.close()
+        with self.lock:
+            self.conn.commit()
+            self.conn.close()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -397,8 +432,14 @@ REMOTE_MANIFEST_NAME = ".fast_copy_manifest.json"
 
 
 def parse_remote_path(path_str):
-    """Parse user@host:/path or host:/path. Returns RemoteSpec or None."""
-    m = re.match(r'^(?:([^@]+)@)?([^:]+):(.+)$', path_str)
+    """Parse user@host:/path or host:/path. Returns RemoteSpec or None.
+    Supports IPv6 in brackets: user@[::1]:/path"""
+    # Try IPv6 in brackets first: user@[host]:/path or [host]:/path
+    m = re.match(r'^(?:([^@]+)@)?\[([^\]]+)\]:(.+)$', path_str)
+    if not m:
+        # Standard: user@host:/path or host:/path
+        # Host must not contain whitespace
+        m = re.match(r'^(?:([^@]+)@)?([^:\s]+):(.+)$', path_str)
     if not m:
         return None
     user = m.group(1) or getpass.getuser()
@@ -540,8 +581,14 @@ class SSHConnection:
                     stdin.channel.shutdown_write()
             writer = threading.Thread(target=_write_stdin, daemon=True)
             writer.start()
-        out = stdout.read(self.MAX_CMD_OUTPUT).decode("utf-8", errors="replace")
-        err = stderr.read(self.MAX_CMD_OUTPUT).decode("utf-8", errors="replace")
+        out_bytes = stdout.read(self.MAX_CMD_OUTPUT)
+        err_bytes = stderr.read(self.MAX_CMD_OUTPUT)
+        # Warn if output was likely truncated
+        if len(out_bytes) >= self.MAX_CMD_OUTPUT:
+            print(f"  {C.YELLOW}Warning: remote command output truncated at "
+                  f"{self.MAX_CMD_OUTPUT // (1024*1024)}MB{C.RESET}")
+        out = out_bytes.decode("utf-8", errors="replace")
+        err = err_bytes.decode("utf-8", errors="replace")
         rc = stdout.channel.recv_exit_status()
         if input_data:
             writer.join(timeout=30)
@@ -649,12 +696,34 @@ def ensure_remote_dirs(ssh, remote_root, entries):
 
 import hmac as _hmac_mod
 
-# Key derived from username + hostname — ties manifest to this machine pair.
+# Key derived from username + hostname + persistent random salt.
 # NOTE: This is an integrity check (detects corruption/accidental edits),
-# not cryptographic authentication (a local attacker could recompute the HMAC).
+# not cryptographic authentication against a fully compromised remote.
+# The random salt prevents key prediction from public info alone.
+_MANIFEST_SALT_FILE = os.path.join(os.path.expanduser("~"), ".fast_copy_salt")
+
+
 def _manifest_key():
+    # Load or create a persistent random salt
+    salt = b""
+    try:
+        with open(_MANIFEST_SALT_FILE, "rb") as f:
+            salt = f.read(32)
+    except (IOError, OSError):
+        pass
+    if len(salt) < 32:
+        salt = os.urandom(32)
+        try:
+            old_umask = os.umask(0o077)
+            try:
+                with open(_MANIFEST_SALT_FILE, "wb") as f:
+                    f.write(salt)
+            finally:
+                os.umask(old_umask)
+        except (IOError, OSError):
+            pass  # proceed with ephemeral salt — manifests won't persist across runs
     return hashlib.sha256(
-        f"fast_copy:{getpass.getuser()}:{platform.node()}".encode()
+        f"fast_copy:{getpass.getuser()}:{platform.node()}:".encode() + salt
     ).digest()
 
 
@@ -872,6 +941,7 @@ def filter_unchanged_remote(entries, link_map, ssh, remote_root):
             # Same size — check hash if available in manifest
             if entry.rel in remote_hashes and remote_hashes[entry.rel]:
                 if entry.content_hash and entry.content_hash == remote_hashes[entry.rel]:
+                    _log("skipped", entry.rel, entry.size, reason="unchanged")
                     skipped.append(entry)
                     skipped_bytes += entry.size
                 else:
@@ -892,6 +962,7 @@ def filter_unchanged_remote(entries, link_map, ssh, remote_root):
                 # Since remote always uses sha256, re-hash source with sha256
                 local_sha = hash_file_sha256(entry.src)
                 if local_sha == rh:
+                    _log("skipped", entry.rel, entry.size, reason="unchanged")
                     skipped.append(entry)
                     skipped_bytes += entry.size
                     continue
@@ -902,6 +973,7 @@ def filter_unchanged_remote(entries, link_map, ssh, remote_root):
     skipped_links = 0
     for dup_rel, canonical_rel in link_map.items():
         if dup_rel in remote_files:
+            _log("skipped", dup_rel, 0, reason="link_exists")
             skipped_links += 1
         else:
             new_link_map[dup_rel] = canonical_rel
@@ -1166,6 +1238,7 @@ def scan_source(src_root, dst_root=None, excludes=None):
     # followlinks=True so we traverse Windows junctions & symlinks
     # Use _long_path on Windows to see files beyond 260-char MAX_PATH
     walk_src = _long_path(src_root)
+    symlink_warnings = []
     for root, dirs, files in os.walk(walk_src, followlinks=True, onerror=on_walk_error):
         # Circular symlink protection
         try:
@@ -1177,6 +1250,11 @@ def scan_source(src_root, dst_root=None, excludes=None):
         except OSError:
             dirs.clear()  # can't resolve — skip to avoid infinite loop
             continue
+
+        # Warn if a symlinked directory points outside the source tree
+        if os.path.islink(_strip_long_path(root)):
+            if not real.startswith(src_real + os.sep) and real != src_real:
+                symlink_warnings.append((_strip_long_path(root), real))
 
         # Skip destination directory if inside source
         if dst_real:
@@ -1212,6 +1290,14 @@ def scan_source(src_root, dst_root=None, excludes=None):
 
     if skipped_dst:
         print(f"  {C.YELLOW}Excluded destination directory from scan{C.RESET}")
+
+    # Warn about symlinks pointing outside source tree
+    if symlink_warnings:
+        print(f"  {C.YELLOW}Warning: {len(symlink_warnings)} symlinks point outside source tree:{C.RESET}")
+        for link_path, target in symlink_warnings[:5]:
+            print(f"    {C.YELLOW}→ {link_path} → {target}{C.RESET}")
+        if len(symlink_warnings) > 5:
+            print(f"    ... and {len(symlink_warnings) - 5} more")
 
     # Show directory access errors (common cause of "0 files found")
     if dir_errors:
@@ -1384,8 +1470,16 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
         if dedup_db:
             dst_matches = dedup_db.lookup_by_hash(key[1])  # key[1] = content_hash
             for mount_rel, dst_size in dst_matches:
+                # Validate mount_rel doesn't escape mount point via ../
+                if '..' in mount_rel.split('/') or '..' in mount_rel.split(os.sep):
+                    continue
                 # mount_rel is relative to mount point, build full path
                 full_path = os.path.join(dedup_db.mount, mount_rel)
+                # Verify resolved path stays within mount point
+                real_full = os.path.realpath(full_path)
+                real_mount = os.path.realpath(dedup_db.mount)
+                if not (real_full.startswith(real_mount + os.sep) or real_full == real_mount):
+                    continue
                 if dst_size == key[0] and os.path.isfile(full_path):
                     # Drive already has a file with this content —
                     # use it as link target (avoids copying entirely)
@@ -1455,9 +1549,17 @@ def create_links(link_map, dst_root):
 
         os.makedirs(os.path.dirname(dst_dup), exist_ok=True)
 
+        # Get file size for logging
+        try:
+            _link_size = os.path.getsize(dst_canonical)
+        except OSError:
+            _link_size = 0
+        _link_target = target if isinstance(target, str) else target[1]
+
         # Try hard link first (fastest, no extra space)
         try:
             os.link(dst_canonical, dst_dup)
+            _log("linked", dup_rel, _link_size, method="hardlink", link_target=_link_target)
             hardlink_ok += 1
             continue
         except OSError:
@@ -1473,6 +1575,7 @@ def create_links(link_map, dst_root):
             # Verify the symlink actually resolves (NTFS via Linux creates
             # symlinks that don't work)
             if os.path.isfile(dst_dup):
+                _log("linked", dup_rel, _link_size, method="symlink", link_target=_link_target)
                 symlink_ok += 1
                 continue
             else:
@@ -1484,8 +1587,10 @@ def create_links(link_map, dst_root):
         # Last resort: actual copy
         try:
             shutil.copy2(dst_canonical, dst_dup)
+            _log("linked", dup_rel, _link_size, method="copy_fallback", link_target=_link_target)
             copy_fallback += 1
         except OSError as e:
+            _log("error", dup_rel, _link_size, error=str(e))
             errors += 1
 
     results = []
@@ -1525,7 +1630,7 @@ class Progress:
             return
         self._last_print = now
         elapsed = now - self.start
-        if elapsed == 0:
+        if elapsed < 0.01:
             return
 
         pct = (self.bytes_done / self.total_bytes * 100) if self.total_bytes else 100
@@ -1631,11 +1736,13 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
                         info.mtime = time.time()
 
                     tar.addfile(info, io.BytesIO(data))
+                    _log("copied", entry.rel, entry.size, method="block_stream")
                     progress.update(len(data), 1)
                     progress.display()
 
                 except (OSError, IOError) as e:
                     print(f"\n  {C.RED}Error bundling: {entry.rel}: {e}{C.RESET}")
+                    _log("error", entry.rel, entry.size, error=str(e))
                     progress.update(entry.size, 1)
 
         tar_size = os.path.getsize(tar_path)
@@ -1707,6 +1814,13 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
             if entry.size == 0:
                 with open(dst_path, "wb"):
                     pass
+                try:
+                    st = os.stat(entry.src)
+                    os.utime(dst_path, (st.st_atime, st.st_mtime))
+                    os.chmod(dst_path, stat.S_IMODE(st.st_mode))
+                except OSError:
+                    pass
+                _log("copied", entry.rel, entry.size, method="individual")
                 progress.update(0, 1)
                 progress.display()
                 continue
@@ -1715,6 +1829,11 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
                 while True:
                     # Check for cancellation during large file copy
                     if cancel_check and cancel_check():
+                        # Clean up partial file
+                        try:
+                            os.remove(dst_path)
+                        except OSError:
+                            pass
                         return
                     n = fin.readinto(buf)
                     if not n:
@@ -1723,17 +1842,26 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
                     progress.update(n)
                     progress.display()
 
-            # Preserve timestamps
+            # Preserve timestamps and permissions
             try:
                 st = os.stat(entry.src)
                 os.utime(dst_path, (st.st_atime, st.st_mtime))
+                os.chmod(dst_path, stat.S_IMODE(st.st_mode))
             except OSError:
                 pass
 
+            _log("copied", entry.rel, entry.size, method="individual")
             progress.update(0, 1)
 
         except (OSError, IOError) as e:
             print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
+            _log("error", entry.rel, entry.size, error=str(e))
+            # Clean up partial file
+            try:
+                if os.path.exists(dst_path):
+                    os.remove(dst_path)
+            except OSError:
+                pass
             progress.update(entry.size, 1)
 
 
@@ -1785,6 +1913,7 @@ def copy_individual_remote(entries, ssh, remote_root, progress, buf_size):
             if entry.size == 0:
                 with sftp.open(remote_path, "w"):
                     pass
+                _log("copied", entry.rel, entry.size, method="sftp")
                 progress.update(0, 1)
                 progress.display()
                 continue
@@ -1807,10 +1936,12 @@ def copy_individual_remote(entries, ssh, remote_root, progress, buf_size):
             except OSError:
                 pass
 
+            _log("copied", entry.rel, entry.size, method="sftp")
             progress.update(0, 1)
 
         except (OSError, IOError) as e:
             print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
+            _log("error", entry.rel, entry.size, error=str(e))
             progress.update(entry.size, 1)
 
 
@@ -1865,20 +1996,24 @@ def _stream_tar_batch_to_remote(batch, ssh, remote_root, progress):
                 try:
                     check = _validate_rel_path(entry.rel)
                     if check is not True:
+                        _log("error", entry.rel, entry.size, error=f"unsafe path: {check}")
                         errors += 1
                         continue
-                    info = tarfile.TarInfo(name=entry.rel)
-                    info.size = entry.size
                     st = os.stat(entry.src)
+                    actual_size = st.st_size
+                    info = tarfile.TarInfo(name=entry.rel)
+                    info.size = actual_size
                     info.mtime = st.st_mtime
                     info.mode = st.st_mode & 0o7777
 
                     with open(entry.src, "rb") as f:
                         tar.addfile(info, f)
 
+                    _log("copied", entry.rel, entry.size, method="tar_stream")
                     progress.update(entry.size, 1)
                     progress.display()
                 except (OSError, IOError) as e:
+                    _log("error", entry.rel, entry.size, error=str(e))
                     errors += 1
     except Exception as e:
         print(f"\n  {C.RED}Tar stream error: {e}{C.RESET}")
@@ -2039,6 +2174,7 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
     total_checked = total_to_check
 
     # Hash spot-check: verify a sample of files by hashing on remote
+    # remote_hash_files always uses sha256, so re-hash locally with sha256
     hash_failures = []
     if not missing and not mismatches and entries:
         hashed_entries = [e for e in entries if e.content_hash]
@@ -2050,8 +2186,10 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
             remote_hashes = remote_hash_files(ssh, remote_root, sample_rels)
             for e in sample:
                 rh = remote_hashes.get(e.rel)
-                if rh and e.content_hash and rh != e.content_hash:
-                    hash_failures.append(e.rel)
+                if rh:
+                    local_sha = hash_file_sha256(e.src)
+                    if local_sha and rh != local_sha:
+                        hash_failures.append(e.rel)
 
     if not missing and not mismatches and not hash_failures:
         print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK on remote{C.RESET}               ")
@@ -2208,6 +2346,7 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     for i, entry in enumerate(need_hash):
         if (src_hashes[i] is not None and dst_hashes[i] is not None
                 and src_hashes[i] == dst_hashes[i]):
+            _log("skipped", entry.rel, entry.size, reason="unchanged")
             skipped.append(entry)
             skipped_bytes += entry.size
         else:
@@ -2219,6 +2358,7 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     for dup_rel, canonical_rel in link_map.items():
         dst_path = os.path.join(dst_root, dup_rel)
         if os.path.exists(dst_path):
+            _log("skipped", dup_rel, 0, reason="link_exists")
             skipped_links += 1
         else:
             new_link_map[dup_rel] = canonical_rel
@@ -2366,12 +2506,19 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size):
             if entry.size == 0:
                 with open(dst_path, "wb"):
                     pass
+                try:
+                    rstat = sftp.stat(remote_path)
+                    os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
+                    os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
+                except (OSError, IOError):
+                    pass
+                _log("copied", entry.rel, entry.size, method="sftp")
                 progress.update(0, 1)
                 progress.display()
                 continue
 
             with sftp.open(remote_path, "rb") as fin, open(dst_path, "wb") as fout:
-                fin.prefetch(entry.size)  # pipeline reads for much higher throughput
+                fin.prefetch(min(entry.size, 256 * 1024 * 1024))  # cap at 256MB to limit memory
                 while True:
                     data = fin.read(buf_size)
                     if not data:
@@ -2383,13 +2530,16 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size):
             try:
                 rstat = sftp.stat(remote_path)
                 os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
+                os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
             except (OSError, IOError):
                 pass
 
+            _log("copied", entry.rel, entry.size, method="sftp")
             progress.update(0, 1)
 
         except (OSError, IOError) as e:
             print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
+            _log("error", entry.rel, entry.size, error=str(e))
             progress.update(entry.size, 1)
 
 
@@ -2434,8 +2584,11 @@ class _ProgressTarExtractor:
             result = _safe_tar_extract(self._tar, member, self._dst_root)
             if result is True:
                 self.extracted += 1
+                _log("copied", member.name, member.size, method="tar_stream")
                 self._progress.update(member.size, 1)
                 self._progress.display()
+            else:
+                _log("error", member.name, member.size, error=str(result))
             return result
 
         # Large file — extract with progress updates during write
@@ -2476,6 +2629,7 @@ class _ProgressTarExtractor:
             pass
 
         self.extracted += 1
+        _log("copied", member.name, member.size, method="tar_stream")
         self._progress.update(0, 1)  # file count only, bytes already reported
         self._progress.display()
         return True
@@ -2609,12 +2763,13 @@ def copy_individual_r2r(entries, src_ssh, dst_ssh, dst_root, progress, buf_size)
             if entry.size == 0:
                 with dst_sftp.open(remote_dst_path, "w"):
                     pass
+                _log("copied", entry.rel, entry.size, method="sftp_relay")
                 progress.update(0, 1)
                 progress.display()
                 continue
 
             with src_sftp.open(remote_src_path, "rb") as fin:
-                fin.prefetch(entry.size)  # pipeline reads
+                fin.prefetch(min(entry.size, 256 * 1024 * 1024))  # cap at 256MB
                 with dst_sftp.open(remote_dst_path, "wb") as fout:
                     fout.set_pipelined(True)
                     while True:
@@ -2632,10 +2787,12 @@ def copy_individual_r2r(entries, src_ssh, dst_ssh, dst_root, progress, buf_size)
             except (OSError, IOError):
                 pass
 
+            _log("copied", entry.rel, entry.size, method="sftp_relay")
             progress.update(0, 1)
 
         except (OSError, IOError) as e:
             print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
+            _log("error", entry.rel, entry.size, error=str(e))
             progress.update(entry.size, 1)
 
 
@@ -2666,7 +2823,10 @@ def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress)
     sender = threading.Thread(target=_send_file_list, daemon=True)
     sender.start()
 
-    # Destination: tar consumer
+    # Destination: tar consumer — use safe extraction flags to mitigate
+    # compromised source servers injecting symlinks or path traversal.
+    # GNU tar already strips leading '/' by default; --no-same-owner and
+    # --no-same-permissions limit privilege escalation.
     dst_chan = dst_ssh.open_channel()
     dst_chan.exec_command(
         f"tar xf - --no-same-owner --no-same-permissions -C {shlex.quote(dst_root)}"
@@ -2700,7 +2860,39 @@ def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress)
         stderr = dst_chan.recv_stderr(4096).decode("utf-8", errors="replace")
         print(f"\n  {C.YELLOW}Dest tar exited {dst_rc}: {stderr[:200]}{C.RESET}")
 
+    # Safety check: remove any symlinks the source may have injected
+    # (GNU tar strips leading '/' but cannot prevent '..' or symlink members)
+    if dst_ssh.caps.get("python3"):
+        allowed_set = set(e.rel for e in safe_entries)
+        # Also allow parent directories of allowed files
+        for e in safe_entries:
+            parts = e.rel.split("/")
+            for i in range(1, len(parts)):
+                allowed_set.add("/".join(parts[:i]))
+        check_script = (
+            'import os,sys,json\n'
+            'dst=sys.argv[1]\n'
+            'found=[]\n'
+            'for r,ds,fs in os.walk(dst):\n'
+            '  for f in fs:\n'
+            '    p=os.path.join(r,f)\n'
+            '    rel=os.path.relpath(p,dst)\n'
+            '    if os.path.islink(p):\n'
+            '      os.unlink(p)\n'
+            '      found.append(rel)\n'
+            'if found:print("REMOVED_SYMLINKS:"+json.dumps(found))\n'
+        )
+        out, _, _ = dst_ssh.exec_cmd(
+            f"python3 -c {shlex.quote(check_script)} {shlex.quote(dst_root)}",
+            timeout=60
+        )
+        if "REMOVED_SYMLINKS:" in out:
+            removed = out.split("REMOVED_SYMLINKS:", 1)[1].strip()
+            print(f"\n  {C.RED}WARNING: Removed symlinks injected by source: {removed}{C.RESET}")
+
     batch_size = sum(e.size for e in safe_entries)
+    for e in safe_entries:
+        _log("copied", e.rel, e.size, method="tar_relay")
     progress.update(batch_size, len(safe_entries))
     progress.display()
 
@@ -2821,6 +3013,7 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
         rh = remote_h.get(entry.rel)
         dh = dst_hashes[i]
         if rh and dh and rh == dh:
+            _log("skipped", entry.rel, entry.size, reason="unchanged")
             skipped.append(entry)
             skipped_bytes += entry.size
         else:
@@ -2832,6 +3025,7 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
     for dup_rel, canonical_rel in link_map.items():
         dst_path = os.path.join(dst_root, dup_rel)
         if os.path.exists(dst_path):
+            _log("skipped", dup_rel, 0, reason="link_exists")
             skipped_links += 1
         else:
             new_link_map[dup_rel] = canonical_rel
@@ -2867,6 +3061,8 @@ def main():
                         help="Show copy plan without copying")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip post-copy verification")
+    parser.add_argument("--log-file", default=None,
+                        help="Write structured JSON log to file")
     parser.add_argument("--no-dedup", action="store_true",
                         help="Disable deduplication")
     parser.add_argument("--force", action="store_true",
@@ -2900,6 +3096,10 @@ def main():
                         dest="src_password",
                         help="Prompt for SSH password for remote source")
     args = parser.parse_args()
+
+    global _log_enabled
+    if args.log_file:
+        _log_enabled = True
 
     src_arg = args.source
     buf_size = args.buffer * 1024 * 1024
@@ -3124,6 +3324,16 @@ def main():
                 if not copy_entries and not link_map:
                     banner("DONE — Nothing to copy")
                     print(f"  All {skipped_count} files are already up to date on remote.")
+                    if args.log_file:
+                        write_log_file(args.log_file, {
+                            "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                            "destination": f"{dst_remote.user}@{dst_remote.host}:{dst}",
+                            "mode": "remote_to_remote", "total_files": total_files,
+                            "copied": 0, "linked": 0, "skipped": skipped_count,
+                            "errors": 0, "total_bytes": total_size, "bytes_written": 0,
+                            "dedup_saved": saved_bytes, "elapsed_sec": 0,
+                            "avg_speed_bps": 0, "hash_algo": _hash_name,
+                        })
                     print()
                     src_ssh.close()
                     dst_ssh.close()
@@ -3266,6 +3476,18 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            if args.log_file:
+                write_log_file(args.log_file, {
+                    "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                    "destination": f"{dst_remote.user}@{dst_remote.host}:{dst}",
+                    "mode": "remote_to_remote",
+                    "total_files": total_files, "copied": len(copy_entries),
+                    "linked": len(link_map), "skipped": skipped_count,
+                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                    "total_bytes": total_size, "bytes_written": unique_size,
+                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+                })
             print()
 
         except KeyboardInterrupt:
@@ -3313,6 +3535,16 @@ def main():
                 if not copy_entries and not link_map:
                     banner("DONE — Nothing to copy")
                     print(f"  All {skipped_count} files are already up to date.")
+                    if args.log_file:
+                        write_log_file(args.log_file, {
+                            "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                            "destination": dst, "mode": "remote_to_local",
+                            "total_files": total_files, "copied": 0, "linked": 0,
+                            "skipped": skipped_count, "errors": 0,
+                            "total_bytes": total_size, "bytes_written": 0,
+                            "dedup_saved": saved_bytes, "elapsed_sec": 0,
+                            "avg_speed_bps": 0, "hash_algo": _hash_name,
+                        })
                     print()
                     src_ssh.close()
                     sys.exit(0)
@@ -3375,6 +3607,17 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            if args.log_file:
+                write_log_file(args.log_file, {
+                    "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                    "destination": dst, "mode": "remote_to_local",
+                    "total_files": total_files, "copied": len(copy_entries),
+                    "linked": len(link_map), "skipped": skipped_count,
+                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                    "total_bytes": total_size, "bytes_written": unique_size,
+                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+                })
             print()
 
         except KeyboardInterrupt:
@@ -3431,6 +3674,16 @@ def main():
                 if not copy_entries and not link_map:
                     banner("DONE — Nothing to copy")
                     print(f"  All {skipped_count} files are already up to date on remote.")
+                    if args.log_file:
+                        write_log_file(args.log_file, {
+                            "source": src_display,
+                            "destination": f"{remote.user}@{remote.host}:{dst}",
+                            "mode": "local_to_remote", "total_files": total_files,
+                            "copied": 0, "linked": 0, "skipped": skipped_count,
+                            "errors": 0, "total_bytes": total_size, "bytes_written": 0,
+                            "dedup_saved": saved_bytes, "elapsed_sec": 0,
+                            "avg_speed_bps": 0, "hash_algo": _hash_name,
+                        })
                     print()
                     ssh.close()
                     sys.exit(0)
@@ -3499,6 +3752,17 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            if args.log_file:
+                write_log_file(args.log_file, {
+                    "source": src_display, "destination": f"{remote.user}@{remote.host}:{dst}",
+                    "mode": "local_to_remote",
+                    "total_files": total_files, "copied": len(copy_entries),
+                    "linked": len(link_map), "skipped": skipped_count,
+                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                    "total_bytes": total_size, "bytes_written": unique_size,
+                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+                })
             print()
 
         except KeyboardInterrupt:
@@ -3552,6 +3816,15 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
         if not copy_entries and not link_map:
             banner("DONE — Nothing to copy")
             print(f"  All {skipped_count} files are already up to date.")
+            if args.log_file:
+                write_log_file(args.log_file, {
+                    "source": args.source, "destination": dst,
+                    "mode": "local_to_local", "total_files": total_files,
+                    "copied": 0, "linked": 0, "skipped": skipped_count,
+                    "errors": 0, "total_bytes": sum(e.size for e in entries),
+                    "bytes_written": 0, "dedup_saved": saved_bytes,
+                    "elapsed_sec": 0, "avg_speed_bps": 0, "hash_algo": _hash_name,
+                })
             print()
             return
 
@@ -3630,6 +3903,18 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
           + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
     print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
     print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    if args.log_file:
+        write_log_file(args.log_file, {
+            "source": args.source, "destination": dst,
+            "mode": "local_to_local",
+            "total_files": total_files, "copied": len(copy_entries),
+            "linked": len(link_map), "skipped": skipped_count,
+            "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+            "total_bytes": sum(e.size for e in entries),
+            "bytes_written": unique_size,
+            "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+            "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+        })
     print()
 
 

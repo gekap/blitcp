@@ -134,6 +134,7 @@ options:
   --threads THREADS       Threads for hashing/layout (default: 4)
   --dry-run               Show copy plan without copying
   --no-verify             Skip post-copy verification
+  --log-file LOG_FILE     Write structured JSON log to file
   --no-dedup              Disable deduplication
   --no-cache              Disable persistent hash cache (cross-run dedup database)
   --force                 Skip space check, copy even if not enough space
@@ -205,6 +206,32 @@ python fast_copy.py /data /mnt/usb/data --no-dedup
 
 # Exclude directories
 python fast_copy.py /project /mnt/usb/project --exclude node_modules --exclude .git
+
+# Write structured JSON log of all actions
+python fast_copy.py /data /mnt/usb/data --log-file copy.json
+```
+
+### Structured JSON log
+
+The `--log-file` option writes a machine-readable JSON log with:
+- **Summary** — source, destination, mode, files copied/linked/skipped/errored, bytes written, speed, dedup savings
+- **Per-file entries** — action (`copied`, `linked`, `skipped`, `error`), path, size, method, link target, error message
+
+```json
+{
+  "timestamp": "2026-04-04T13:25:48.680170+00:00",
+  "summary": {
+    "source": "/data", "destination": "/mnt/usb/data",
+    "mode": "local_to_local", "total_files": 3,
+    "copied": 2, "linked": 1, "skipped": 0, "errors": 0,
+    "total_bytes": 18, "bytes_written": 12, "dedup_saved": 6,
+    "elapsed_sec": 0.03, "avg_speed_bps": 400, "hash_algo": "xxh128"
+  },
+  "files": [
+    {"action": "copied", "path": "data.bin", "size": 6, "method": "block_stream"},
+    {"action": "linked", "path": "data_copy.bin", "size": 6, "method": "hardlink", "link_target": "data.bin"}
+  ]
+}
 ```
 
 ## Real-World Benchmarks
@@ -263,6 +290,8 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 - **Flexible source** — Directories, single files, or glob patterns (`*.zip`, `*.iso`)
 - **Pre-flight space check** — Verifies space before writing; walks parent directories for remote paths
 - **Post-copy verification** — Every file verified against source hash
+- **Structured JSON logging** — `--log-file` records every action (copied, linked, skipped, error) with summary stats
+- **Permission preservation** — Copies file permissions on local and remote transfers
 - **Windows long path support** — Handles paths exceeding 260 characters via `\\?\` prefix
 - **Authentication retry** — Prompts for password up to 3 times on auth failure; handles Ctrl+C gracefully
 - **Cross-platform** — Linux, macOS, and Windows with native I/O optimizations
