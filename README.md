@@ -307,5 +307,5 @@ If you find this tool useful, consider a donation:
 
 | Currency | Address |
 |----------|---------|
-| **USDC** (ERC-20) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
+| **USDC** (Base) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
 | **ETH** (ERC-20) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
