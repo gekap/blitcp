@@ -3,6 +3,8 @@
 ## v2.4.0 — 2026-04-04
 
 ### New Features
+- **`--version` / `-V`** — Show current version
+- **`--update`** — Self-update from GitHub releases with size verification, SHA-256 audit hash, atomic replacement on Linux/macOS, and rename-swap on Windows
 - **`--log-file`** — Structured JSON log recording every file action (copied, linked, skipped, error) with summary stats, per-file method, link targets, and error messages
 - **Permission preservation** — File permissions (chmod) now preserved on individual copy and remote-to-local transfers, including zero-byte files
 

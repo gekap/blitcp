@@ -130,6 +130,8 @@ positional arguments:
 
 options:
   -h, --help              Show help message and exit
+  --version, -V           Show version and exit
+  --update                Check for updates and self-update
   --buffer BUFFER         Buffer size in MB (default: 64)
   --threads THREADS       Threads for hashing/layout (default: 4)
   --dry-run               Show copy plan without copying
@@ -295,6 +297,7 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 - **Windows long path support** — Handles paths exceeding 260 characters via `\\?\` prefix
 - **Authentication retry** — Prompts for password up to 3 times on auth failure; handles Ctrl+C gracefully
 - **Cross-platform** — Linux, macOS, and Windows with native I/O optimizations
+- **Self-update** — `--update` checks GitHub for new releases and replaces the running binary/script
 - **Standalone binary** — Build with PyInstaller for a single-file executable
 
 ## License

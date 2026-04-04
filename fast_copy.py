@@ -62,6 +62,8 @@ Options:
   --ssh-src-key PATH    SSH private key for remote source
   --ssh-src-password    Prompt for SSH password for source
   -z, --compress    Enable SSH compression (good for slow links)
+  --version, -V     Show version and exit
+  --update          Check for updates and self-update
 
 Requires: python -m pip install paramiko
 """
@@ -90,6 +92,12 @@ import threading
 from pathlib import Path
 from collections import namedtuple, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ════════════════════════════════════════════════════════════════════════════
+# VERSION
+# ════════════════════════════════════════════════════════════════════════════
+__version__ = "2.4.0"
+GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
 # CONFIG
@@ -3043,6 +3051,196 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# SELF-UPDATE — check for new releases and replace the running binary/script
+# ════════════════════════════════════════════════════════════════════════════
+def _is_frozen():
+    """True if running as a PyInstaller binary."""
+    return getattr(sys, 'frozen', False)
+
+
+def _get_self_path():
+    """Get the path of the currently running script or binary."""
+    if _is_frozen():
+        return os.path.realpath(sys.executable)
+    return os.path.realpath(__file__)
+
+
+def _get_asset_name():
+    """Determine which release asset to download for this platform."""
+    if _is_frozen():
+        if _system == "Linux":
+            return "fast_copy-linux"
+        elif _system == "Darwin":
+            return "fast_copy-macos"
+        elif _system == "Windows":
+            return "fast_copy-windows.exe"
+    return "fast_copy.py"
+
+
+def _parse_version(tag):
+    """Parse 'v2.4.0' → (2, 4, 0). Returns None on failure."""
+    tag = tag.lstrip("vV")
+    try:
+        return tuple(int(x) for x in tag.split("."))
+    except (ValueError, AttributeError):
+        return None
+
+
+def check_for_update():
+    """Check GitHub for a newer release. Returns (latest_tag, asset_url, asset_size) or None."""
+    import urllib.request
+    import urllib.error
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(api_url, headers={
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": f"fast-copy/{__version__}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        print(f"  {C.RED}Failed to check for updates: {e}{C.RESET}")
+        return None
+
+    latest_tag = data.get("tag_name", "")
+    latest_ver = _parse_version(latest_tag)
+    current_ver = _parse_version(__version__)
+
+    if not latest_ver or not current_ver:
+        print(f"  {C.YELLOW}Could not parse version: current={__version__}, "
+              f"latest={latest_tag}{C.RESET}")
+        return None
+
+    if latest_ver <= current_ver:
+        print(f"  {C.GREEN}Already up to date (v{__version__}){C.RESET}")
+        return None
+
+    # Find the right asset for this platform
+    asset_name = _get_asset_name()
+    for asset in data.get("assets", []):
+        if asset["name"] == asset_name:
+            return latest_tag, asset["browser_download_url"], asset["size"]
+
+    print(f"  {C.RED}No asset '{asset_name}' found in release {latest_tag}{C.RESET}")
+    return None
+
+
+def self_update():
+    """Download and install the latest release."""
+    import urllib.request
+    import urllib.error
+
+    print(f"\n  {C.BOLD}fast-copy self-update{C.RESET}")
+    print(f"  Current version: {C.BOLD}v{__version__}{C.RESET}")
+    print(f"  Checking GitHub for updates...\n")
+
+    result = check_for_update()
+    if result is None:
+        return
+
+    latest_tag, download_url, expected_size = result
+    self_path = _get_self_path()
+    asset_name = _get_asset_name()
+
+    print(f"  {C.GREEN}New version available: {C.BOLD}{latest_tag}{C.RESET}")
+    print(f"  Asset:   {asset_name} ({fmt_size(expected_size)})")
+    print(f"  Target:  {self_path}")
+
+    # Check we can write to the target location
+    target_dir = os.path.dirname(self_path)
+    if not os.access(target_dir, os.W_OK):
+        print(f"\n  {C.RED}Error: No write permission to {target_dir}{C.RESET}")
+        print(f"  {C.YELLOW}Try running with sudo or as administrator{C.RESET}")
+        sys.exit(1)
+
+    # Download to a temporary file in the same directory (ensures same filesystem)
+    tmp_path = self_path + ".update_tmp"
+    try:
+        print(f"\n  Downloading...", end="", flush=True)
+        req = urllib.request.Request(download_url, headers={
+            "User-Agent": f"fast-copy/{__version__}",
+        })
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = resp.read()
+
+        # Verify download size matches expected
+        if len(data) != expected_size:
+            print(f"\n  {C.RED}Error: Size mismatch — expected {expected_size}, "
+                  f"got {len(data)}{C.RESET}")
+            sys.exit(1)
+
+        # Verify it's not empty or suspiciously small
+        if len(data) < 1024:
+            print(f"\n  {C.RED}Error: Downloaded file is suspiciously small "
+                  f"({len(data)} bytes){C.RESET}")
+            sys.exit(1)
+
+        # Write to temp file
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+
+        print(f" {C.GREEN}{fmt_size(len(data))} downloaded{C.RESET}")
+
+        # Compute SHA-256 of download for audit trail
+        dl_hash = hashlib.sha256(data).hexdigest()
+        print(f"  SHA-256: {C.DIM}{dl_hash}{C.RESET}")
+
+    except (urllib.error.URLError, OSError) as e:
+        print(f"\n  {C.RED}Download failed: {e}{C.RESET}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    # ── Platform-specific replacement ────────────────────────────────
+    try:
+        if _system == "Windows":
+            # Windows: running .exe is locked — rename-swap strategy
+            old_path = self_path + ".old"
+            # Clean up leftover from previous update
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
+            # Rename current → .old (allowed while running on Windows)
+            os.rename(self_path, old_path)
+            # Rename new → current
+            os.rename(tmp_path, self_path)
+            print(f"\n  {C.GREEN}Updated to {latest_tag}{C.RESET}")
+            print(f"  {C.DIM}Old version saved as {old_path} (will be cleaned up next run){C.RESET}")
+        else:
+            # Linux/macOS: atomic replace via os.replace
+            # Preserve original file permissions
+            try:
+                old_mode = os.stat(self_path).st_mode
+            except OSError:
+                old_mode = None
+
+            os.replace(tmp_path, self_path)
+
+            # Restore permissions (make binary executable)
+            if old_mode:
+                os.chmod(self_path, old_mode)
+            elif _is_frozen():
+                os.chmod(self_path, 0o755)
+
+            print(f"\n  {C.GREEN}Updated to {latest_tag}{C.RESET}")
+
+    except OSError as e:
+        print(f"\n  {C.RED}Failed to replace binary: {e}{C.RESET}")
+        # Try to clean up
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        sys.exit(1)
+
+    print(f"  Run 'fast_copy --version' to verify.\n")
+    sys.exit(0)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
 def main():
@@ -3919,6 +4117,29 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
 
 if __name__ == "__main__":
+    # Handle --version and --update before argparse requires positional args
+    if "--version" in sys.argv or "-V" in sys.argv:
+        print(f"fast-copy v{__version__}")
+        sys.exit(0)
+    if "--update" in sys.argv:
+        # Windows: clean up .old file from previous update
+        if _system == "Windows":
+            try:
+                old = _get_self_path() + ".old"
+                if os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                pass
+        self_update()
+        sys.exit(0)
+    # Windows: clean up .old file from previous update on normal runs
+    if _system == "Windows":
+        try:
+            old = _get_self_path() + ".old"
+            if os.path.exists(old):
+                os.remove(old)
+        except OSError:
+            pass
     try:
         main()
     except KeyboardInterrupt:
