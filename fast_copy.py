@@ -63,7 +63,8 @@ Options:
   --ssh-src-password    Prompt for SSH password for source
   -z, --compress    Enable SSH compression (good for slow links)
   --version, -V     Show version and exit
-  --update          Check for updates and self-update
+  --check-update    Show available updates and release notes
+  --update [VERSION]  Download and install (latest, or a specific version)
 
 Requires: python -m pip install paramiko
 """
@@ -96,7 +97,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.2"
+__version__ = "2.4.3"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -3219,47 +3220,226 @@ def _parse_version(tag):
         return None
 
 
-def check_for_update():
-    """Check GitHub for a newer release. Returns (latest_tag, asset_url, asset_size) or None."""
+def _get_ssl_context():
+    """Return an SSL context that works on macOS bundled binaries.
+
+    PyInstaller bundles on macOS often can't find the system certificate store,
+    causing CERTIFICATE_VERIFY_FAILED errors.  We try several approaches:
+    1. certifi (if bundled or installed)
+    2. System cert file at common macOS/Linux paths
+    3. Unverified context as last resort (with warning)
+    """
+    import ssl
+    # Try default context first — works on most systems
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+        return ctx
+    except (ImportError, OSError):
+        pass
+    # Try common system cert paths (macOS Homebrew, Linux)
+    for cert_path in [
+        "/etc/ssl/certs/ca-certificates.crt",      # Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",         # RHEL/CentOS
+        "/etc/ssl/cert.pem",                         # macOS / BSD
+        "/usr/local/etc/openssl/cert.pem",           # Homebrew openssl
+        "/usr/local/etc/openssl@3/cert.pem",         # Homebrew openssl@3
+    ]:
+        if os.path.exists(cert_path):
+            try:
+                ctx.load_verify_locations(cert_path)
+                return ctx
+            except OSError:
+                continue
+    # Last resort: try the default context as-is (may work if the system
+    # cert store is accessible via the default mechanism)
+    return ctx
+
+
+def _fetch_releases():
+    """Fetch all releases from GitHub. Returns list of release dicts or None."""
     import urllib.request
     import urllib.error
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
     req = urllib.request.Request(api_url, headers={
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": f"fast-copy/{__version__}",
     })
+    ssl_ctx = _get_ssl_context()
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
+            return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         print(f"  {C.RED}Failed to check for updates: {e}{C.RESET}")
         return None
 
-    latest_tag = data.get("tag_name", "")
-    latest_ver = _parse_version(latest_tag)
-    current_ver = _parse_version(__version__)
 
-    if not latest_ver or not current_ver:
-        print(f"  {C.YELLOW}Could not parse version: current={__version__}, "
-              f"latest={latest_tag}{C.RESET}")
+def _classify_release_sections(body):
+    """Parse a release body into categorized sections.
+
+    Returns dict with keys like 'security', 'bug_fixes', 'new_features',
+    'performance', 'improvements', etc.  Each value is a list of bullet lines.
+    """
+    sections = {}
+    current_key = None
+    _SECTION_MAP = {
+        "security fixes": "security",
+        "security":       "security",
+        "bug fixes":      "bug_fixes",
+        "new features":   "new_features",
+        "performance":    "performance",
+        "improvements":   "improvements",
+        "windows":        "improvements",
+        "reliability":    "improvements",
+    }
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        # Detect markdown headers like ### Security Fixes
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().lower()
+            current_key = _SECTION_MAP.get(heading)
+            if current_key and current_key not in sections:
+                sections[current_key] = []
+        elif current_key and stripped.startswith("-"):
+            sections[current_key].append(stripped)
+    return sections
+
+
+def _print_release_notes(releases, current_ver):
+    """Print categorized release notes for all versions newer than current_ver."""
+    has_security = False
+    has_features = False
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        ver = _parse_version(tag)
+        if not ver or ver <= current_ver:
+            continue
+        body = rel.get("body", "")
+        sections = _classify_release_sections(body)
+        published = rel.get("published_at", "")[:10]
+
+        print(f"\n  {C.BOLD}{tag}{C.RESET}" +
+              (f" {C.DIM}({published}){C.RESET}" if published else ""))
+
+        _LABELS = {
+            "security":     (C.RED,    "Security Fixes"),
+            "bug_fixes":    (C.YELLOW, "Bug Fixes"),
+            "new_features": (C.GREEN,  "New Features"),
+            "performance":  (C.CYAN,   "Performance"),
+            "improvements": (C.DIM,    "Improvements"),
+        }
+        for key, (color, label) in _LABELS.items():
+            if key in sections:
+                if key == "security":
+                    has_security = True
+                if key == "new_features":
+                    has_features = True
+                print(f"    {color}{label}:{C.RESET}")
+                for bullet in sections[key]:
+                    print(f"      {bullet}")
+
+        if not sections:
+            # No recognized sections — print raw body (truncated)
+            for line in (body or "No release notes.").splitlines()[:15]:
+                print(f"    {C.DIM}{line}{C.RESET}")
+
+    return has_security, has_features
+
+
+def check_for_update():
+    """Check GitHub for a newer release.
+
+    Returns (latest_tag, asset_url, asset_size, releases_between) or None.
+    releases_between is a list of release dicts newer than the current version.
+    """
+    releases = _fetch_releases()
+    if releases is None:
         return None
 
-    if latest_ver <= current_ver:
+    current_ver = _parse_version(__version__)
+    if not current_ver:
+        print(f"  {C.YELLOW}Could not parse current version: {__version__}{C.RESET}")
+        return None
+
+    # Find all releases newer than current, sorted newest first
+    newer = []
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        ver = _parse_version(tag)
+        if ver and ver > current_ver:
+            newer.append(rel)
+    newer.sort(key=lambda r: _parse_version(r["tag_name"]), reverse=True)
+
+    if not newer:
         print(f"  {C.GREEN}Already up to date (v{__version__}){C.RESET}")
         return None
 
+    latest = newer[0]
+    latest_tag = latest["tag_name"]
+
     # Find the right asset for this platform
     asset_name = _get_asset_name()
-    for asset in data.get("assets", []):
+    for asset in latest.get("assets", []):
         if asset["name"] == asset_name:
-            return latest_tag, asset["browser_download_url"], asset["size"]
+            return latest_tag, asset["browser_download_url"], asset["size"], newer
 
     print(f"  {C.RED}No asset '{asset_name}' found in release {latest_tag}{C.RESET}")
     return None
 
 
-def self_update():
-    """Download and install the latest release."""
+def _find_release_asset(releases, target_tag):
+    """Find download asset for a specific release tag.
+
+    Returns (tag, asset_url, asset_size) or None.
+    """
+    asset_name = _get_asset_name()
+    target_tag_norm = target_tag.lstrip("vV")
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        if tag.lstrip("vV") == target_tag_norm:
+            for asset in rel.get("assets", []):
+                if asset["name"] == asset_name:
+                    return tag, asset["browser_download_url"], asset["size"]
+            print(f"  {C.RED}No asset '{asset_name}' found in release {tag}{C.RESET}")
+            return None
+    print(f"  {C.RED}Release '{target_tag}' not found on GitHub{C.RESET}")
+    available = [r["tag_name"] for r in releases[:10]]
+    print(f"  {C.DIM}Available: {', '.join(available)}{C.RESET}")
+    return None
+
+
+def check_update_info():
+    """--check-update: show what's new without installing."""
+    print(f"\n  {C.BOLD}fast-copy update check{C.RESET}")
+    print(f"  Current version: {C.BOLD}v{__version__}{C.RESET}")
+    print(f"  Checking GitHub for updates...\n")
+
+    result = check_for_update()
+    if result is None:
+        return
+
+    latest_tag, download_url, expected_size, newer = result
+    current_ver = _parse_version(__version__)
+
+    print(f"  {C.GREEN}New version available: {C.BOLD}{latest_tag}{C.RESET}")
+    print(f"  {C.DIM}(you have v{__version__} — "
+          f"{len(newer)} release{'s' if len(newer) != 1 else ''} behind){C.RESET}")
+
+    _print_release_notes(newer, current_ver)
+
+    # List available versions
+    tags = [r["tag_name"] for r in newer]
+    print(f"\n  {C.BOLD}To update:{C.RESET}")
+    print(f"    --update             Install latest ({latest_tag})")
+    if len(newer) > 1:
+        print(f"    --update VERSION     Install a specific version")
+        print(f"    {C.DIM}Available: {', '.join(tags)}{C.RESET}")
+    print()
+
+
+def self_update(target_version=None):
+    """Download and install a release. If target_version is None, install latest."""
     import urllib.request
     import urllib.error
 
@@ -3271,11 +3451,34 @@ def self_update():
     if result is None:
         return
 
-    latest_tag, download_url, expected_size = result
+    latest_tag, download_url, expected_size, newer = result
+    current_ver = _parse_version(__version__)
+
+    # If a specific version was requested, find that release instead
+    if target_version:
+        target_ver = _parse_version(target_version)
+        if target_ver and target_ver <= current_ver:
+            print(f"  {C.YELLOW}{target_version} is not newer than current "
+                  f"v{__version__}{C.RESET}")
+            return
+        specific = _find_release_asset(newer, target_version)
+        if specific is None:
+            return
+        latest_tag, download_url, expected_size = specific
+        # Only show notes up to the target version
+        target_ver = _parse_version(latest_tag)
+        notes_releases = [r for r in newer
+                          if _parse_version(r["tag_name"]) <= target_ver]
+    else:
+        notes_releases = newer
+
+    # Show what's included
+    _print_release_notes(notes_releases, current_ver)
+
     self_path = _get_self_path()
     asset_name = _get_asset_name()
 
-    print(f"  {C.GREEN}New version available: {C.BOLD}{latest_tag}{C.RESET}")
+    print(f"\n  {C.GREEN}Updating to: {C.BOLD}{latest_tag}{C.RESET}")
     print(f"  Asset:   {asset_name} ({fmt_size(expected_size)})")
     print(f"  Target:  {self_path}")
 
@@ -3293,7 +3496,8 @@ def self_update():
         req = urllib.request.Request(download_url, headers={
             "User-Agent": f"fast-copy/{__version__}",
         })
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        ssl_ctx = _get_ssl_context()
+        with urllib.request.urlopen(req, timeout=120, context=ssl_ctx) as resp:
             data = resp.read()
 
         # Verify download size matches expected
@@ -4257,9 +4461,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
 
 if __name__ == "__main__":
-    # Handle --version and --update before argparse requires positional args
+    # Handle --version, --check-update, --update before argparse requires positional args
     if "--version" in sys.argv or "-V" in sys.argv:
         print(f"fast-copy v{__version__}")
+        sys.exit(0)
+    if "--check-update" in sys.argv:
+        check_update_info()
         sys.exit(0)
     if "--update" in sys.argv:
         # Windows: clean up .old file from previous update
@@ -4270,7 +4477,12 @@ if __name__ == "__main__":
                     os.remove(old)
             except OSError:
                 pass
-        self_update()
+        # Check for optional version argument: --update v2.4.1
+        idx = sys.argv.index("--update")
+        target_ver = None
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            target_ver = sys.argv[idx + 1]
+        self_update(target_version=target_ver)
         sys.exit(0)
     # Windows: clean up .old file from previous update on normal runs
     if _system == "Windows":

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.4.3 — 2026-04-05
+
+### New Features
+- **`--check-update`** — Show available updates with categorized release notes (security fixes, bug fixes, new features, performance, improvements) before deciding to update
+- **`--update [VERSION]`** — Optionally specify a target version to update to instead of always installing the latest (e.g. `--update v2.4.1`)
+- **Release notes in `--update`** — The update flow now displays categorized release notes for all versions between current and target before downloading
+
+### Bug Fixes
+- **macOS SSL certificate fix** — Fixed `CERTIFICATE_VERIFY_FAILED` error when running `--update` or `--check-update` on macOS. PyInstaller-bundled binaries now explicitly load system certificates from `/etc/ssl/cert.pem`
+
 ## v2.4.2 — 2026-04-05
 
 ### Bug Fixes
