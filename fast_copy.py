@@ -96,7 +96,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1532,15 +1532,19 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
     return unique_entries, link_map, saved_bytes
 
 
-def create_links(link_map, dst_root):
+def create_links(link_map, dst_root, case_conflicts=None):
     """
     Create hard links for deduplicated files.
     Falls back to symlinks if hard links fail (e.g. FAT32/exFAT USB).
     Falls back to actual copy as last resort.
+    Skips entries in case_conflicts (cannot coexist on case-insensitive FS).
     """
     if not link_map:
         return
+    if case_conflicts is None:
+        case_conflicts = set()
 
+    skipped_case = 0
     print(f"  {C.DIM}Creating {len(link_map)} links for duplicates...{C.RESET}", end="", flush=True)
     hardlink_ok = 0
     symlink_ok = 0
@@ -1548,6 +1552,9 @@ def create_links(link_map, dst_root):
     errors = 0
 
     for dup_rel, target in link_map.items():
+        if dup_rel in case_conflicts:
+            skipped_case += 1
+            continue
         dst_dup = _long_path(os.path.join(dst_root, dup_rel))
         # Target is either a rel path or ("__abs__", full_path) for cross-run dedup
         if isinstance(target, tuple) and target[0] == "__abs__":
@@ -1608,10 +1615,78 @@ def create_links(link_map, dst_root):
         results.append(f"{symlink_ok} symlinks")
     if copy_fallback:
         results.append(f"{copy_fallback} copies (fallback)")
+    if skipped_case:
+        results.append(f"{skipped_case} case-conflicts skipped")
     if errors:
         results.append(f"{C.RED}{errors} errors{C.RESET}")
 
     print(f"\n  {C.GREEN}Links created: {', '.join(results)}{C.RESET}                    ")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CASE-INSENSITIVE FILESYSTEM CONFLICT RESOLUTION
+# ════════════════════════════════════════════════════════════════════════════
+def _fs_case_insensitive(path):
+    """Test whether the filesystem at *path* is case-insensitive."""
+    import tempfile
+    try:
+        os.makedirs(path, exist_ok=True)
+        fd, probe = tempfile.mkstemp(dir=path, prefix=".fc_case_")
+        os.close(fd)
+        try:
+            # If the upper-cased version of the probe exists, FS is case-insensitive
+            return os.path.exists(probe.upper()) or os.path.exists(probe.swapcase())
+        finally:
+            os.unlink(probe)
+    except OSError:
+        # Can't test (e.g. read-only) — assume case-sensitive (safe default)
+        return False
+
+
+def resolve_case_conflicts(entries, link_map, dst):
+    """Detect paths that collide on a case-insensitive filesystem.
+
+    Returns a set of rel paths that are involved in case conflicts.
+    These will be excluded from verification errors since the filesystem
+    cannot store both files — only one survives.
+    """
+    if not _fs_case_insensitive(dst):
+        return set()
+
+    seen = {}          # lower_rel -> first original rel
+    conflicts = set()  # all rels involved in a case conflict
+
+    all_rels = [e.rel for e in entries] + list(link_map.keys())
+    for rel in all_rels:
+        low = rel.lower()
+        if low in seen:
+            conflicts.add(seen[low])
+            conflicts.add(rel)
+        else:
+            seen[low] = rel
+
+    if conflicts:
+        # Group for display
+        groups = defaultdict(list)
+        for rel in all_rels:
+            low = rel.lower()
+            if rel in conflicts:
+                groups[low].append(rel)
+
+        n_groups = len(groups)
+        n_files = len(conflicts)
+        print(f"\n  {C.YELLOW}Case-insensitive filesystem: {n_files} files in "
+              f"{n_groups} conflict group{'s' if n_groups != 1 else ''}{C.RESET}")
+        print(f"  {C.DIM}(macOS/Windows cannot store files that differ only in case){C.RESET}")
+        shown = 0
+        for low, rels in list(groups.items()):
+            if shown >= 5:
+                print(f"    {C.DIM}... and {n_groups - shown} more groups{C.RESET}")
+                break
+            print(f"    {C.DIM}conflict: {' vs '.join(rels)}{C.RESET}")
+            shown += 1
+
+    return conflicts
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2242,9 +2317,13 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
 # ════════════════════════════════════════════════════════════════════════════
 # VERIFICATION
 # ════════════════════════════════════════════════════════════════════════════
-def verify_copy(entries, link_map, dst_root):
+def verify_copy(entries, link_map, dst_root, case_conflicts=None):
     """Check existence + file size for all files (unique + linked).
-    Uses a single os.walk pass instead of per-file stat calls."""
+    Uses a single os.walk pass instead of per-file stat calls.
+    Files in case_conflicts are excluded from error reporting (they cannot
+    coexist on case-insensitive filesystems)."""
+    if case_conflicts is None:
+        case_conflicts = set()
     total_to_check = len(entries) + len(link_map)
     print(f"\n  {C.DIM}Verifying {total_to_check} files...{C.RESET}", end="", flush=True)
 
@@ -2273,6 +2352,8 @@ def verify_copy(entries, link_map, dst_root):
     mismatches = []
     missing = []
     for rel, exp_size in expected.items():
+        if rel in case_conflicts:
+            continue  # skip — cannot coexist on case-insensitive FS
         if rel not in found:
             tag = " (link)" if exp_size is None else ""
             missing.append(f"{rel}{tag}")
@@ -2280,9 +2361,13 @@ def verify_copy(entries, link_map, dst_root):
             mismatches.append((rel, exp_size, found[rel]))
 
     total_checked = len(expected)
+    n_skipped = len(case_conflicts & set(expected.keys()))
 
     if not missing and not mismatches:
-        print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}               ")
+        msg = f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}"
+        if n_skipped:
+            msg += f" {C.DIM}({n_skipped} case-conflicts skipped){C.RESET}"
+        print(msg + "               ")
         return True
     else:
         print(f"\r  {C.RED}✗ Verification failed:{C.RESET}")
@@ -3505,6 +3590,11 @@ def main():
 
     unique_size = sum(e.size for e in copy_entries)
 
+    # ── Case-conflict detection for local destinations ──────────────
+    case_conflicts = set()
+    if not dst_remote:
+        case_conflicts = resolve_case_conflicts(copy_entries, link_map, dst)
+
     # ══════════════════════════════════════════════════════════════════
     # REMOTE → REMOTE FLOW
     # ══════════════════════════════════════════════════════════════════
@@ -3808,14 +3898,14 @@ def main():
 
             # Create links locally
             if link_map:
-                create_links(link_map, dst)
+                create_links(link_map, dst, case_conflicts)
 
             elapsed = time.time() - t0
             speed = unique_size / elapsed if elapsed > 0 else 0
 
             # Verify
             if not args.no_verify:
-                verify_copy(copy_entries, link_map, dst)
+                verify_copy(copy_entries, link_map, dst, case_conflicts)
 
             # Summary
             banner("DONE")
@@ -4096,7 +4186,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
     # Create links for duplicates
     if link_map:
-        create_links(link_map, dst)
+        create_links(link_map, dst, case_conflicts)
 
     elapsed = time.time() - t0
     speed = unique_size / elapsed if elapsed > 0 else 0
@@ -4113,7 +4203,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
     # ── Verify ────────────────────────────────────────────────────────
     if not args.no_verify:
-        verify_copy(copy_entries, link_map, dst)
+        verify_copy(copy_entries, link_map, dst, case_conflicts)
 
     # ── Summary ───────────────────────────────────────────────────────
     banner("DONE")
