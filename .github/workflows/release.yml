@@ -16,19 +16,12 @@ jobs:
           - os: ubuntu-latest
             name: linux
             artifact: fast_copy
-            arch: ''
           - os: macos-latest
             name: macos-arm64
             artifact: fast_copy
-            arch: ''
-          - os: macos-latest
-            name: macos-intel
-            artifact: fast_copy
-            arch: x64
           - os: windows-latest
             name: windows
             artifact: fast_copy.exe
-            arch: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -39,7 +32,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          architecture: ${{ matrix.arch || '' }}
 
       - name: Build executable
         run: python build.py
@@ -59,8 +51,39 @@ jobs:
           name: fast_copy-${{ matrix.name }}
           path: dist/fast_copy-${{ matrix.name }}*
 
+  build-macos-intel:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install x86_64 Python via Homebrew under Rosetta
+        run: |
+          # Install x86_64 Homebrew
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+          # Install x86_64 Python
+          arch -x86_64 /usr/local/bin/brew install python@3.11
+          # Verify it's x86_64
+          /usr/local/opt/python@3.11/bin/python3.11 -c "import platform; print(f'Python arch: {platform.machine()}')"
+
+      - name: Build x86_64 executable
+        run: |
+          export PATH="/usr/local/opt/python@3.11/bin:$PATH"
+          arch -x86_64 python3.11 -m pip install pyinstaller xxhash paramiko --quiet --disable-pip-version-check
+          arch -x86_64 python3.11 -m PyInstaller --onefile --name fast_copy --clean --noupx --console --hidden-import=xxhash --hidden-import=paramiko fast_copy.py
+          file dist/fast_copy
+
+      - name: Rename binary
+        run: mv dist/fast_copy dist/fast_copy-macos-intel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast_copy-macos-intel
+          path: dist/fast_copy-macos-intel
+
   release:
-    needs: build
+    needs: [build, build-macos-intel]
     runs-on: ubuntu-latest
 
     steps:
