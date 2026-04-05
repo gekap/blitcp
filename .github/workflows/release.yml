@@ -17,7 +17,10 @@ jobs:
             name: linux
             artifact: fast_copy
           - os: macos-latest
-            name: macos
+            name: macos-arm64
+            artifact: fast_copy
+          - os: macos-13
+            name: macos-intel
             artifact: fast_copy
           - os: windows-latest
             name: windows
