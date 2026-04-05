@@ -52,7 +52,10 @@ Options:
   --threads N       Threads for hashing & layout resolution (default: 4)
   --dry-run         Show copy plan without copying
   --no-verify       Skip post-copy verification
+  --log-file PATH   Write structured JSON log to file
   --no-dedup        Disable deduplication (copy all files even if identical)
+  --overwrite       Overwrite all files, skip identical-file detection
+  --exclude NAME    Exclude files/dirs by name (can use multiple times)
   --no-cache        Disable persistent hash cache (cross-run dedup database)
   --force           Skip space check and copy anyway
   --ssh-dst-port PORT   SSH port for remote destination (default: 22)
