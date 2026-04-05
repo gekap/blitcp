@@ -34,7 +34,7 @@ Files are copied in 5 phases:
 2. **Dedup** — Hashes files (xxHash-128 or SHA-256) to find identical content. Each unique file is copied once; duplicates become hard links
 3. **Space check** — Verifies the destination has enough free space for the deduplicated data
 4. **Physical layout** — Resolves on-disk physical offsets (`FIEMAP` on Linux, `fcntl` on macOS, `FSCTL` on Windows) and sorts files by block order
-5. **Block copy** — Large files (≥1 MB) are copied with 64 MB buffers. Small files are bundled into a tar block stream for sequential I/O. Duplicates are recreated as hard links
+5. **Block copy** — Large files (≥1 MB) are copied with 64 MB buffers. Small files are streamed via tar pipe (producer→consumer, no temp file on disk). Duplicates are recreated as hard links
 
 After copying, all files are verified against source hashes.
 
@@ -287,7 +287,7 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 - **Block-order reads** — Files read in physical disk order, eliminating random seeks
 - **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links duplicates
 - **Cross-run dedup database** — SQLite cache at drive root; re-runs skip already-copied content
-- **Chunked tar streaming** — 100 MB batches with streaming extraction; no temp files
+- **Streaming tar pipe** — Producer→consumer pipe for local copies (no temp file); chunked 100 MB batches for SSH
 - **SFTP-free SSH transfers** — Uses raw SSH channels with tar; works on servers with SFTP disabled
 - **Flexible source** — Directories, single files, or glob patterns (`*.zip`, `*.iso`)
 - **Pre-flight space check** — Verifies space before writing; walks parent directories for remote paths

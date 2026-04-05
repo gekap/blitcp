@@ -8,6 +8,9 @@
 - **`--log-file`** — Structured JSON log recording every file action (copied, linked, skipped, error) with summary stats, per-file method, link targets, and error messages
 - **Permission preservation** — File permissions (chmod) now preserved on individual copy and remote-to-local transfers, including zero-byte files
 
+### Performance
+- **Streaming tar pipe for local copies** — Small files now stream via an OS pipe (producer thread → consumer thread) instead of writing a temp tar file to disk. No temp file needed, no extra disk space. ~2x faster than the old temp file approach on USB HDDs
+
 ### Security Fixes
 - **Cross-run dedup path validation** — mount-relative paths from SQLite DB are now validated against path traversal (`../`) and resolved against the mount point boundary
 - **SQLite DB symlink protection** — Refuses to open the dedup database if the path is a symlink (prevents write-to-arbitrary-location attacks)

@@ -1696,85 +1696,97 @@ def split_by_size(entries):
 
 def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
     """
-    TRUE BLOCK-LEVEL WRITE for small files:
-      1. Read all small files in physical disk order (sequential source reads)
-      2. Stream them into a tar archive written directly to USB as ONE file
-      3. Extract tar locally on USB (source = USB itself, fast)
-      4. Delete the tar bundle
+    STREAMING BLOCK COPY for small files — no temp file on disk:
+      1. Producer thread reads source files in physical order, writes tar to pipe
+      2. Consumer thread reads tar from pipe, extracts files to destination
 
-    Why this is fast:
-      - Writing 1 tar file = 1 sequential USB write (no per-file overhead)
-      - Reading from source in physical order = sequential disk reads
-      - Extraction reads from USB itself (no cross-device latency)
+    No temporary tar file is created on the destination drive, so this works
+    even when the destination has barely enough free space for the final files.
+    The pipe buffer (~64KB OS default) is the only memory overhead.
     """
     if not small_entries:
         return
 
     small_size = sum(e.size for e in small_entries)
 
-    print(f"  {C.CYAN}Bundling {len(small_entries)} small files ({fmt_size(small_size)}) "
-          f"into single block stream...{C.RESET}")
+    print(f"  {C.CYAN}Streaming {len(small_entries)} small files ({fmt_size(small_size)}) "
+          f"via pipe...{C.RESET}")
 
-    # ── Step 1: Write tar archive to USB (one big sequential write) ───
     os.makedirs(dst_root, exist_ok=True)
-    fd, tar_path = tempfile.mkstemp(suffix='.tar', dir=dst_root)
-    os.close(fd)
 
-    try:
-        with tarfile.open(tar_path, "w") as tar:
-            for entry in small_entries:
-                if cancel_check and cancel_check():
-                    break
-                try:
-                    # Read file into memory (capped at threshold)
-                    with open(entry.src, "rb") as f:
-                        data = f.read(SMALL_FILE_THRESHOLD + 1)
-                    if len(data) != entry.size:
-                        print(f"\n  {C.YELLOW}Warning: {entry.rel} changed size "
-                              f"({entry.size} → {len(data)}){C.RESET}")
+    # Create an OS-level pipe for streaming between producer and consumer
+    read_fd, write_fd = os.pipe()
 
-                    # Create tar entry with metadata
-                    info = tarfile.TarInfo(name=entry.rel)
-                    info.size = len(data)
+    producer_error = [None]  # mutable container for thread error reporting
+    consumer_done = threading.Event()  # signals producer to stop on consumer failure
+
+    def _tar_producer():
+        """Read source files and stream tar entries into the pipe."""
+        write_file = None
+        try:
+            write_file = os.fdopen(write_fd, "wb")
+            with tarfile.open(fileobj=write_file, mode="w|") as tar:
+                for entry in small_entries:
+                    if (cancel_check and cancel_check()) or consumer_done.is_set():
+                        break
                     try:
-                        st = os.stat(entry.src)
-                        info.mtime = st.st_mtime
-                        info.mode = st.st_mode
-                    except OSError:
-                        info.mtime = time.time()
+                        with open(entry.src, "rb") as f:
+                            data = f.read(SMALL_FILE_THRESHOLD + 1)
 
-                    tar.addfile(info, io.BytesIO(data))
-                    _log("copied", entry.rel, entry.size, method="block_stream")
-                    progress.update(len(data), 1)
-                    progress.display()
+                        info = tarfile.TarInfo(name=entry.rel)
+                        info.size = len(data)
+                        try:
+                            st = os.stat(entry.src)
+                            info.mtime = st.st_mtime
+                            info.mode = st.st_mode
+                        except OSError:
+                            info.mtime = time.time()
 
-                except (OSError, IOError) as e:
-                    print(f"\n  {C.RED}Error bundling: {entry.rel}: {e}{C.RESET}")
-                    _log("error", entry.rel, entry.size, error=str(e))
-                    progress.update(entry.size, 1)
+                        tar.addfile(info, io.BytesIO(data))
+                        _log("copied", entry.rel, entry.size, method="block_stream")
+                        progress.update(len(data), 1)
+                        progress.display()
 
-        tar_size = os.path.getsize(tar_path)
-        print(f"\n  {C.GREEN}Block written: {fmt_size(tar_size)} bundle on USB{C.RESET}")
+                    except (BrokenPipeError, OSError, IOError) as e:
+                        if consumer_done.is_set():
+                            break  # consumer closed pipe, stop gracefully
+                        print(f"\n  {C.RED}Error bundling: {entry.rel}: {e}{C.RESET}")
+                        _log("error", entry.rel, entry.size, error=str(e))
+                        progress.update(entry.size, 1)
+        except BrokenPipeError:
+            pass  # consumer closed the read end — normal on error/cancel
+        except Exception as e:
+            producer_error[0] = e
+        finally:
+            if write_file:
+                try:
+                    write_file.close()
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.close(write_fd)
+                except OSError:
+                    pass
 
-    except (OSError, IOError) as e:
-        print(f"\n  {C.RED}Failed to write tar bundle: {e}{C.RESET}")
-        # Cleanup and fall back
-        if os.path.exists(tar_path):
-            os.remove(tar_path)
-        print(f"  {C.YELLOW}Falling back to file-by-file copy...{C.RESET}")
-        copy_individual(small_entries, dst_root, progress,
-                        bytearray(DEFAULT_BUFFER_MB * 1024 * 1024), cancel_check)
-        return
+    # Start producer in background thread
+    producer = threading.Thread(target=_tar_producer, daemon=True)
+    producer.start()
 
-    # ── Step 2: Extract tar locally on USB (per-file, skip errors) ──
-    print(f"  {C.CYAN}Extracting block to individual files on USB...{C.RESET}", end="", flush=True)
-
+    # Consumer: streaming extraction from pipe — files written to dst as they arrive
     extracted = 0
     extract_errors = []
+    read_file = None
 
     try:
-        with tarfile.open(tar_path, "r") as tar:
-            for member in tar.getmembers():
+        read_file = os.fdopen(read_fd, "rb")
+        with tarfile.open(fileobj=read_file, mode="r|") as tar:
+            for member in tar:
+                if member.isdir():
+                    check = _validate_tar_member(member, dst_root)
+                    if check is True:
+                        _safe_tar_extract(tar, member, dst_root)
+                    continue
                 try:
                     result = _safe_tar_extract(tar, member, dst_root)
                     if result is True:
@@ -1783,25 +1795,35 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
                         extract_errors.append((member.name, result))
                 except (OSError, tarfile.TarError) as e:
                     extract_errors.append((member.name, str(e)))
-
-        if extract_errors:
-            print(f"\r  {C.YELLOW}Extracted {extracted} files, "
-                  f"{len(extract_errors)} errors{C.RESET}                    ")
-            for name, err in extract_errors[:5]:
-                print(f"    {C.YELLOW}→ {name}: {err}{C.RESET}")
-            if len(extract_errors) > 5:
-                print(f"    ... and {len(extract_errors) - 5} more")
-        else:
-            print(f"\r  {C.GREEN}Extracted {extracted} files from block{C.RESET}                    ")
-
     except (OSError, tarfile.TarError) as e:
-        print(f"\n  {C.RED}Failed to open tar bundle: {e}{C.RESET}")
+        print(f"\n  {C.RED}Streaming extraction failed: {e}{C.RESET}")
+    finally:
+        consumer_done.set()  # signal producer to stop if still running
+        if read_file:
+            try:
+                read_file.close()
+            except OSError:
+                pass
+        else:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
 
-    # ── Step 3: Remove tar bundle ─────────────────────────────────────
-    try:
-        os.remove(tar_path)
-    except OSError:
-        print(f"  {C.YELLOW}Note: Could not remove bundle {TAR_BUNDLE_NAME} — delete manually{C.RESET}")
+    producer.join(timeout=30)
+
+    if producer_error[0]:
+        print(f"\n  {C.RED}Producer error: {producer_error[0]}{C.RESET}")
+
+    if extract_errors:
+        print(f"\r  {C.YELLOW}Extracted {extracted} files, "
+              f"{len(extract_errors)} errors{C.RESET}                    ")
+        for name, err in extract_errors[:5]:
+            print(f"    {C.YELLOW}→ {name}: {err}{C.RESET}")
+        if len(extract_errors) > 5:
+            print(f"    ... and {len(extract_errors) - 5} more")
+    else:
+        print(f"\r  {C.GREEN}Streamed {extracted} files to destination{C.RESET}                    ")
 
 
 def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
