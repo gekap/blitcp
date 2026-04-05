@@ -59,18 +59,20 @@ jobs:
 
       - name: Install x86_64 Python via Homebrew under Rosetta
         run: |
-          # Install x86_64 Homebrew
+          # Install x86_64 Homebrew to /usr/local
           arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-          # Install x86_64 Python
-          arch -x86_64 /usr/local/bin/brew install python@3.11
+          # Install x86_64 Python (don't link — avoid conflict with ARM brew)
+          arch -x86_64 /usr/local/bin/brew install python@3.11 || true
+          # Find the x86_64 python binary
+          X86_PYTHON="$(find /usr/local/Cellar/python@3.11 -name 'python3.11' -type f | head -1)"
+          echo "X86_PYTHON=$X86_PYTHON" >> $GITHUB_ENV
           # Verify it's x86_64
-          /usr/local/opt/python@3.11/bin/python3.11 -c "import platform; print(f'Python arch: {platform.machine()}')"
+          arch -x86_64 "$X86_PYTHON" -c "import platform; print(f'Python arch: {platform.machine()}')"
 
       - name: Build x86_64 executable
         run: |
-          export PATH="/usr/local/opt/python@3.11/bin:$PATH"
-          arch -x86_64 python3.11 -m pip install pyinstaller xxhash paramiko --quiet --disable-pip-version-check
-          arch -x86_64 python3.11 -m PyInstaller --onefile --name fast_copy --clean --noupx --console --hidden-import=xxhash --hidden-import=paramiko fast_copy.py
+          arch -x86_64 "$X86_PYTHON" -m pip install pyinstaller xxhash paramiko --quiet --disable-pip-version-check
+          arch -x86_64 "$X86_PYTHON" -m PyInstaller --onefile --name fast_copy --clean --noupx --console --hidden-import=xxhash --hidden-import=paramiko fast_copy.py
           file dist/fast_copy
 
       - name: Rename binary
