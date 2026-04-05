@@ -35,6 +35,8 @@ jobs:
 
       - name: Build executable
         run: python build.py
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
 
       - name: Rename binary with platform suffix
         shell: bash
@@ -57,19 +59,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install x86_64 Python via Homebrew under Rosetta
+      - name: Install x86_64 Python via python.org universal installer
         run: |
-          # Install x86_64 Homebrew to /usr/local
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
-          # Install x86_64 Python (don't link — avoid conflict with ARM brew)
-          arch -x86_64 /usr/local/bin/brew install python@3.11 || true
-          # Find the x86_64 python binary
-          X86_PYTHON="$(find /usr/local/Cellar/python@3.11 -name 'python3.11' -type f | head -1)"
+          # Download python.org universal2 installer (supports both arm64 and x86_64, targets macOS 10.9+)
+          curl -fsSL https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg -o python-installer.pkg
+          sudo installer -pkg python-installer.pkg -target /
+          # The universal installer puts python at /usr/local/bin/python3.11
+          X86_PYTHON="/usr/local/bin/python3.11"
           echo "X86_PYTHON=$X86_PYTHON" >> $GITHUB_ENV
-          # Verify it's x86_64
+          # Verify it works under x86_64
           arch -x86_64 "$X86_PYTHON" -c "import platform; print(f'Python arch: {platform.machine()}')"
 
       - name: Build x86_64 executable
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
           arch -x86_64 "$X86_PYTHON" -m pip install pyinstaller xxhash paramiko --quiet --disable-pip-version-check
           arch -x86_64 "$X86_PYTHON" -m PyInstaller --onefile --name fast_copy --clean --noupx --console --hidden-import=xxhash --hidden-import=paramiko fast_copy.py
