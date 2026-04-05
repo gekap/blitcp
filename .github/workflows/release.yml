@@ -16,12 +16,19 @@ jobs:
           - os: ubuntu-latest
             name: linux
             artifact: fast_copy
+            arch: ''
           - os: macos-latest
-            name: macos
+            name: macos-arm64
             artifact: fast_copy
+            arch: ''
+          - os: macos-latest
+            name: macos-intel
+            artifact: fast_copy
+            arch: x64
           - os: windows-latest
             name: windows
             artifact: fast_copy.exe
+            arch: ''
 
     runs-on: ${{ matrix.os }}
 
@@ -32,6 +39,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.arch || '' }}
 
       - name: Build executable
         run: python build.py
