@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.4.1 — 2026-04-05
+
+### Bug Fixes
+- **macOS Intel binary compatibility** — Replaced Homebrew Python with python.org universal installer for the Intel build, fixing `_mkfifoat` symbol error on older macOS versions (pre-Ventura). Set `MACOSX_DEPLOYMENT_TARGET=10.13` for both macOS builds.
+- **Case-insensitive filesystem handling** — Detect filename case conflicts when copying from case-sensitive (Linux) to case-insensitive (macOS/Windows) filesystems (e.g. `Default.html` vs `default.html`). Conflicting files are now skipped in verification and link creation instead of reporting false MISSING/SIZE MISMATCH errors.
+
 ## v2.4.0 — 2026-04-04
 
 ### New Features
