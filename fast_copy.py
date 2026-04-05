@@ -3586,8 +3586,15 @@ def main():
                     "disk order, deduplicates identical files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("source", help="Source folder, file, or glob pattern (e.g. *.zip)")
-    parser.add_argument("destination", help="Destination (USB drive path, etc)")
+    parser.add_argument("--version", "-V", action="store_true",
+                        help="Show version and exit")
+    parser.add_argument("--check-update", action="store_true",
+                        help="Show available updates and release notes")
+    parser.add_argument("--update", nargs="?", const=True, default=False,
+                        metavar="VERSION",
+                        help="Download and install latest (or a specific version)")
+    parser.add_argument("source", nargs="?", help="Source folder, file, or glob pattern (e.g. *.zip)")
+    parser.add_argument("destination", nargs="?", help="Destination (USB drive path, etc)")
     parser.add_argument("--buffer", type=int, default=DEFAULT_BUFFER_MB,
                         help=f"Buffer size in MB (default: {DEFAULT_BUFFER_MB})")
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS,
@@ -3631,6 +3638,14 @@ def main():
                         dest="src_password",
                         help="Prompt for SSH password for remote source")
     args = parser.parse_args()
+
+    # These flags are handled in __main__ before main() is called,
+    # but if someone somehow reaches here, handle gracefully
+    if args.version or args.check_update or args.update:
+        parser.exit(0)
+
+    if not args.source or not args.destination:
+        parser.error("the following arguments are required: source, destination")
 
     global _log_enabled
     if args.log_file:
