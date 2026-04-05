@@ -58,10 +58,6 @@ def build_target(name, script):
         "--hidden-import=paramiko",
     ]
 
-    # Build universal binary on macOS (runs on both Intel and Apple Silicon)
-    if platform.system() == "Darwin":
-        cmd.append("--target-architecture=universal2")
-
     cmd.append(script)
 
     print(f"\n  Building {out}...")
