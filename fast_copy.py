@@ -3093,7 +3093,10 @@ def _get_asset_name():
         if _system == "Linux":
             return "fast_copy-linux"
         elif _system == "Darwin":
-            return "fast_copy-macos"
+            machine = platform.machine().lower()
+            if machine in ("x86_64", "i386"):
+                return "fast_copy-macos-intel"
+            return "fast_copy-macos-arm64"
         elif _system == "Windows":
             return "fast_copy-windows.exe"
     return "fast_copy.py"
