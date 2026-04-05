@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.4.2 — 2026-04-05
+
+### Bug Fixes
+- **Case-insensitive filesystem: preserve all files** — When copying from Linux to macOS/Windows, files that differ only in case (e.g. `Default.html` vs `default.html`) are now automatically renamed (e.g. `Default_2.html`) so both files are preserved. Previously the second file would silently overwrite the first. A full report shows every renamed file with its complete path.
+
 ## v2.4.1 — 2026-04-05
 
 ### Bug Fixes

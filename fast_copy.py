@@ -96,7 +96,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1532,19 +1532,15 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
     return unique_entries, link_map, saved_bytes
 
 
-def create_links(link_map, dst_root, case_conflicts=None):
+def create_links(link_map, dst_root):
     """
     Create hard links for deduplicated files.
     Falls back to symlinks if hard links fail (e.g. FAT32/exFAT USB).
     Falls back to actual copy as last resort.
-    Skips entries in case_conflicts (cannot coexist on case-insensitive FS).
     """
     if not link_map:
         return
-    if case_conflicts is None:
-        case_conflicts = set()
 
-    skipped_case = 0
     print(f"  {C.DIM}Creating {len(link_map)} links for duplicates...{C.RESET}", end="", flush=True)
     hardlink_ok = 0
     symlink_ok = 0
@@ -1552,9 +1548,6 @@ def create_links(link_map, dst_root, case_conflicts=None):
     errors = 0
 
     for dup_rel, target in link_map.items():
-        if dup_rel in case_conflicts:
-            skipped_case += 1
-            continue
         dst_dup = _long_path(os.path.join(dst_root, dup_rel))
         # Target is either a rel path or ("__abs__", full_path) for cross-run dedup
         if isinstance(target, tuple) and target[0] == "__abs__":
@@ -1615,8 +1608,6 @@ def create_links(link_map, dst_root, case_conflicts=None):
         results.append(f"{symlink_ok} symlinks")
     if copy_fallback:
         results.append(f"{copy_fallback} copies (fallback)")
-    if skipped_case:
-        results.append(f"{skipped_case} case-conflicts skipped")
     if errors:
         results.append(f"{C.RED}{errors} errors{C.RESET}")
 
@@ -1644,49 +1635,71 @@ def _fs_case_insensitive(path):
 
 
 def resolve_case_conflicts(entries, link_map, dst):
-    """Detect paths that collide on a case-insensitive filesystem.
+    """Detect and resolve paths that collide on a case-insensitive filesystem.
 
-    Returns a set of rel paths that are involved in case conflicts.
-    These will be excluded from verification errors since the filesystem
-    cannot store both files — only one survives.
+    Renames conflicting files (e.g. Default.html -> Default_2.html) so both
+    are preserved on disk.  Returns (new_entries, new_link_map, renames_dict).
+    renames_dict maps original_rel -> new_rel for use during tar extraction.
     """
     if not _fs_case_insensitive(dst):
-        return set()
+        return entries, link_map, {}
 
+    # Collect all rels (entries first, then link_map keys)
     seen = {}          # lower_rel -> first original rel
-    conflicts = set()  # all rels involved in a case conflict
+    conflicts = {}     # lower_rel -> [rel, rel, ...] including first
 
     all_rels = [e.rel for e in entries] + list(link_map.keys())
     for rel in all_rels:
         low = rel.lower()
         if low in seen:
-            conflicts.add(seen[low])
-            conflicts.add(rel)
+            conflicts.setdefault(low, [seen[low]]).append(rel)
         else:
             seen[low] = rel
 
-    if conflicts:
-        # Group for display
-        groups = defaultdict(list)
-        for rel in all_rels:
-            low = rel.lower()
-            if rel in conflicts:
-                groups[low].append(rel)
+    if not conflicts:
+        return entries, link_map, {}
 
-        n_groups = len(groups)
-        n_files = len(conflicts)
-        print(f"\n  {C.YELLOW}Case-insensitive filesystem: {n_files} files in "
-              f"{n_groups} conflict group{'s' if n_groups != 1 else ''}{C.RESET}")
-        print(f"  {C.DIM}(macOS/Windows cannot store files that differ only in case){C.RESET}")
-        shown = 0
-        for low, rels in list(groups.items()):
-            if shown >= 5:
-                print(f"    {C.DIM}... and {n_groups - shown} more groups{C.RESET}")
-                break
-            print(f"    {C.DIM}conflict: {' vs '.join(rels)}{C.RESET}")
-            shown += 1
+    # Build renames: first occurrence keeps name, rest get _2, _3, ...
+    renames = {}  # original_rel -> new_rel
+    for low, rels in conflicts.items():
+        for i, rel in enumerate(rels[1:], 2):
+            base, ext = posixpath.splitext(rel)
+            new_rel = f"{base}_{i}{ext}"
+            while new_rel.lower() in seen:
+                i += 1
+                new_rel = f"{base}_{i}{ext}"
+            seen[new_rel.lower()] = new_rel
+            renames[rel] = new_rel
 
-    return conflicts
+    # Apply renames to entries (update rel, keep src unchanged for fetching)
+    new_entries = []
+    for e in entries:
+        if e.rel in renames:
+            new_entries.append(FileEntry(e.src, renames[e.rel], e.size,
+                                        e.physical_offset, e.content_hash))
+        else:
+            new_entries.append(e)
+
+    # Apply renames to link_map (both keys and values may need renaming)
+    new_link_map = {}
+    for dup_rel, target in link_map.items():
+        new_key = renames.get(dup_rel, dup_rel)
+        if isinstance(target, str):
+            new_val = renames.get(target, target)
+        else:
+            new_val = target  # ("__abs__", path) — no rename needed
+        new_link_map[new_key] = new_val
+
+    # Report
+    n_groups = len(conflicts)
+    print(f"\n  {C.YELLOW}Case-insensitive filesystem: {len(renames)} file{'s' if len(renames) != 1 else ''} "
+          f"renamed to avoid conflicts:{C.RESET}")
+    for old, new in renames.items():
+        print(f"    {C.DIM}{old}{C.RESET}")
+        print(f"      -> {C.BOLD}{new}{C.RESET}")
+    print()
+
+    return new_entries, new_link_map, renames
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2317,13 +2330,9 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
 # ════════════════════════════════════════════════════════════════════════════
 # VERIFICATION
 # ════════════════════════════════════════════════════════════════════════════
-def verify_copy(entries, link_map, dst_root, case_conflicts=None):
+def verify_copy(entries, link_map, dst_root):
     """Check existence + file size for all files (unique + linked).
-    Uses a single os.walk pass instead of per-file stat calls.
-    Files in case_conflicts are excluded from error reporting (they cannot
-    coexist on case-insensitive filesystems)."""
-    if case_conflicts is None:
-        case_conflicts = set()
+    Uses a single os.walk pass instead of per-file stat calls."""
     total_to_check = len(entries) + len(link_map)
     print(f"\n  {C.DIM}Verifying {total_to_check} files...{C.RESET}", end="", flush=True)
 
@@ -2352,8 +2361,6 @@ def verify_copy(entries, link_map, dst_root, case_conflicts=None):
     mismatches = []
     missing = []
     for rel, exp_size in expected.items():
-        if rel in case_conflicts:
-            continue  # skip — cannot coexist on case-insensitive FS
         if rel not in found:
             tag = " (link)" if exp_size is None else ""
             missing.append(f"{rel}{tag}")
@@ -2361,13 +2368,9 @@ def verify_copy(entries, link_map, dst_root, case_conflicts=None):
             mismatches.append((rel, exp_size, found[rel]))
 
     total_checked = len(expected)
-    n_skipped = len(case_conflicts & set(expected.keys()))
 
     if not missing and not mismatches:
-        msg = f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}"
-        if n_skipped:
-            msg += f" {C.DIM}({n_skipped} case-conflicts skipped){C.RESET}"
-        print(msg + "               ")
+        print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}               ")
         return True
     else:
         print(f"\r  {C.RED}✗ Verification failed:{C.RESET}")
@@ -2607,7 +2610,8 @@ def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS):
 # REMOTE → LOCAL COPY
 # ════════════════════════════════════════════════════════════════════════════
 
-def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size):
+def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
+                                    case_renames=None):
     """Download large files from remote to local via SFTP."""
     sftp = ssh.open_sftp()
 
@@ -2661,7 +2665,7 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size):
 class _ProgressTarExtractor:
     """Extract tar members with byte-level progress for large files."""
 
-    def __init__(self, tar, dst_root, progress, allowed_files=None):
+    def __init__(self, tar, dst_root, progress, allowed_files=None, rename_map=None):
         self._tar = tar
         self._dst_root = dst_root
         self._progress = progress
@@ -2669,6 +2673,8 @@ class _ProgressTarExtractor:
         self.rejected = 0
         # If provided, only extract files in this set (prevents injection)
         self._allowed = set(allowed_files) if allowed_files else None
+        # Map of original_name -> new_name for case-conflict renames
+        self._rename_map = rename_map or {}
 
     # Maximum bytes to extract from a single tar member (50 GB safety limit)
     MAX_MEMBER_SIZE = 50 * 1024 * 1024 * 1024
@@ -2693,6 +2699,10 @@ class _ProgressTarExtractor:
         if self._allowed is not None and member.name not in self._allowed:
             self.rejected += 1
             return "blocked: unexpected file (not in transfer list)"
+
+        # Apply case-conflict rename if needed
+        if member.name in self._rename_map:
+            member.name = self._rename_map[member.name]
 
         # Empty or small file — extract normally, update after
         if member.size < 1 * 1024 * 1024:
@@ -2750,11 +2760,14 @@ class _ProgressTarExtractor:
         return True
 
 
-def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress):
+def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
+                                   case_renames=None):
     """Download one batch of files via tar stream with streaming extraction."""
     import threading
 
-    file_list = "\0".join(e.rel for e in batch) + "\0"
+    # Build reverse map: new_rel -> original_rel (for fetching from remote)
+    _rev = {v: k for k, v in (case_renames or {}).items()}
+    file_list = "\0".join(_rev.get(e.rel, e.rel) for e in batch) + "\0"
     file_list_bytes = file_list.encode("utf-8")
 
     channel = ssh.open_channel()
@@ -2779,8 +2792,13 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress):
     extracted = 0
     try:
         with tarfile.open(fileobj=reader, mode="r|") as tar:
-            allowed = [e.rel for e in batch]
-            extractor = _ProgressTarExtractor(tar, dst_root, progress, allowed_files=allowed)
+            # Allowlist uses original names (as they arrive from remote tar)
+            allowed = [_rev.get(e.rel, e.rel) for e in batch]
+            # Rename map: original_name -> new_name for case-conflict files
+            rename_map = {v: k for k, v in _rev.items()}  # original -> new
+            extractor = _ProgressTarExtractor(tar, dst_root, progress,
+                                              allowed_files=allowed,
+                                              rename_map=rename_map)
             for member in tar:
                 try:
                     result = extractor.extract_member(member)
@@ -2806,14 +2824,16 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress):
     return extracted
 
 
-def copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress):
+def copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress,
+                                      case_renames=None):
     """Download files from remote via chunked tar streams with streaming extraction."""
     if not entries:
         return
 
     if not ssh.caps.get("tar"):
         print(f"  {C.YELLOW}Remote has no tar — falling back to SFTP{C.RESET}")
-        copy_individual_remote_to_local(entries, ssh, dst_root, progress, 1 * 1024 * 1024)
+        copy_individual_remote_to_local(entries, ssh, dst_root, progress, 1 * 1024 * 1024,
+                                        case_renames=case_renames)
         return
 
     safe_entries = [e for e in entries if _validate_rel_path(e.rel) is True]
@@ -2832,12 +2852,13 @@ def copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress
             print(f"\n  {C.DIM}Batch {i+1}/{len(batches)}: {len(batch)} files "
                   f"({fmt_size(batch_size)}){C.RESET}")
         total_extracted += _stream_tar_batch_from_remote(
-            batch, ssh, src_root, dst_root, progress)
+            batch, ssh, src_root, dst_root, progress, case_renames=case_renames)
 
     print(f"\n  {C.GREEN}Extracted {total_extracted} files{C.RESET}")
 
 
-def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_size):
+def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_size,
+                                case_renames=None):
     """Remote-to-local: tar stream for all files (much faster than SFTP)."""
     total_size = sum(e.size for e in entries)
 
@@ -2845,7 +2866,8 @@ def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_
         print(f"  Strategy: tar stream for all {C.BOLD}{len(entries)}{C.RESET} files "
               f"({C.BOLD}{fmt_size(total_size)}{C.RESET})")
         print()
-        copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress)
+        copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress,
+                                          case_renames=case_renames)
     else:
         # Fallback: SFTP for everything if tar not available
         small, large = split_by_size(entries)
@@ -2858,7 +2880,8 @@ def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_
         print(f"    Large files (≥1MB): {C.BOLD}{len(large)}{C.RESET} files, "
               f"{C.BOLD}{fmt_size(large_size)}{C.RESET}")
         print()
-        copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size)
+        copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
+                                        case_renames=case_renames)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -3590,10 +3613,11 @@ def main():
 
     unique_size = sum(e.size for e in copy_entries)
 
-    # ── Case-conflict detection for local destinations ──────────────
-    case_conflicts = set()
+    # ── Case-conflict resolution for local destinations ─────────────
+    case_renames = {}
     if not dst_remote:
-        case_conflicts = resolve_case_conflicts(copy_entries, link_map, dst)
+        copy_entries, link_map, case_renames = resolve_case_conflicts(
+            copy_entries, link_map, dst)
 
     # ══════════════════════════════════════════════════════════════════
     # REMOTE → REMOTE FLOW
@@ -3893,19 +3917,20 @@ def main():
 
             progress = Progress(unique_size, len(copy_entries))
             t0 = time.time()
-            copy_hybrid_remote_to_local(copy_entries, src_ssh, src, dst, progress, buf_size)
+            copy_hybrid_remote_to_local(copy_entries, src_ssh, src, dst, progress, buf_size,
+                                        case_renames=case_renames)
             progress.finish()
 
             # Create links locally
             if link_map:
-                create_links(link_map, dst, case_conflicts)
+                create_links(link_map, dst)
 
             elapsed = time.time() - t0
             speed = unique_size / elapsed if elapsed > 0 else 0
 
             # Verify
             if not args.no_verify:
-                verify_copy(copy_entries, link_map, dst, case_conflicts)
+                verify_copy(copy_entries, link_map, dst)
 
             # Summary
             banner("DONE")
@@ -4186,7 +4211,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
     # Create links for duplicates
     if link_map:
-        create_links(link_map, dst, case_conflicts)
+        create_links(link_map, dst)
 
     elapsed = time.time() - t0
     speed = unique_size / elapsed if elapsed > 0 else 0
@@ -4203,7 +4228,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, entries, dedup_db,
 
     # ── Verify ────────────────────────────────────────────────────────
     if not args.no_verify:
-        verify_copy(copy_entries, link_map, dst, case_conflicts)
+        verify_copy(copy_entries, link_map, dst)
 
     # ── Summary ───────────────────────────────────────────────────────
     banner("DONE")
