@@ -56,8 +56,13 @@ def build_target(name, script):
         "--console",
         "--hidden-import=xxhash",
         "--hidden-import=paramiko",
-        script,
     ]
+
+    # Build universal binary on macOS (runs on both Intel and Apple Silicon)
+    if platform.system() == "Darwin":
+        cmd.append("--target-architecture=universal2")
+
+    cmd.append(script)
 
     print(f"\n  Building {out}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
