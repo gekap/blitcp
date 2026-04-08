@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.4.6 — 2026-04-08
+
+### Bug Fixes
+- **Windows drive letter misdetected as SSH remote** — Local Windows paths like `C:\Users\...` were incorrectly parsed as SSH remote targets (host `C`, path `\Users\...`), causing `getaddrinfo failed` errors. Single-letter hostnames are now recognized as drive letters and treated as local paths
+
 ## v2.4.5 — 2026-04-07
 
 ### Bug Fixes

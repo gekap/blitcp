@@ -100,7 +100,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.5"
+__version__ = "2.4.6"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -467,6 +467,9 @@ def parse_remote_path(path_str):
         # Host must not contain whitespace
         m = re.match(r'^(?:([^@]+)@)?([^:\s]+):(.+)$', path_str)
     if not m:
+        return None
+    # Single-letter host is a Windows drive letter (e.g. C:\), not a remote
+    if len(m.group(2)) == 1 and m.group(2).isalpha():
         return None
     user = m.group(1) or getpass.getuser()
     host = m.group(2)
