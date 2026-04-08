@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.4.8 — 2026-04-08
+
+### New Features
+- **File-path destination for single-file copies** — When copying a single file, the destination can now be a file path (e.g. `fast_copy host:file.tar.gz /local/renamed.tar.gz`). Works across all modes: L2L, R2L, L2R, R2R. A trailing `/` or `\` forces directory interpretation
+
+### Bug Fixes
+- **Windows verify crash on device paths** — Fixed `ValueError: path is on mount '\\.\nul'` crash during post-copy verification when `os.walk` encountered Windows device paths. Cross-mount paths are now skipped with a warning
+- **Remote single-file copy failed with "Not a directory"** — Copying a single file from a remote source (e.g. `host:/path/to/file.tar.gz`) failed because the tar command tried to `cd` into the file path instead of its parent directory. The remote source path is now correctly adjusted to the parent directory when the target is a single file
+
+### Security Fixes
+- **File-destination heuristic hardened** — Uses `splitext()` instead of checking for any dot in the basename, preventing false positives on hidden directories (`.outputs`, `.config`) that would be misinterpreted as file targets
+- **R2R rename error checking** — Remote-to-remote post-copy rename now checks the exit code and warns on failure instead of silently continuing
+
 ## v2.4.7 — 2026-04-08
 
 ### Bug Fixes

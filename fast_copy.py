@@ -100,7 +100,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.7"
+__version__ = "2.4.8"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2383,7 +2383,13 @@ def verify_copy(entries, link_map, dst_root):
     for root, dirs, files in os.walk(walk_root):
         for fname in files:
             full = os.path.join(root, fname)
-            rel = os.path.relpath(_strip_long_path(full), rel_base).replace(os.sep, "/")
+            try:
+                rel = os.path.relpath(_strip_long_path(full), rel_base).replace(os.sep, "/")
+            except ValueError:
+                # Windows: path on a different mount (e.g. \\.\nul device)
+                print(f"\n  {C.DIM}Skipped verify for cross-mount path: "
+                      f"{fname}{C.RESET}", end="", flush=True)
+                continue
             if rel in expected:
                 try:
                     found[rel] = os.path.getsize(full)
@@ -3867,6 +3873,52 @@ def main():
             src_ssh.close()
         sys.exit(0)
 
+    # ── Single-file destination rename ───────────────────────────────
+    # When copying a single file, allow the destination to be a file path
+    # (like cp/scp): fast_copy host:file.tar.gz /local/renamed.tar.gz
+    # Detect this when the destination looks like a file (has a dot-extension
+    # in the basename, or already exists as a file) and is not an existing
+    # directory.  Adjust dst to parent dir and rename the entry.
+    # For remote sources, we track the rename separately (via case_renames)
+    # because entry.rel must stay as the original filename for tar to find it.
+    _dst_file_rename = None  # (new_rel, old_rel) if file-destination detected
+    if len(entries) == 1 and (src_mode in ("file", "remote") or
+                              (src_mode == "glob" and len(glob_files) == 1)):
+        _detected = False
+        if dst_remote:
+            dst_base = posixpath.basename(dst)
+            dst_parent = posixpath.dirname(dst)
+            # Use splitext to require a real extension — avoids false positives
+            # on hidden dirs like .outputs, .config (no extension after the dot).
+            _, ext = posixpath.splitext(dst_base)
+            if dst_parent and ext and not dst.endswith("/"):
+                _detected = True
+                dst = dst_parent
+        else:
+            if not os.path.isdir(dst) and not dst.endswith(("/", os.sep)):
+                dst_base = os.path.basename(dst)
+                dst_parent = os.path.dirname(dst)
+                _, ext = os.path.splitext(dst_base)
+                is_file_target = os.path.isfile(dst) or bool(ext)
+                if is_file_target and dst_parent:
+                    _detected = True
+                    dst = dst_parent
+
+        if _detected:
+            old_rel = entries[0].rel
+            if src_remote:
+                # For remote sources, keep entry.rel as-is (tar needs it).
+                # The rename is applied via case_renames during extraction.
+                _dst_file_rename = (dst_base, old_rel)
+            else:
+                # For local sources, we can rename entry.rel directly since
+                # the file is read by its absolute src path, not rel.
+                e = entries[0]
+                entries[0] = FileEntry(e.src, dst_base, e.size,
+                                       e.physical_offset, e.content_hash)
+            print(f"  {C.DIM}Destination is a file path — "
+                  f"saving as {dst_base}{C.RESET}")
+
     total_size = sum(e.size for e in entries)
     total_files = len(entries)
     avg_size = total_size / total_files if total_files else 0
@@ -3902,6 +3954,26 @@ def main():
     if not dst_remote:
         copy_entries, link_map, case_renames = resolve_case_conflicts(
             copy_entries, link_map, dst)
+
+    # Inject file-destination rename for remote-source copies.
+    # case_renames maps {original_rel: new_rel} — _stream_tar_batch_from_remote
+    # uses this to fetch by original name and extract as new name.
+    # For R2R: tar pipe has no rename mechanism, so rename after copy.
+    if _dst_file_rename is not None:
+        new_rel, old_rel = _dst_file_rename
+        if src_remote and not dst_remote:
+            # R2L: inject into case_renames (original → new) and update
+            # entry.rel to new name for verify/incremental checks.
+            case_renames[old_rel] = new_rel
+            for i, e in enumerate(copy_entries):
+                if e.rel == old_rel:
+                    copy_entries[i] = FileEntry(e.src, new_rel, e.size,
+                                                e.physical_offset, e.content_hash)
+                    break
+        elif src_remote and dst_remote:
+            # R2R: can't rename during tar pipe — will rename after copy.
+            # _dst_file_rename stays set; handled after copy_hybrid_r2r.
+            pass
 
     # ══════════════════════════════════════════════════════════════════
     # REMOTE → REMOTE FLOW
@@ -4070,6 +4142,24 @@ def main():
             t0 = time.time()
             copy_hybrid_r2r(copy_entries, src_ssh, dst_ssh, src, dst, progress, buf_size)
             progress.finish()
+
+            # Post-copy rename for R2R file-destination
+            if _dst_file_rename is not None and copy_entries:
+                new_rel, old_rel = _dst_file_rename
+                old_path = posixpath.join(dst, old_rel)
+                new_path = posixpath.join(dst, new_rel)
+                _, mv_err, mv_rc = dst_ssh.exec_cmd(
+                    f"mv {shlex.quote(old_path)} {shlex.quote(new_path)}")
+                if mv_rc != 0:
+                    print(f"  {C.YELLOW}Warning: rename failed on destination: "
+                          f"{mv_err.strip()}{C.RESET}")
+                else:
+                    # Update entry.rel so verify sees the new name
+                    for i, e in enumerate(copy_entries):
+                        if e.rel == old_rel:
+                            copy_entries[i] = FileEntry(e.src, new_rel, e.size,
+                                                        e.physical_offset, e.content_hash)
+                            break
 
             # Create links on dest
             if link_map:
