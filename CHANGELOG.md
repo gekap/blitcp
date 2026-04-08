@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.4.7 — 2026-04-08
+
+### Bug Fixes
+- **Remote single-file copy failed with "Not a directory"** — Copying a single file from a remote source (e.g. `host:/path/to/file.tar.gz`) failed because the tar command tried to `cd` into the file path instead of its parent directory. The remote source path is now correctly adjusted to the parent directory when the target is a single file
+
 ## v2.4.6 — 2026-04-08
 
 ### Bug Fixes

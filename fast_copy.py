@@ -100,7 +100,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.6"
+__version__ = "2.4.7"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -3827,6 +3827,16 @@ def main():
 
     if src_mode == "remote":
         entries, errors = scan_remote_source(src_ssh, src, args.exclude)
+        # If the remote source was a single file (not a directory), the find
+        # command returns rel="." because relpath(file, file) == ".".
+        # Fix rel to the basename and adjust src to the parent directory,
+        # mirroring the local "file" mode logic, so that tar cd works.
+        if len(entries) == 1 and entries[0].rel == ".":
+            fname = posixpath.basename(src)
+            e = entries[0]
+            entries[0] = FileEntry(e.src, fname, e.size,
+                                   e.physical_offset, e.content_hash)
+            src = posixpath.dirname(src)
     elif src_mode == "file":
         fname = os.path.basename(src)
         sz = os.path.getsize(src)
