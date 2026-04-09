@@ -1,5 +1,168 @@
 # Changelog
 
+## v3.0.0 — 2026-04-09
+
+Major release. Introduces automatic filesystem detection, explicit hash
+algorithm selection, honest dedup accounting on link-incapable
+filesystems, improved duplicate-handling reporting, and several
+correctness fixes discovered during real-world testing against a
+Synology NAS. 289 automated tests covering all 4 copy modes,
+filesystem detection, security hardening, resource leaks, MITM
+defenses, and pentest scenarios — all passing.
+
+### New Features
+
+- **Automatic filesystem detection** — fast-copy now detects the destination
+  filesystem type and its capabilities (hardlink, symlink, reflink,
+  case-sensitivity) before Phase 2. The detected strategy is shown in the
+  banner alongside the existing `Dedup:` line (e.g. `Dedup: enabled (hardlink)`
+  or `Dedup: enabled (reflink)` on btrfs/XFS-reflink/APFS). Uses cheap per-OS
+  APIs (Linux `/proc/self/mountinfo`, macOS `statfs(2)`, Windows
+  `GetVolumeInformationW`) plus targeted probes only for ambiguous
+  filesystems. Adds ~5 ms per copy.
+
+- **`--hash=auto|xxh128|sha256` flag** — Users can now explicitly choose
+  the hash algorithm for dedup and verification:
+  - `auto` (default): xxh128 if the `xxhash` package is installed, else
+    sha256. Matches prior behavior.
+  - `xxh128`: force xxh128 (10× faster, non-cryptographic). Errors with a
+    clear install hint if `xxhash` is missing.
+  - `sha256`: force sha256 (cryptographic, collision-resistant). Useful
+    when your source tree may contain adversarially-crafted files.
+  The selected algorithm is printed in the main banner alongside the
+  Dedup line so the trust boundary is visible upfront.
+
+- **`-v` / `--verbose` flag** — Enables detailed FS detection output in
+  the banner: FS type, capability matrix (hardlink/symlink/reflink/case),
+  detection and probe timings.
+
+- **Honest dedup accounting on link-incapable filesystems** — On
+  filesystems that cannot use hardlinks or symlinks (FAT32, exFAT), dedup
+  previously reported a misleading "Space saved: X MB" message even though
+  duplicates were materialized as full copies. The dedup print now shows
+  `Bandwidth saved: X (transfer only)` and `Disk usage: Y (full copies —
+  FS does not support links)`, and the Phase 3 space check uses the full
+  undeduplicated size to prevent unexpected `ENOSPC` errors mid-copy.
+
+- **File-path destination for single-file copies** — When copying a single
+  file, the destination can now be a file path (e.g.
+  `fast_copy host:file.tar.gz /local/renamed.tar.gz`). Works across all
+  four modes: L2L, R2L, L2R, R2R. A trailing `/` or `\` forces directory
+  interpretation. Detection uses `splitext()` so hidden directories
+  (`.config`, `.outputs`) are not misinterpreted as file targets.
+
+- **Improved duplicate-handling summary** — Phase 6 now prints a clear
+  per-type breakdown of how duplicates were handled:
+  ```
+  Duplicate handling:
+    ✓ Hardlinks:          46951 (shared inode; zero extra disk)
+    → all disk savings realized
+  ```
+  And on FAT32:
+  ```
+  Duplicate handling:
+    ✗ Full copies:         2 (FS does not support links — no disk savings)
+    → no disk savings (bandwidth only)
+  ```
+
+### Bug Fixes
+
+- **Synology NAS: `tar -T /dev/stdin` permission denied** — fast-copy's
+  remote tar streaming used `tar cf - --null -T /dev/stdin` to pass the
+  file list. On Synology DSM (and some other appliance OSes), paramiko's
+  `exec_command()` can't open `/dev/stdin` via path resolution, causing
+  all R2L and R2R operations against Synology to fail. Switched to
+  `tar -T -` (read file list directly from stdin) which works universally
+  across GNU tar, BSD tar, and busybox tar. **Without this fix, fast-copy
+  was completely broken against Synology NAS and similar devices.**
+
+- **Stale manifest silent data loss** — `filter_unchanged_remote()` used
+  the `.fast_copy_manifest.json` as the source of truth for both file
+  existence AND content hashes. If files were deleted at the destination
+  between runs but the manifest remained, fast-copy would report "DONE —
+  All files up to date" and skip the entire copy while the destination
+  was actually empty. Now always scans the remote for actual file
+  existence; the manifest is used only as a hash cache, and only for
+  files whose size still matches what's currently on the remote.
+
+- **Windows verify crash on device paths** — Fixed `ValueError: path is on
+  mount '\\.\nul'` crash during post-copy verification when `os.walk`
+  encountered Windows device paths. Cross-mount paths are now skipped
+  with a warning.
+
+- **FAT32 Phase 3 space check underreported required size** — On
+  filesystems where dedup falls back to full copies, the space check
+  reported only `unique_size` (deduped) as required, while the actual
+  disk usage would be `unique_size + saved_bytes` (full). Users could pass
+  the space check and then hit `ENOSPC` mid-copy. Fixed to use the full
+  size when `strategy == "none"`.
+
+### Security
+
+- **fs_detect hardening**:
+  - `_make_probe_dir()` uses 128-bit entropy (was 32-bit), single-level
+    `os.mkdir(mode=0o700)` (not `makedirs`), and post-create `lstat`
+    verification against symlink-swap races.
+  - `_cleanup_probe_dir()` uses `os.walk(followlinks=False)` with per-entry
+    `lstat` so symlinks injected into the probe dir are unlinked, never
+    followed.
+  - `_walk_up_to_existing()` rejects null-byte paths and tolerates symlink
+    loops.
+  - Linux `ioctl(FICLONE)` constant is architecture-guarded (skips probe
+    on PowerPC/MIPS/SPARC/Alpha where the ABI differs).
+  - `/proc/self/mountinfo` parser now decodes the documented octal escape
+    sequences for whitespace in mount points.
+
+- **MITM defenses verified** — 16 new live attack tests exercise fast-copy's
+  SSH host key verification: wrong key planted in `known_hosts` is
+  rejected, `--no-verify` does not bypass host key checking, the TOFU
+  prompt rejects on empty input / `n` / EOF, no environment variable
+  bypass, `BadHostKeyException` propagates as expected, update download
+  is HTTPS-only + pinned to GitHub domains + SSL `CERT_REQUIRED` enforced.
+
+- **Pentest scenarios** — 21 executable security scenarios covering
+  symlink attacks on destination, path traversal (direct filenames and
+  tar archive members), race conditions, DoS (10K files, 100-deep
+  nesting, circular symlinks, 1 GB sparse file, 100 hardlinks), DedupDB
+  and manifest attacks, and fs_detect probe-directory attacks. All 21
+  pass with zero vulnerabilities found.
+
+### Internals
+
+- **`fs_detect` merged inline into `fast_copy.py`** — The filesystem
+  detection module developed as a separate file is now inlined as a
+  clearly-marked section of `fast_copy.py`. `fs_detect.py` remains as a
+  44-line compatibility shim so existing tests continue to import it
+  directly. Single-file distribution preserved; total repo line count
+  decreased by ~4,900.
+
+- **Test suite expansion** — **289 tests** across 8 test files:
+  `test_v247.py` (98), `test_fs_detect.py` (58), `test_all_args.py` (60),
+  `test_mitm.py` (16), `test_fs_detect_leaks.py` (11), `test_synology.py`
+  (10 live NAS end-to-end), `test_dist_all_fs.py` (15 per-filesystem),
+  `pentest_scenarios.py` (21 security scenarios).
+
+### Upgrade notes
+
+- **No breaking behavioral changes** for existing use cases. Existing
+  command lines continue to work identically. The banner shows a new
+  `Hash:` line by default; `--no-dedup` suppresses it.
+
+- **Users on FAT32 / exFAT destinations** will notice that the dedup
+  summary and Phase 3 space check now show the full (undeduplicated)
+  size. This is a correctness fix — the previous numbers were misleading,
+  not a reduction in functionality. Network bandwidth savings from dedup
+  are unchanged.
+
+- **Users against Synology NAS or similar appliance OSes** should see
+  R2L / R2R / round-trip copies work for the first time after the tar
+  stdin fix.
+
+- **Users with stale `.fast_copy_manifest.json` files** at their
+  destination from a previous run that has since been cleaned will now
+  see the files actually get copied instead of a silent "up to date"
+  report. This is a correctness fix.
+
 ## v2.4.8 — 2026-04-08
 
 ### New Features

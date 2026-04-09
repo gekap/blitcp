@@ -5,10 +5,15 @@ A fast, cross-platform command-line tool for copying files and directories at ma
 **Key capabilities:**
 - Reads files in **physical disk order** (eliminates random seeks on HDDs)
 - **Content-aware deduplication** — copies each unique file once, hard-links duplicates
+- **Automatic filesystem detection** — detects reflink/hardlink/symlink/none capability on the destination and picks the safest dedup strategy
+- **Honest dedup accounting** — on link-incapable destinations (FAT32, exFAT) reports "Bandwidth saved" separately from disk usage
 - **Cross-run dedup database** — SQLite cache remembers hashes across runs
+- **Explicit hash algorithm selection** — `--hash=auto|xxh128|sha256` with `auto` preferring the fast `xxh128` if available
 - **SSH remote transfers** — local↔remote and remote↔remote with tar pipe streaming
 - **Chunked streaming** — 100 MB tar batches with streaming extraction (no temp files)
 - **Pre-flight space check** and **post-copy verification**
+- **Synology NAS compatible** — busybox / non-standard OSes are supported via portable tar stdin handling
+- **File-path destination for single-file copies** — `fast_copy host:file.tar.gz /local/renamed.tar.gz` works like `scp`/`cp`
 - Works on **Linux**, **macOS**, and **Windows** (including long paths >260 chars)
 
 ## Why fast-copy?
@@ -88,6 +93,88 @@ When both source and destination are remote SSH servers, data relays through you
 
 The two servers do not need to reach each other directly. Data streams through in ~100 MB tar batches — your machine never stores the full dataset.
 
+### Filesystem detection and dedup strategy
+
+Before Phase 2, fast-copy detects the destination filesystem and probes its actual capabilities (hardlink, symlink, reflink CoW clones, case-sensitivity). Detection is ~5 ms on warm cache and uses cheap per-OS APIs (`/proc/self/mountinfo` on Linux, `statfs(2)` on macOS, `GetVolumeInformationW` on Windows) with targeted probes only for ambiguous filesystems (XFS reflink, NTFS Dev Drive, network mounts, FUSE).
+
+The detected strategy is shown in the banner alongside the `Dedup:` line:
+
+| Destination filesystem | Strategy | What it means |
+|---|---|---|
+| btrfs, XFS (reflink=1), APFS, ReFS, bcachefs | **reflink** | CoW clones — duplicates share data on disk but diverge on write |
+| ext4, tmpfs, NTFS, HFS+, f2fs, zfs, NFS, SMB, most others | **hardlink** | Duplicates become hardlinks — zero extra disk space, but all names share an inode |
+| FAT32, exFAT, some FUSE mounts | **none** | No links at all — duplicates are materialized as full copies |
+
+On link-incapable filesystems (`strategy: none`), the dedup summary **honestly reports what happened**:
+
+```
+Dedup complete:
+  Unique files:    44718
+  Total duplicates: 46951 (51.2% of files)
+  Bandwidth saved: 378.5 MB (transfer only)
+  Disk usage:      888.2 MB (full copies — FS does not support links)
+```
+
+And the Phase 3 space check uses the full undeduplicated size so you never hit `ENOSPC` mid-copy because of misleading dedup accounting.
+
+For verbose output including FS type, capability matrix, and detection/probe timings, pass `-v` / `--verbose`:
+
+```
+FS:          xfs → reflink
+             hardlink=y symlink=y reflink=y case=sens
+             detect=4.3ms probe=1.1ms (4 probes)
+```
+
+### Hash algorithm selection
+
+fast-copy uses a content hash to detect duplicates during dedup and to verify files after copy. Choose the algorithm with `--hash`:
+
+| Flag | Algorithm | When to use |
+|---|---|---|
+| `--hash=auto` *(default)* | `xxh128` if the `xxhash` package is installed, else `sha256` | General use — fastest available |
+| `--hash=xxh128` | xxh128 (128-bit, ~10× faster) | Force the fast non-cryptographic hash. Errors with a clear install hint if `xxhash` is missing. |
+| `--hash=sha256` | SHA-256 (cryptographic) | Force collision-resistant hashing — recommended for adversarial environments or when you want strong guarantees against crafted collisions |
+
+The selected algorithm is shown in the banner upfront so the trust boundary is visible:
+
+```
+  Hash:        xxh128 (non-cryptographic; default)
+```
+
+or
+
+```
+  Hash:        sha256 (cryptographic; forced)
+```
+
+### Duplicate-handling summary
+
+After Phase 5, fast-copy prints a per-type breakdown of how the duplicates were actually handled on the destination:
+
+```
+Duplicate handling:
+  ✓ Hardlinks:          46951 (shared inode; zero extra disk)
+  → all disk savings realized
+```
+
+On FAT32, where links aren't available:
+
+```
+Duplicate handling:
+  ✗ Full copies:            2 (FS does not support links — no disk savings)
+  → no disk savings (bandwidth only)
+```
+
+Mixed cases (rare — some filesystems fall back to symlinks):
+
+```
+Duplicate handling:
+  ✓ Hardlinks:             45 (shared inode; zero extra disk)
+  ~ Symlinks:               3 (pointer to canonical; canonical must not be deleted)
+  ✗ Full copies:            2 (FS does not support links — no disk savings)
+  → 48/50 linked, 2 copied
+```
+
 ## Platform Requirements
 
 | Platform | Minimum Version | Notes |
@@ -127,8 +214,9 @@ If xxHash is not installed, fast-copy silently falls back to SHA-256.
 
 ```
 usage: fast_copy.py [-h] [--buffer BUFFER] [--threads THREADS] [--dry-run]
-                    [--no-verify] [--no-dedup] [--no-cache] [--force]
-                    [--overwrite] [--exclude EXCLUDE]
+                    [-v] [--no-verify] [--no-dedup] [--hash {auto,xxh128,sha256}]
+                    [--no-cache] [--force] [--overwrite] [--exclude EXCLUDE]
+                    [--log-file LOG_FILE]
                     [--ssh-src-port PORT] [--ssh-src-key PATH] [--ssh-src-password]
                     [--ssh-dst-port PORT] [--ssh-dst-key PATH] [--ssh-dst-password]
                     [-z]
@@ -146,9 +234,14 @@ options:
   --buffer BUFFER         Buffer size in MB (default: 64)
   --threads THREADS       Threads for hashing/layout (default: 4)
   --dry-run               Show copy plan without copying
+  -v, --verbose           Verbose output (full FS detection details, etc.)
   --no-verify             Skip post-copy verification
   --log-file LOG_FILE     Write structured JSON log to file
   --no-dedup              Disable deduplication
+  --hash ALGO             Hash algorithm: auto (default), xxh128, or sha256
+                          auto  = xxh128 if installed, else sha256
+                          xxh128= 10× faster, non-cryptographic
+                          sha256= cryptographic, collision-resistant
   --no-cache              Disable persistent hash cache (cross-run dedup database)
   --force                 Skip space check, copy even if not enough space
   --overwrite             Overwrite all files, skip identical-file detection
@@ -214,10 +307,22 @@ python fast_copy.py /local/data "user@nas:/volume1/Shared Folder/backup" \
 # Dry run (preview without copying)
 python fast_copy.py /data /mnt/usb/data --dry-run
 
-# Skip deduplication (faster for unique files)
+# Verbose output with full FS detection details
+python fast_copy.py /data /mnt/usb/data -v
+
+# Force SHA-256 (cryptographic, collision-resistant) for dedup hashing
+python fast_copy.py /data /mnt/usb/data --hash=sha256
+
+# Force xxh128 (fastest) — errors if xxhash not installed
+python fast_copy.py /data /mnt/usb/data --hash=xxh128
+
+# Copy a single file with a new name at the destination (like cp/scp)
+python fast_copy.py user@host:/data/archive.tar.gz /backup/renamed.tar.gz
+
+# Skip deduplication (faster for known-unique files)
 python fast_copy.py /data /mnt/usb/data --no-dedup
 
-# Exclude directories
+# Exclude files/directories by name
 python fast_copy.py /project /mnt/usb/project --exclude node_modules --exclude .git
 
 # Write structured JSON log of all actions
@@ -297,15 +402,22 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 
 - **Block-order reads** — Files read in physical disk order, eliminating random seeks
 - **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links duplicates
+- **Automatic filesystem detection** *(v3.0.0+)* — Detects destination FS type (ext4, btrfs, XFS, APFS, NTFS, FAT32, etc.) and probes capabilities (hardlink, symlink, reflink, case-sensitivity) to pick the safest dedup strategy
+- **Honest dedup accounting** *(v3.0.0+)* — On FAT32/exFAT, reports "Bandwidth saved" separately from "Disk usage" and uses the correct full size for the space check
+- **Explicit hash algorithm selection** *(v3.0.0+)* — `--hash=auto|xxh128|sha256` lets users force a specific algorithm; the choice is displayed in the banner
+- **Per-type duplicate-handling summary** *(v3.0.0+)* — Phase 6 shows exactly how many duplicates became hardlinks / symlinks / full copies on the destination
+- **File-path destination for single files** *(v2.4.8+)* — `fast_copy host:file.tar.gz /local/renamed.tar.gz` works across all copy modes
 - **Cross-run dedup database** — SQLite cache at drive root; re-runs skip already-copied content
 - **Streaming tar pipe** — Producer→consumer pipe for local copies (no temp file); chunked 100 MB batches for SSH
 - **SFTP-free SSH transfers** — Uses raw SSH channels with tar; works on servers with SFTP disabled
+- **Synology NAS compatible** *(v3.0.0+)* — Uses portable tar stdin handling; tested against DS720+ with DSM 7.x
 - **Flexible source** — Directories, single files, or glob patterns (`*.zip`, `*.iso`)
 - **Pre-flight space check** — Verifies space before writing; walks parent directories for remote paths
 - **Post-copy verification** — Every file verified against source hash
 - **Structured JSON logging** — `--log-file` records every action (copied, linked, skipped, error) with summary stats
 - **Permission preservation** — Copies file permissions on local and remote transfers
 - **Windows long path support** — Handles paths exceeding 260 characters via `\\?\` prefix
+- **Interactive SSH host key verification** — TOFU prompt with MD5 + SHA-256 fingerprints; rejects changed keys (MITM defense)
 - **Authentication retry** — Prompts for password up to 3 times on auth failure; handles Ctrl+C gracefully
 - **Cross-platform** — Linux, macOS, and Windows with native I/O optimizations
 - **Self-update** — `--check-update` shows available versions with categorized release notes; `--update [VERSION]` installs the latest or a specific version

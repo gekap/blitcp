@@ -1,0 +1,8 @@
+REPORT.md
+__pycache__/
+*.pyc
+.claude/
+# Local test artifacts (not part of the tool)
+blue1
+downloads1
+languages

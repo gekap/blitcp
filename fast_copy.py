@@ -100,7 +100,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "2.4.8"
+__version__ = "3.0.0"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -191,19 +191,77 @@ def banner(msg):
 
 # ════════════════════════════════════════════════════════════════════════════
 # HASHING — use xxhash if available (10x faster), fallback to sha256
+#
+# Algorithm selection is dynamic: defaults to "auto" at import time, but can
+# be overridden via --hash before Phase 2. See _set_hash_algo() below.
 # ════════════════════════════════════════════════════════════════════════════
 try:
     import xxhash
-    def new_hasher():
-        return xxhash.xxh128()
-    _hash_name = "xxh128"
+    _HAS_XXHASH = True
 except ImportError:
-    def new_hasher():
-        return hashlib.sha256()
+    _HAS_XXHASH = False
+
+
+def _make_sha256_hasher():
+    return hashlib.sha256()
+
+
+def _make_xxh128_hasher():
+    return xxhash.xxh128()
+
+
+# Initial auto-selection: xxh128 if installed, else sha256.
+# new_hasher and _hash_name may be reassigned later by _set_hash_algo().
+if _HAS_XXHASH:
+    new_hasher = _make_xxh128_hasher
+    _hash_name = "xxh128"
+else:
+    new_hasher = _make_sha256_hasher
     _hash_name = "sha256"
 
 
 _EMPTY_HASH = new_hasher().hexdigest()  # hash of zero bytes for active algorithm
+_hash_source = "auto"   # "auto" | "forced" — set by --hash flag
+
+
+def _set_hash_algo(choice):
+    """Configure the active hash algorithm based on the --hash flag.
+
+    choice must be one of: "auto", "xxh128", "sha256".
+    Raises SystemExit if "xxh128" is requested but the xxhash package
+    isn't installed.
+
+    Updates module-level globals: new_hasher, _hash_name, _EMPTY_HASH,
+    _hash_source. Must be called before any hashing happens (i.e. before
+    Phase 2), otherwise cached hashes would use the previous algorithm.
+    """
+    global new_hasher, _hash_name, _EMPTY_HASH, _hash_source
+
+    if choice == "auto":
+        # Keep the initial auto-selection (already set at import time).
+        _hash_source = "auto"
+        return
+
+    if choice == "xxh128":
+        if not _HAS_XXHASH:
+            print(
+                f"{C.RED}Error: --hash=xxh128 requested but xxhash package "
+                f"not installed.{C.RESET}\n"
+                f"  Install with: {C.BOLD}python -m pip install xxhash{C.RESET}\n"
+                f"  Or use --hash=sha256 or --hash=auto instead.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        new_hasher = _make_xxh128_hasher
+        _hash_name = "xxh128"
+    elif choice == "sha256":
+        new_hasher = _make_sha256_hasher
+        _hash_name = "sha256"
+    else:
+        raise ValueError("invalid hash choice: {}".format(choice))
+
+    _EMPTY_HASH = new_hasher().hexdigest()
+    _hash_source = "forced"
 
 
 def hash_file(filepath, buf_size=HASH_CHUNK):
@@ -942,20 +1000,37 @@ def remote_hash_files(ssh, remote_root, rel_paths):
 
 def filter_unchanged_remote(entries, link_map, ssh, remote_root,
                             src_ssh=None, src_root=None):
-    """Incremental check against remote. Uses manifest or find+hash.
+    """Incremental check against remote. Always scans remote for actual
+    file existence; the manifest is used only as a hash cache to avoid
+    re-hashing unchanged files. This prevents stale-manifest data loss
+    when files are deleted out of band.
+
     For R2R mode, pass src_ssh/src_root to hash source files on the remote."""
     print(f"  {C.DIM}Checking remote for existing files...{C.RESET}", end="", flush=True)
 
-    # Try manifest first (instant), fall back to find
+    # ALWAYS scan the actual remote — never trust the manifest for existence.
+    # The manifest is a cache from a previous run; the user may have deleted
+    # or moved files since then. Truth is the filesystem.
+    remote_files = scan_remote_destination(ssh, remote_root)
+
+    # Load the manifest (if present) ONLY as a hash cache, and only trust
+    # entries whose size matches what's currently on the remote (otherwise
+    # the cached hash is invalid).
     manifest = load_remote_manifest(ssh, remote_root)
+    remote_hashes = {}
     if manifest:
-        print(f"\r  {C.DIM}Loaded manifest ({len(manifest)} entries){C.RESET}          ")
-        remote_files = {k: v["size"] for k, v in manifest.items()}
-        remote_hashes = {k: v.get("hash") for k, v in manifest.items()}
+        valid_cached = 0
+        for k, v in manifest.items():
+            if k in remote_files and remote_files[k] == v.get("size"):
+                h = v.get("hash")
+                if h:
+                    remote_hashes[k] = h
+                    valid_cached += 1
+        print(f"\r  {C.DIM}Scanned remote ({len(remote_files)} files), "
+              f"manifest cache hits: {valid_cached}{C.RESET}          ")
     else:
-        print(f"\r  {C.DIM}No manifest, scanning remote...{C.RESET}          ")
-        remote_files = scan_remote_destination(ssh, remote_root)
-        remote_hashes = {}
+        print(f"\r  {C.DIM}Scanned remote ({len(remote_files)} files), "
+              f"no manifest{C.RESET}          ")
 
     need_copy = []
     need_hash = []
@@ -1211,6 +1286,645 @@ def get_physical_offset_macos(filepath):
 _system = platform.system()
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# FILESYSTEM DETECTION (originally fs_detect.py — inlined to preserve
+# single-file distribution)
+#
+# Detects the destination filesystem type and probes its actual capabilities
+# (hardlink, symlink, reflink CoW clones, case sensitivity) so dedup can
+# pick a safe and efficient strategy:
+#
+#   - reflink (CoW clones): safest, modifications never affect peer files
+#   - hardlink: efficient but requires explicit link-management on update
+#   - symlink:  rare fallback for filesystems without hardlinks
+#   - none:     no on-disk dedup; transfer-only optimization
+#
+# Approach: cheap FS type lookup (per-OS API) → skip probes for known-stable
+# filesystems → run targeted probes for ambiguous ones (XFS reflink, NTFS
+# Dev Drive, network mounts, FUSE). ~5 ms total on warm cache.
+# ════════════════════════════════════════════════════════════════════════════
+
+# Public types -------------------------------------------------------------
+
+FSCapabilities = namedtuple("FSCapabilities", [
+    "hardlink",        # os.link() works
+    "symlink",         # os.symlink() works
+    "reflink",         # CoW clone primitive works (FICLONE / clonefile)
+    "case_sensitive",  # 'A.txt' and 'a.txt' are distinct files
+])
+
+FSInfo = namedtuple("FSInfo", [
+    "path",             # destination path that was probed
+    "fs_type",          # filesystem name (e.g. "ext4", "btrfs", "NTFS")
+    "capabilities",     # FSCapabilities namedtuple
+    "strategy",         # recommended dedup strategy
+    "detection_ms",     # time spent on FS type detection
+    "probe_ms",         # time spent on capability probing (0 if skipped)
+    "probes_run",       # list of probe names that were executed
+    "probe_timings",    # dict: probe_name -> elapsed ms
+    "method",           # which detection method was used
+    "from_table",       # True if capabilities came from the lookup table
+])
+
+
+# FS type detection --------------------------------------------------------
+
+def _walk_up_to_existing(path):
+    """Walk up the directory tree until we find an existing directory.
+    Returns the existing parent, or None on bad input or symlink loops."""
+    if not path or not isinstance(path, str):
+        return None
+    if "\x00" in path:
+        return None  # reject null bytes — would corrupt C-API calls below
+    try:
+        if os.path.exists(path):
+            cur = os.path.realpath(path)
+        else:
+            cur = os.path.abspath(path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for _ in range(64):
+        if not cur:
+            return None
+        try:
+            if os.path.isdir(cur):
+                return cur
+        except OSError:
+            return None
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+    return None
+
+
+def _unescape_mountinfo(field):
+    """Decode octal escape sequences in /proc/self/mountinfo (space, tab,
+    newline, backslash)."""
+    if "\\" not in field:
+        return field
+    return (field.replace("\\040", " ")
+                  .replace("\\011", "\t")
+                  .replace("\\012", "\n")
+                  .replace("\\134", "\\"))
+
+
+def _fs_type_linux(path):
+    """Parse /proc/self/mountinfo to find the FS type for `path`, using
+    longest-prefix mount point match. Handles escaped whitespace."""
+    try:
+        check = _walk_up_to_existing(path)
+        if not check:
+            return ("unknown", "linux_mountinfo")
+
+        best_mount = ""
+        best_type = "unknown"
+
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.split()
+                try:
+                    sep_idx = parts.index("-")
+                    mount_point = _unescape_mountinfo(parts[4])
+                    fs_type = _unescape_mountinfo(parts[sep_idx + 1])
+                except (IndexError, ValueError):
+                    continue
+
+                if check == mount_point or check.startswith(mount_point.rstrip("/") + "/"):
+                    if len(mount_point) > len(best_mount):
+                        best_mount = mount_point
+                        best_type = fs_type
+
+        return (best_type, "linux_mountinfo")
+    except (OSError, IOError):
+        return ("unknown", "linux_mountinfo")
+
+
+def _fs_type_macos(path):
+    """Use statfs(2) via ctypes on macOS to read f_fstypename."""
+    try:
+        if not path or not isinstance(path, str) or "\x00" in path:
+            return ("unknown", "macos_statfs")
+        check = _walk_up_to_existing(path)
+        if not check:
+            return ("unknown", "macos_statfs")
+
+        class StatFS(ctypes.Structure):
+            _fields_ = [
+                ("f_bsize",       ctypes.c_uint32),
+                ("f_iosize",      ctypes.c_int32),
+                ("f_blocks",      ctypes.c_uint64),
+                ("f_bfree",       ctypes.c_uint64),
+                ("f_bavail",      ctypes.c_uint64),
+                ("f_files",       ctypes.c_uint64),
+                ("f_ffree",       ctypes.c_uint64),
+                ("f_fsid",        ctypes.c_int32 * 2),
+                ("f_owner",       ctypes.c_uint32),
+                ("f_type",        ctypes.c_uint32),
+                ("f_flags",       ctypes.c_uint32),
+                ("f_fssubtype",   ctypes.c_uint32),
+                ("f_fstypename",  ctypes.c_char * 16),
+                ("f_mntonname",   ctypes.c_char * 1024),
+                ("f_mntfromname", ctypes.c_char * 1024),
+                ("f_reserved",    ctypes.c_uint32 * 8),
+            ]
+
+        libc = ctypes.CDLL("libc.dylib")
+        libc.statfs.argtypes = [ctypes.c_char_p, ctypes.POINTER(StatFS)]
+        libc.statfs.restype = ctypes.c_int
+
+        st = StatFS()
+        rc = libc.statfs(check.encode("utf-8"), ctypes.byref(st))
+        if rc != 0:
+            return ("unknown", "macos_statfs")
+
+        return (st.f_fstypename.decode("utf-8", errors="replace"),
+                "macos_statfs")
+    except (OSError, AttributeError):
+        return ("unknown", "macos_statfs")
+
+
+def _fs_type_windows(path):
+    """Use GetVolumeInformationW to read the FS name. Handles drive-letter
+    and UNC paths."""
+    try:
+        if not path or not isinstance(path, str):
+            return ("unknown", "windows_GetVolumeInformation")
+        if "\x00" in path:
+            return ("unknown", "windows_GetVolumeInformation")
+
+        abs_path = os.path.abspath(path)
+        drive, _rest = os.path.splitdrive(abs_path)
+        if not drive:
+            return ("unknown", "windows_GetVolumeInformation")
+        if not drive.endswith("\\"):
+            drive = drive + "\\"
+
+        fs_name_buf = ctypes.create_unicode_buffer(256)
+        rc = ctypes.windll.kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(drive),
+            None, 0, None, None, None,
+            fs_name_buf, 256,
+        )
+        if rc == 0:
+            return ("unknown", "windows_GetVolumeInformation")
+
+        return (fs_name_buf.value, "windows_GetVolumeInformation")
+    except (OSError, AttributeError, ValueError):
+        return ("unknown", "windows_GetVolumeInformation")
+
+
+def detect_fs_type(path):
+    """Detect the filesystem type at `path`. Returns (fs_type, method)."""
+    if _system == "Linux":
+        return _fs_type_linux(path)
+    elif _system == "Darwin":
+        return _fs_type_macos(path)
+    elif _system == "Windows":
+        return _fs_type_windows(path)
+    else:
+        return ("unknown", "unsupported_os")
+
+
+# Capability probes --------------------------------------------------------
+
+def _make_probe_dir(parent):
+    """Create a unique probe subdirectory inside `parent`.
+
+    Hardened against symlink races: 128 bits of entropy, single-level
+    mkdir (not makedirs), mode 0o700, post-create lstat verification.
+    """
+    name = ".fast_copy_probe_{}_{}".format(os.getpid(), os.urandom(16).hex())
+    probe_dir = os.path.join(parent, name)
+    os.mkdir(probe_dir, 0o700)
+    try:
+        st = os.lstat(probe_dir)
+    except OSError:
+        raise
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        try:
+            os.unlink(probe_dir)
+        except OSError:
+            pass
+        raise OSError("probe dir was replaced with non-directory: {}".format(probe_dir))
+    return probe_dir
+
+
+def _cleanup_probe_dir(probe_dir):
+    """Remove the probe directory and any leftover files. Symlink-safe
+    (uses lstat throughout, never follows links)."""
+    if not probe_dir:
+        return
+    try:
+        st = os.lstat(probe_dir)
+    except OSError:
+        return
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        try:
+            os.unlink(probe_dir)
+        except OSError:
+            pass
+        return
+
+    try:
+        for root, dirs, files in os.walk(probe_dir, topdown=False,
+                                         followlinks=False):
+            for fname in files:
+                full = os.path.join(root, fname)
+                try:
+                    entry_st = os.lstat(full)
+                    if stat.S_ISLNK(entry_st.st_mode) or \
+                       stat.S_ISREG(entry_st.st_mode):
+                        os.unlink(full)
+                except OSError:
+                    pass
+            for dname in dirs:
+                full = os.path.join(root, dname)
+                try:
+                    entry_st = os.lstat(full)
+                    if stat.S_ISLNK(entry_st.st_mode):
+                        os.unlink(full)
+                    elif stat.S_ISDIR(entry_st.st_mode):
+                        os.rmdir(full)
+                except OSError:
+                    pass
+        os.rmdir(probe_dir)
+    except OSError:
+        pass
+
+
+def _safe_probe_unlink(path):
+    try:
+        if os.path.islink(path) or os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def probe_hardlink(probe_dir):
+    """Test whether os.link() works in the destination directory."""
+    a = os.path.join(probe_dir, "hl_src")
+    b = os.path.join(probe_dir, "hl_dst")
+    try:
+        with open(a, "wb") as f:
+            f.write(b"x")
+        try:
+            os.link(a, b)
+            return True
+        except (OSError, NotImplementedError):
+            return False
+    finally:
+        _safe_probe_unlink(a)
+        _safe_probe_unlink(b)
+
+
+def probe_symlink(probe_dir):
+    """Test whether os.symlink() works (and the result is readable)."""
+    target = os.path.join(probe_dir, "sl_target")
+    link = os.path.join(probe_dir, "sl_link")
+    try:
+        with open(target, "wb") as f:
+            f.write(b"x")
+        try:
+            os.symlink(target, link)
+            return os.path.islink(link)
+        except (OSError, NotImplementedError):
+            return False
+    finally:
+        _safe_probe_unlink(link)
+        _safe_probe_unlink(target)
+
+
+# Linux ioctl(FICLONE) constant. _IOW(0x94, 9, int) = 0x40049409 on the
+# generic ioctl ABI used by x86/ARM/RISC-V. PowerPC/MIPS/SPARC/Alpha use
+# different bit layouts — we detect arch and skip on unrecognized ones.
+_LINUX_FICLONE = 0x40049409
+_RECOGNIZED_LINUX_ARCHS = frozenset({
+    "x86_64", "i386", "i486", "i586", "i686",
+    "armv6l", "armv7l", "armv7hl", "aarch64", "aarch64_be",
+    "riscv32", "riscv64",
+})
+
+
+def _probe_reflink_linux(probe_dir):
+    """Try ioctl(FICLONE) — works on btrfs, XFS (reflink=1), bcachefs."""
+    try:
+        import fcntl
+    except ImportError:
+        return False
+
+    machine = platform.machine().lower()
+    if machine not in _RECOGNIZED_LINUX_ARCHS:
+        return False
+
+    src_path = os.path.join(probe_dir, "rl_src")
+    dst_path = os.path.join(probe_dir, "rl_dst")
+    try:
+        with open(src_path, "wb") as f:
+            f.write(b"x" * 4096)
+        try:
+            with open(src_path, "rb") as src:
+                with open(dst_path, "wb") as dst:
+                    fcntl.ioctl(dst.fileno(), _LINUX_FICLONE, src.fileno())
+            return True
+        except (OSError, IOError):
+            return False
+    finally:
+        _safe_probe_unlink(src_path)
+        _safe_probe_unlink(dst_path)
+
+
+def _probe_reflink_macos(probe_dir):
+    """Try clonefile(2) — works on APFS."""
+    src_path = os.path.join(probe_dir, "rl_src")
+    dst_path = os.path.join(probe_dir, "rl_dst")
+    try:
+        with open(src_path, "wb") as f:
+            f.write(b"x" * 4096)
+        try:
+            libc = ctypes.CDLL("libc.dylib")
+            libc.clonefile.argtypes = [
+                ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32
+            ]
+            libc.clonefile.restype = ctypes.c_int
+            rc = libc.clonefile(
+                src_path.encode("utf-8"),
+                dst_path.encode("utf-8"),
+                0,
+            )
+            return rc == 0
+        except (OSError, AttributeError):
+            return False
+    finally:
+        _safe_probe_unlink(src_path)
+        _safe_probe_unlink(dst_path)
+
+
+def _probe_reflink_windows(probe_dir):
+    """Windows reflink probe. NTFS Dev Drive detection via FSCTL is
+    deferred; regular NTFS is recognized by name in the capability table."""
+    return False
+
+
+def probe_reflink(probe_dir):
+    """Test whether reflinks (CoW clone) work in the destination directory."""
+    if _system == "Linux":
+        return _probe_reflink_linux(probe_dir)
+    elif _system == "Darwin":
+        return _probe_reflink_macos(probe_dir)
+    elif _system == "Windows":
+        return _probe_reflink_windows(probe_dir)
+    else:
+        return False
+
+
+def probe_case_sensitivity(probe_dir):
+    """Test whether the FS distinguishes 'A' from 'a' as different files."""
+    upper = os.path.join(probe_dir, "Case_Probe.tmp")
+    lower = os.path.join(probe_dir, "case_probe.tmp")
+    try:
+        with open(upper, "wb") as f:
+            f.write(b"u")
+        return not os.path.exists(lower)
+    finally:
+        _safe_probe_unlink(upper)
+        _safe_probe_unlink(lower)
+
+
+# FS type → known capabilities lookup table -------------------------------
+
+_CASE_INSENSITIVE_FS = frozenset({
+    "vfat", "fat", "fat32", "msdos", "exfat",
+    "ntfs", "ntfs3", "ntfs-3g",
+    "hfs", "hfsplus",
+    "apfs",
+})
+
+
+def _default_case_sensitive(fs_type):
+    """Best-guess case sensitivity when probing isn't possible."""
+    return (fs_type or "").lower() not in _CASE_INSENSITIVE_FS
+
+
+# Maps lowercase FS type → (hardlink, symlink, reflink, needs_probe)
+_FS_CAPABILITY_TABLE = {
+    # No links
+    "vfat":      (False, False, False, False),
+    "fat":       (False, False, False, False),
+    "fat32":     (False, False, False, False),
+    "msdos":     (False, False, False, False),
+    "exfat":     (False, False, False, False),
+    # Always reflink-capable
+    "btrfs":     (True,  True,  True,  False),
+    "bcachefs":  (True,  True,  True,  False),
+    "apfs":      (True,  True,  True,  False),
+    "refs":      (True,  True,  True,  False),
+    # Hardlinks always; reflinks conditional → probe
+    "xfs":       (True,  True,  False, True),
+    "zfs":       (True,  True,  False, True),
+    # Hardlinks always; no reflinks
+    "ext2":      (True,  True,  False, False),
+    "ext3":      (True,  True,  False, False),
+    "ext4":      (True,  True,  False, False),
+    "hfs":       (True,  True,  False, False),
+    "hfsplus":   (True,  True,  False, False),
+    "f2fs":      (True,  True,  False, False),
+    "tmpfs":     (True,  True,  False, False),
+    "overlay":   (True,  True,  False, False),
+    # NTFS — hardlinks yes; reflinks only on Dev Drive → probe
+    "ntfs":      (True,  True,  False, True),
+    "ntfs3":     (True,  True,  False, True),
+    # Network filesystems — depends on server
+    "nfs":       (True,  True,  False, True),
+    "nfs4":      (True,  True,  False, True),
+    "cifs":      (True,  True,  False, True),
+    "smbfs":     (True,  True,  False, True),
+    "smb3":      (True,  True,  False, True),
+    # FUSE — could be anything underneath
+    "fuseblk":   (False, False, False, True),
+    "fuse":      (False, False, False, True),
+    "sshfs":     (False, False, False, True),
+}
+
+
+# Main detection function --------------------------------------------------
+
+def detect_capabilities(dst_dir, force_probe=False):
+    """Detect the filesystem and its capabilities at `dst_dir`.
+
+    Returns an FSInfo namedtuple. Handles non-existent destinations (walks
+    up to first existing parent), read-only destinations (falls back to
+    table), and unknown FS types (runs all probes).
+    """
+    t0 = time.perf_counter()
+    fs_type, method = detect_fs_type(dst_dir)
+    detection_ms = (time.perf_counter() - t0) * 1000
+
+    probe_parent = _walk_up_to_existing(dst_dir)
+    if probe_parent is None:
+        return _info_from_table_only(
+            dst_dir, fs_type, method, detection_ms,
+            reason="no_existing_parent")
+
+    if not os.access(probe_parent, os.W_OK) and not force_probe:
+        return _info_from_table_only(
+            dst_dir, fs_type, method, detection_ms,
+            reason="no_writable_parent")
+
+    fs_lc = fs_type.lower() if fs_type else "unknown"
+    table_entry = _FS_CAPABILITY_TABLE.get(fs_lc)
+
+    probes_run = []
+    probe_timings = {}
+    probe_ms = 0.0
+    from_table = False
+
+    if table_entry and not table_entry[3] and not force_probe:
+        # Known FS — use table, only probe case sensitivity
+        hl, sl, rl, _ = table_entry
+        from_table = True
+        probe_dir = None
+        cs = _default_case_sensitive(fs_type)
+        try:
+            probe_dir = _make_probe_dir(probe_parent)
+            tcs = time.perf_counter()
+            cs = probe_case_sensitivity(probe_dir)
+            cs_ms = (time.perf_counter() - tcs) * 1000
+            probe_timings["case_sensitivity"] = cs_ms
+            probes_run.append("case_sensitivity")
+            probe_ms = cs_ms
+        except OSError as e:
+            probe_timings["_skipped_reason"] = "probe_create_failed: {}".format(e)
+        finally:
+            if probe_dir:
+                _cleanup_probe_dir(probe_dir)
+        caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
+                              case_sensitive=cs)
+    else:
+        # Ambiguous or unknown FS — probe everything
+        probe_dir = None
+        hl = sl = rl = cs = False
+        try:
+            try:
+                probe_dir = _make_probe_dir(probe_parent)
+            except OSError as e:
+                probe_timings["_skipped_reason"] = "probe_create_failed: {}".format(e)
+                if table_entry:
+                    hl, sl, rl, _ = table_entry
+                    cs = _default_case_sensitive(fs_type)
+                    from_table = True
+                caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
+                                      case_sensitive=cs)
+                return FSInfo(
+                    path=dst_dir, fs_type=fs_type, capabilities=caps,
+                    strategy=select_dedup_strategy(caps),
+                    detection_ms=detection_ms, probe_ms=0.0,
+                    probes_run=[], probe_timings=probe_timings,
+                    method=method, from_table=from_table,
+                )
+
+            for name, fn in (("hardlink",         probe_hardlink),
+                             ("symlink",          probe_symlink),
+                             ("reflink",          probe_reflink),
+                             ("case_sensitivity", probe_case_sensitivity)):
+                t1 = time.perf_counter()
+                result = fn(probe_dir)
+                elapsed = (time.perf_counter() - t1) * 1000
+                probe_timings[name] = elapsed
+                probes_run.append(name)
+                probe_ms += elapsed
+                if name == "hardlink":
+                    hl = result
+                elif name == "symlink":
+                    sl = result
+                elif name == "reflink":
+                    rl = result
+                elif name == "case_sensitivity":
+                    cs = result
+        finally:
+            if probe_dir:
+                _cleanup_probe_dir(probe_dir)
+
+        caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
+                              case_sensitive=cs)
+
+    return FSInfo(
+        path=dst_dir, fs_type=fs_type, capabilities=caps,
+        strategy=select_dedup_strategy(caps),
+        detection_ms=detection_ms, probe_ms=probe_ms,
+        probes_run=probes_run, probe_timings=probe_timings,
+        method=method, from_table=from_table,
+    )
+
+
+def _info_from_table_only(dst_dir, fs_type, method, detection_ms, reason):
+    """Return FSInfo using only the FS-type table (no probing)."""
+    fs_lc = fs_type.lower() if fs_type else "unknown"
+    entry = _FS_CAPABILITY_TABLE.get(fs_lc)
+    if entry is None:
+        caps = FSCapabilities(False, False, False,
+                              _default_case_sensitive(fs_type or "unknown"))
+    else:
+        hl, sl, rl, _ = entry
+        cs = _default_case_sensitive(fs_type)
+        caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
+                              case_sensitive=cs)
+    return FSInfo(
+        path=dst_dir, fs_type=fs_type, capabilities=caps,
+        strategy=select_dedup_strategy(caps),
+        detection_ms=detection_ms, probe_ms=0.0,
+        probes_run=[], probe_timings={"_skipped_reason": reason},
+        method=method, from_table=True,
+    )
+
+
+def select_dedup_strategy(caps):
+    """Pick dedup strategy: reflink > hardlink > symlink > none."""
+    if caps.reflink:
+        return "reflink"
+    if caps.hardlink:
+        return "hardlink"
+    if caps.symlink:
+        return "symlink"
+    return "none"
+
+
+def format_fs_info(info):
+    """Human-readable summary of FSInfo for verbose output."""
+    caps = info.capabilities
+    lines = [
+        "Path:         {}".format(info.path),
+        "FS type:      {} (via {})".format(info.fs_type, info.method),
+        "Source:       {}".format("table" if info.from_table else "probes"),
+        "Detection:    {:.3f} ms".format(info.detection_ms),
+        "Probing:      {:.3f} ms ({} probe{})".format(
+            info.probe_ms, len(info.probes_run),
+            "" if len(info.probes_run) == 1 else "s"),
+    ]
+    skipped = info.probe_timings.get("_skipped_reason")
+    if skipped:
+        lines.append("  ⚠ probes skipped: {}".format(skipped))
+        lines.append("  ⚠ capabilities below are TABLE DEFAULTS, not verified")
+    if info.probes_run:
+        lines.append("  probes run: {}".format(", ".join(info.probes_run)))
+        for name, ms in info.probe_timings.items():
+            if name.startswith("_"):
+                continue
+            lines.append("    {:18s} {:>7.3f} ms".format(name, ms))
+    lines.append("Capabilities:")
+    lines.append("  hardlink:        {}".format("yes" if caps.hardlink else "no"))
+    lines.append("  symlink:         {}".format("yes" if caps.symlink else "no"))
+    lines.append("  reflink (CoW):   {}".format("yes" if caps.reflink else "no"))
+    lines.append("  case sensitive:  {}".format("yes" if caps.case_sensitive else "no"))
+    lines.append("Strategy:     {}".format(info.strategy))
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# END OF INLINED fs_detect
+# ════════════════════════════════════════════════════════════════════════════
+
+
 def _long_path(p):
     """On Windows, prefix paths with \\\\?\\ to bypass the 260-char MAX_PATH limit.
     Use ONLY for actual file I/O (open, makedirs, walk), NOT for path comparison."""
@@ -1405,7 +2119,9 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
 # ════════════════════════════════════════════════════════════════════════════
 # DEDUPLICATION
 # ════════════════════════════════════════════════════════════════════════════
-def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
+
+def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
+                fs_strategy=None):
     """
     Content-aware deduplication:
       1. Hash ALL files (using cache when available)
@@ -1413,7 +2129,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
       3. Cross-run dedup: check if drive already has matching content
       4. Return (unique_entries, link_map)
     """
-    print(f"  Using hash: {C.BOLD}{_hash_name}{C.RESET}")
+    # (Hash algo is shown in the main banner; don't duplicate it here.)
     if dedup_db:
         print(f"  {C.DIM}Hash cache: enabled (cross-run dedup){C.RESET}")
 
@@ -1554,8 +2270,17 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None):
             print(f"      → {C.CYAN}{folder}/{C.RESET}: {count} files matched")
     print(f"    Total duplicates:{C.BOLD} {dup_count}{C.RESET} "
           f"({fmt_pct(dup_count, total_files)} of files)")
-    print(f"    Space saved:     {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET} "
-          f"({fmt_pct(saved_bytes, sum(e.size for e in entries))} reduction)")
+    total_input_size = sum(e.size for e in entries)
+    # On link-incapable filesystems, dedup only saves bandwidth — duplicates
+    # become real copies on disk. Be honest about which saving applies.
+    if fs_strategy == "none" and saved_bytes > 0:
+        print(f"    Bandwidth saved: {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET} "
+              f"(transfer only)")
+        print(f"    Disk usage:      {C.BOLD}{fmt_size(total_input_size)}{C.RESET} "
+              f"{C.YELLOW}(full copies — FS does not support links){C.RESET}")
+    else:
+        print(f"    Space saved:     {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET} "
+              f"({fmt_pct(saved_bytes, total_input_size)} reduction)")
 
     return unique_entries, link_map, saved_bytes
 
@@ -1629,17 +2354,32 @@ def create_links(link_map, dst_root):
             _log("error", dup_rel, _link_size, error=str(e))
             errors += 1
 
-    results = []
+    total = hardlink_ok + symlink_ok + copy_fallback
+    print(f"\r  {C.GREEN}Duplicate handling:{C.RESET}                              ")
     if hardlink_ok:
-        results.append(f"{hardlink_ok} hard links")
+        print(f"    {C.GREEN}✓{C.RESET} Hardlinks:        {C.BOLD}{hardlink_ok:>6}{C.RESET} "
+              f"{C.DIM}(shared inode; zero extra disk){C.RESET}")
     if symlink_ok:
-        results.append(f"{symlink_ok} symlinks")
+        print(f"    {C.YELLOW}~{C.RESET} Symlinks:         {C.BOLD}{symlink_ok:>6}{C.RESET} "
+              f"{C.DIM}(pointer to canonical; canonical must not be deleted){C.RESET}")
     if copy_fallback:
-        results.append(f"{copy_fallback} copies (fallback)")
+        # Full copies mean the FS can't dedup — highlight this so users
+        # understand the disk usage implication.
+        print(f"    {C.YELLOW}✗{C.RESET} Full copies:      {C.BOLD}{copy_fallback:>6}{C.RESET} "
+              f"{C.YELLOW}(FS does not support links — no disk savings){C.RESET}")
     if errors:
-        results.append(f"{C.RED}{errors} errors{C.RESET}")
-
-    print(f"\n  {C.GREEN}Links created: {', '.join(results)}{C.RESET}                    ")
+        print(f"    {C.RED}✗ Errors:           {errors:>6}{C.RESET}")
+    if total > 0:
+        # Show the breakdown as a percentage so users can see at a glance
+        # how much of the dedup benefit they actually got on disk.
+        if hardlink_ok == total:
+            _disk_msg = f"{C.GREEN}all disk savings realized{C.RESET}"
+        elif copy_fallback == total:
+            _disk_msg = f"{C.YELLOW}no disk savings (bandwidth only){C.RESET}"
+        else:
+            _disk_msg = (f"{hardlink_ok + symlink_ok}/{total} linked, "
+                         f"{copy_fallback} copied")
+        print(f"    {C.DIM}→ {_disk_msg}{C.RESET}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2591,7 +3331,8 @@ def scan_remote_source(ssh, src_root, excludes=None):
     return entries, errors
 
 
-def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS):
+def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS,
+                               fs_strategy=None):
     """
     Dedup by hashing files on the remote source machine.
     Returns (unique_entries, link_map, saved_bytes).
@@ -2635,11 +3376,20 @@ def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS):
             saved_bytes += dup.size
 
     dup_count = len(link_map)
+    total_input_size = sum(e.size for e in entries)
     print(f"  {C.GREEN}Dedup complete:{C.RESET}")
     print(f"    Unique files:    {C.BOLD}{len(unique_entries)}{C.RESET}")
     print(f"    Duplicates:      {C.BOLD}{dup_count}{C.RESET} "
           f"({fmt_pct(dup_count, len(entries))} of files)")
-    print(f"    Space saved:     {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET}")
+    # On link-incapable filesystems, dedup only saves bandwidth — duplicates
+    # become real copies on disk. Be honest about which saving applies.
+    if fs_strategy == "none" and saved_bytes > 0:
+        print(f"    Bandwidth saved: {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET} "
+              f"(transfer only)")
+        print(f"    Disk usage:      {C.BOLD}{fmt_size(total_input_size)}{C.RESET} "
+              f"{C.YELLOW}(full copies — FS does not support links){C.RESET}")
+    else:
+        print(f"    Space saved:     {C.GREEN}{C.BOLD}{fmt_size(saved_bytes)}{C.RESET}")
 
     return unique_entries, link_map, saved_bytes
 
@@ -2810,7 +3560,7 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
 
     channel = ssh.open_channel()
     channel.exec_command(
-        f"cd {shlex.quote(src_root)} && tar cf - --null -T /dev/stdin"
+        f"cd {shlex.quote(src_root)} && tar cf - --null -T -"
     )
 
     def _send_file_list():
@@ -2985,7 +3735,7 @@ def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress)
     # Source: tar producer
     src_chan = src_ssh.open_channel()
     src_chan.exec_command(
-        f"cd {shlex.quote(src_root)} && tar cf - --null -T /dev/stdin"
+        f"cd {shlex.quote(src_root)} && tar cf - --null -T -"
     )
 
     def _send_file_list():
@@ -3662,12 +4412,20 @@ def main():
                         help=f"Threads for hashing/layout (default: {DEFAULT_THREADS})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show copy plan without copying")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Verbose output (full FS detection details, etc.)")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip post-copy verification")
     parser.add_argument("--log-file", default=None,
                         help="Write structured JSON log to file")
     parser.add_argument("--no-dedup", action="store_true",
                         help="Disable deduplication")
+    parser.add_argument("--hash", choices=["auto", "xxh128", "sha256"],
+                        default="auto",
+                        help="Hash algorithm for dedup/verify. "
+                             "auto (default): xxh128 if installed, else sha256. "
+                             "xxh128: force xxh128 (10x faster, non-cryptographic). "
+                             "sha256: force sha256 (cryptographic; collision-resistant).")
     parser.add_argument("--force", action="store_true",
                         help="Skip space check, copy even if not enough space")
     parser.add_argument("--overwrite", action="store_true",
@@ -3707,6 +4465,10 @@ def main():
 
     if not args.source or not args.destination:
         parser.error("the following arguments are required: source, destination")
+
+    # Apply hash algorithm selection BEFORE any hashing happens.
+    # Must come before dedup, verify, or cache lookups.
+    _set_hash_algo(args.hash)
 
     global _log_enabled
     if args.log_file:
@@ -3785,6 +4547,16 @@ def main():
         else:
             src_display = src
 
+    # Detect destination filesystem early so we can fold the strategy
+    # into the Dedup banner line and use it for Phase 2/3.
+    fs_info = None
+    fs_error = None
+    if not dst_remote:
+        try:
+            fs_info = detect_capabilities(dst)
+        except Exception as e:
+            fs_error = str(e)
+
     banner("FAST BLOCK-ORDER COPY")
     print(f"  Source:      {C.BOLD}{src_display}{C.RESET}")
     if src_mode == "remote":
@@ -3805,13 +4577,46 @@ def main():
     elif dst_remote:
         print(f"  Mode:        {C.CYAN}local → remote{C.RESET}")
     print(f"  Buffer:      {args.buffer} MB")
-    print(f"  Dedup:       {'disabled' if args.no_dedup else 'enabled'}")
+    # Dedup line: fold FS strategy in parens when detected
+    if args.no_dedup:
+        print(f"  Dedup:       disabled")
+    elif fs_info is not None:
+        print(f"  Dedup:       enabled ({C.CYAN}{fs_info.strategy}{C.RESET})")
+    else:
+        print(f"  Dedup:       enabled")
+    # Hash algorithm + source (auto vs forced). Non-cryptographic xxh128
+    # is marked so users understand the trust boundary.
+    if not args.no_dedup:
+        if _hash_name == "xxh128":
+            _hash_note = (f"{C.DIM}(non-cryptographic; "
+                          f"{'default' if _hash_source == 'auto' else 'forced'}){C.RESET}")
+        else:  # sha256
+            _hash_note = (f"{C.DIM}(cryptographic; "
+                          f"{'fallback' if _hash_source == 'auto' else 'forced'}){C.RESET}")
+        print(f"  Hash:        {C.BOLD}{_hash_name}{C.RESET} {_hash_note}")
     if not src_remote and not dst_remote:
         print(f"  Hash cache:  {'disabled' if args.no_cache else 'enabled'}")
     print(f"  Overwrite:   {'always' if args.overwrite else 'skip identical'}")
     if (src_remote or dst_remote) and args.compress:
         print(f"  Compression: {C.GREEN}enabled{C.RESET}")
     print(f"  Platform:    {_system}")
+
+    # Verbose: full FS capability breakdown (with -v / --verbose)
+    if getattr(args, "verbose", False) and fs_info is not None:
+        caps = fs_info.capabilities
+        print(f"  FS:          {C.BOLD}{fs_info.fs_type}{C.RESET} → "
+              f"{C.CYAN}{fs_info.strategy}{C.RESET}")
+        print(f"               {C.DIM}hardlink={'y' if caps.hardlink else 'n'} "
+              f"symlink={'y' if caps.symlink else 'n'} "
+              f"reflink={'y' if caps.reflink else 'n'} "
+              f"case={'sens' if caps.case_sensitive else 'insens'}{C.RESET}")
+        print(f"               {C.DIM}detect={fs_info.detection_ms:.1f}ms "
+              f"probe={fs_info.probe_ms:.1f}ms "
+              f"({len(fs_info.probes_run)} probe"
+              f"{'s' if len(fs_info.probes_run) != 1 else ''}){C.RESET}")
+    elif fs_error:
+        print(f"  FS:          {C.YELLOW}detection failed: {fs_error}{C.RESET}")
+
     print()
 
     # ── Connect to remote source if needed ─────────────────────────────
@@ -3939,13 +4744,21 @@ def main():
     saved_bytes = 0
     copy_entries = entries
 
+    # Use the fs_info detected earlier (before the banner) to decide the
+    # dedup strategy. On link-capable filesystems (ext4, btrfs, XFS, NTFS,
+    # APFS, ReFS, etc.) dedup saves both bandwidth and disk. On
+    # link-incapable filesystems (FAT32, exFAT) dedup saves only bandwidth
+    # because each duplicate is materialized as a full copy.
+    fs_strategy = fs_info.strategy if fs_info is not None else None
+
     if not args.no_dedup:
         banner("Phase 2 — Deduplication")
         if src_remote:
             copy_entries, link_map, saved_bytes = deduplicate_remote_source(
-                entries, src_ssh, src, args.threads)
+                entries, src_ssh, src, args.threads, fs_strategy=fs_strategy)
         else:
-            copy_entries, link_map, saved_bytes = deduplicate(entries, args.threads, dedup_db)
+            copy_entries, link_map, saved_bytes = deduplicate(
+                entries, args.threads, dedup_db, fs_strategy=fs_strategy)
 
     unique_size = sum(e.size for e in copy_entries)
 
@@ -4264,8 +5077,23 @@ def main():
             # ── Phase 3: Space check (local) ─────────────────────────
             banner("Phase 3 — Space check")
             required = unique_size
-            print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
-                  + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
+            # If the destination filesystem can't dedup via links (FAT32,
+            # exFAT, etc.), each duplicate will be materialized as a full
+            # copy. We need space for the FULL undeduplicated size.
+            if fs_strategy == "none" and saved_bytes > 0:
+                full_size = unique_size + saved_bytes
+                print(f"  Data to write: {C.BOLD}{fmt_size(full_size)}{C.RESET}")
+                print(f"  {C.YELLOW}⚠ Filesystem does not support links — "
+                      f"dedup saves {fmt_size(saved_bytes)} on the wire only."
+                      f"{C.RESET}")
+                print(f"  {C.YELLOW}  Each duplicate becomes a full copy on "
+                      f"disk; total disk usage will be "
+                      f"{fmt_size(full_size)}.{C.RESET}")
+                required = full_size
+            else:
+                print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
+                      + (f" (after dedup saved {fmt_size(saved_bytes)})"
+                         if saved_bytes > 0 else ""))
 
             if not check_destination_space(dst, required, args.force):
                 src_ssh.close()
@@ -4507,14 +5335,16 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     try:
         _run_local_flow(args, dst, copy_entries, link_map, total_size, dedup_db,
-                        total_files, unique_size, saved_bytes, buf_size)
+                        total_files, unique_size, saved_bytes, buf_size,
+                        fs_strategy)
     finally:
         if dedup_db:
             dedup_db.close()
 
 
 def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
-                    total_files, unique_size, saved_bytes, buf_size):
+                    total_files, unique_size, saved_bytes, buf_size,
+                    fs_strategy=None):
     # ── Phase 2b: Skip unchanged files ────────────────────────────────
     skipped_count = 0
     skipped_bytes = 0
@@ -4544,8 +5374,22 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # ── Phase 3: Space check ──────────────────────────────────────────
     banner("Phase 3 — Space check")
     required = unique_size
-    print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
-          + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
+    # If the destination filesystem can't dedup via links (FAT32, exFAT,
+    # etc.), each duplicate will be materialized as a full copy. We need
+    # space for the FULL undeduplicated size.
+    if fs_strategy == "none" and saved_bytes > 0:
+        full_size = unique_size + saved_bytes
+        print(f"  Data to write: {C.BOLD}{fmt_size(full_size)}{C.RESET}")
+        print(f"  {C.YELLOW}⚠ Filesystem does not support links — "
+              f"dedup saves {fmt_size(saved_bytes)} on the wire only."
+              f"{C.RESET}")
+        print(f"  {C.YELLOW}  Each duplicate becomes a full copy on disk; "
+              f"total disk usage will be {fmt_size(full_size)}.{C.RESET}")
+        required = full_size
+    else:
+        print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
+              + (f" (after dedup saved {fmt_size(saved_bytes)})"
+                 if saved_bytes > 0 else ""))
 
     if not check_destination_space(dst, required, args.force):
         sys.exit(1)

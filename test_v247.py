@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Comprehensive test suite for fast-copy v2.4.7
+Comprehensive test suite for fast-copy v2.4.8 (with FS detection)
 Tests all copy modes: L2L, R2L, L2R, R2R
 Tests: directories, single files, exclusions, incremental, overwrite,
        dry-run, verify, dedup, glob, empty dirs, large files, special chars
+       FS detection (banner output, strategy selection, multiple FSes)
+
+Tests fast_copy.py (the integrated build with FS detection) — not the
+single-file fast_copy.py. Both should produce identical results except for
+the new FS detection banner line in local copies.
 """
 
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,10 +23,21 @@ import textwrap
 import time
 import unittest
 
-FAST_COPY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fast_copy.py")
+# Test the integrated build (fast_copy.py + fs_detect.py wired in)
+FAST_COPY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "fast_copy.py")
 PYTHON = sys.executable
 USER = os.environ.get("USER", "kai")
 REMOTE_PREFIX = f"{USER}@localhost:"
+
+# Make fs_detect importable for the new test classes
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fs_detect
+
+
+def strip_ansi(text):
+    """Remove ANSI escape codes from a string."""
+    return re.sub(r'\x1b\[[0-9;]*m', '', text)
 
 
 def run_fc(*args, expect_fail=False, timeout=120):
@@ -1206,7 +1223,256 @@ class TestVersion(unittest.TestCase):
     def test_version_output(self):
         out, _, rc = run_fc("--version")
         self.assertEqual(rc, 0)
-        self.assertIn("2.4.7", out)
+        self.assertIn("3.0.0", out)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FS DETECTION INTEGRATION
+# ═══════════════════════════════════════════════════════════════════
+
+class TestFSDetectionBanner(TempDirMixin, unittest.TestCase):
+    """Verify the FS detection strategy is folded into the Dedup line for local
+    copies, and the verbose -v flag shows the full FS info block."""
+
+    # ── Default mode: strategy is folded into Dedup: line ─────────────
+
+    def test_dedup_line_includes_strategy_local_l2l(self):
+        """Local copy should print 'Dedup: enabled (<strategy>)'."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc(self.src_dir, self.dst_dir)
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \((reflink|hardlink|symlink|none)\)")
+
+    def test_dedup_strategy_is_valid(self):
+        """The strategy in parens must be one of the valid values."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc(self.src_dir, self.dst_dir)
+        clean = strip_ansi(out)
+        m = re.search(r"Dedup:\s+enabled \((\w+)\)", clean)
+        self.assertIsNotNone(m)
+        self.assertIn(m.group(1), ("reflink", "hardlink", "symlink", "none"))
+
+    def test_default_does_not_print_fs_block(self):
+        """Without -v, the verbose 'FS:' block should not appear."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc(self.src_dir, self.dst_dir)
+        clean = strip_ansi(out)
+        self.assertNotIn("FS:", clean,
+                         "Verbose FS block should be hidden by default")
+
+    def test_dedup_line_for_single_file(self):
+        """Single-file local copy should still show strategy in Dedup line."""
+        make_test_tree(self.src_dir, {"single.txt": "x\n"})
+        src_file = os.path.join(self.src_dir, "single.txt")
+        out, _, rc = run_fc(src_file, self.dst_dir)
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(\w+\)")
+
+    def test_no_strategy_in_dedup_line_for_remote_dst(self):
+        """Local→remote copy: Dedup line should NOT have strategy in parens."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        remote_dst = REMOTE_PREFIX + self.dst_dir
+        out, err, rc = run_fc(self.src_dir, remote_dst)
+        self.assertEqual(rc, 0, f"stderr: {err}")
+        clean = strip_ansi(out)
+        # Find the Dedup line and verify no parenthetical strategy
+        for line in clean.splitlines():
+            if "Dedup:" in line:
+                self.assertNotRegex(
+                    line, r"\(\w+\)",
+                    "Dedup line should be plain for remote destinations: " + line
+                )
+                break
+        else:
+            self.fail("No Dedup line found")
+
+    def test_no_strategy_in_dedup_line_for_r2r(self):
+        """Remote→remote copy: Dedup line should be plain."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        remote_src = REMOTE_PREFIX + self.src_dir
+        remote_dst = REMOTE_PREFIX + self.dst_dir
+        out, err, rc = run_fc(remote_src, remote_dst)
+        self.assertEqual(rc, 0, f"stderr: {err}")
+        clean = strip_ansi(out)
+        for line in clean.splitlines():
+            if "Dedup:" in line:
+                self.assertNotRegex(line, r"\(\w+\)",
+                                    "Dedup line should be plain for R2R: " + line)
+                break
+        else:
+            self.fail("No Dedup line found")
+
+    def test_dedup_line_for_r2l(self):
+        """Remote→local copy: Dedup line SHOULD include the local FS strategy."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        remote_src = REMOTE_PREFIX + self.src_dir
+        out, err, rc = run_fc(remote_src, self.dst_dir)
+        self.assertEqual(rc, 0, f"stderr: {err}")
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(\w+\)")
+
+    def test_dedup_line_when_disabled(self):
+        """--no-dedup should print 'Dedup: disabled' without strategy."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc(self.src_dir, self.dst_dir, "--no-dedup")
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+disabled")
+
+    # ── Verbose mode: full FS info block ──────────────────────────────
+
+    def test_verbose_shows_fs_block(self):
+        """With -v, the full FS detection block should appear."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc("-v", self.src_dir, self.dst_dir)
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertIn("FS:", clean)
+        self.assertRegex(clean, r"FS:\s+\S+\s+→\s+\S+")
+
+    def test_verbose_shows_capabilities(self):
+        """Verbose mode includes the capability matrix."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc("-v", self.src_dir, self.dst_dir)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"hardlink=[yn]\s+symlink=[yn]\s+reflink=[yn]")
+        self.assertRegex(clean, r"case=(sens|insens)")
+        self.assertRegex(clean, r"detect=[\d.]+ms\s+probe=[\d.]+ms")
+
+    def test_verbose_long_form_works(self):
+        """--verbose should be equivalent to -v."""
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc("--verbose", self.src_dir, self.dst_dir)
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertIn("FS:", clean)
+
+
+class TestFSDetectionDryRun(TempDirMixin, unittest.TestCase):
+    """FS detection should also work in dry-run mode."""
+
+    def test_dry_run_default_shows_strategy_in_dedup(self):
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc(self.src_dir, self.dst_dir, "--dry-run")
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(\w+\)")
+
+    def test_dry_run_verbose_shows_fs_block(self):
+        make_test_tree(self.src_dir, {"file.txt": "hello\n"})
+        out, _, rc = run_fc("-v", self.src_dir, self.dst_dir, "--dry-run")
+        self.assertEqual(rc, 0)
+        clean = strip_ansi(out)
+        self.assertIn("FS:", clean)
+
+
+class TestFSDetectionAcrossFilesystems(unittest.TestCase):
+    """If multiple FSes are mounted, verify detection picks the right strategy
+    for each. Skips destinations that aren't writable."""
+
+    # Map: label -> (path, expected_strategy or None for "any valid")
+    DESTS = [
+        ("tmpfs",            "/tmp",          "hardlink"),
+        ("ext4_home",        os.path.expanduser("~"), "hardlink"),
+        ("xfs_folders",      "/mnt/folders",  "reflink"),
+        ("ext4_usb",         "/mnt/usb",      "hardlink"),
+        ("fat32_usb1",       "/mnt/usb1",    "none"),
+    ]
+
+    def _run_copy_on(self, root):
+        if not os.path.exists(root) or not os.access(root, os.W_OK):
+            self.skipTest("destination not writable: {}".format(root))
+        work = tempfile.mkdtemp(prefix="fc_fs_test_", dir=root)
+        try:
+            src = os.path.join(work, "src")
+            dst = os.path.join(work, "dst")
+            os.makedirs(src)
+            with open(os.path.join(src, "f.txt"), "w") as f:
+                f.write("hello\n")
+            out, err, rc = subprocess.run(
+                [PYTHON, FAST_COPY, src, dst],
+                capture_output=True, text=True, timeout=120,
+            ).stdout, "", 0  # placeholder, we'll re-run cleanly below
+            r = subprocess.run(
+                [PYTHON, FAST_COPY, src, dst],
+                capture_output=True, text=True, timeout=120,
+            )
+            return r.stdout, r.stderr, r.returncode
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_tmpfs_strategy(self):
+        out, err, rc = self._run_copy_on("/tmp")
+        self.assertEqual(rc, 0, err)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(hardlink\)")
+
+    def test_ext4_home_strategy(self):
+        out, err, rc = self._run_copy_on(os.path.expanduser("~"))
+        self.assertEqual(rc, 0, err)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(hardlink\)")
+
+    def test_xfs_folders_strategy(self):
+        if not os.path.exists("/mnt/folders"):
+            self.skipTest("/mnt/folders not mounted")
+        out, err, rc = self._run_copy_on("/mnt/folders")
+        self.assertEqual(rc, 0, err)
+        clean = strip_ansi(out)
+        # XFS with reflink=1 → reflink, otherwise hardlink
+        self.assertRegex(clean, r"Dedup:\s+enabled \((reflink|hardlink)\)")
+
+    def test_ext4_usb_strategy(self):
+        if not os.path.exists("/mnt/usb"):
+            self.skipTest("/mnt/usb not mounted")
+        out, err, rc = self._run_copy_on("/mnt/usb")
+        self.assertEqual(rc, 0, err)
+        clean = strip_ansi(out)
+        self.assertRegex(clean, r"Dedup:\s+enabled \(hardlink\)")
+
+    def test_fat32_detection_only(self):
+        """FAT32 detection — only runs if /mnt/usb1 is actually mounted as vfat."""
+        if not os.path.exists("/mnt/usb1"):
+            self.skipTest("/mnt/usb1 not present")
+        info = fs_detect.detect_capabilities("/mnt/usb1")
+        if info.fs_type.lower() != "vfat":
+            self.skipTest("/mnt/usb1 is not currently mounted as vfat "
+                          "(detected: {})".format(info.fs_type))
+        self.assertEqual(info.strategy, "none")
+        self.assertFalse(info.capabilities.hardlink)
+        self.assertFalse(info.capabilities.symlink)
+        self.assertFalse(info.capabilities.reflink)
+        self.assertFalse(info.capabilities.case_sensitive)
+
+
+class TestFSDetectionDoesntBreakCopies(TempDirMixin, unittest.TestCase):
+    """Sanity: integrating fs_detect doesn't change copy behavior."""
+
+    def test_directory_copy_still_works(self):
+        make_test_tree(self.src_dir)
+        out, _, rc = run_fc(self.src_dir, self.dst_dir)
+        self.assertEqual(rc, 0)
+        verify_tree(self, self.src_dir, self.dst_dir)
+
+    def test_exclude_still_works(self):
+        structure = {"keep.txt": "k", "skip.log": "s"}
+        make_test_tree(self.src_dir, structure)
+        out, _, rc = run_fc(self.src_dir, self.dst_dir, "--exclude", "skip.log")
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(os.path.join(self.dst_dir, "keep.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.dst_dir, "skip.log")))
+
+    def test_overwrite_still_works(self):
+        make_test_tree(self.src_dir, {"f.txt": "v1\n"})
+        run_fc(self.src_dir, self.dst_dir)
+        with open(os.path.join(self.src_dir, "f.txt"), "w") as f:
+            f.write("v2\n")
+        out, _, rc = run_fc(self.src_dir, self.dst_dir)
+        self.assertEqual(rc, 0)
+        with open(os.path.join(self.dst_dir, "f.txt")) as f:
+            self.assertEqual(f.read(), "v2\n")
 
 
 if __name__ == "__main__":
