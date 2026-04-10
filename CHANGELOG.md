@@ -1,5 +1,123 @@
 # Changelog
 
+## v3.0.1 — 2026-04-10
+
+Reflink-based dedup and copy on btrfs, XFS (reflink=1), APFS, and
+bcachefs. fast-copy now performs **metadata-only clones** instead of
+byte copies whenever the source and destination are on the same
+reflink-capable filesystem, with additional CoW safety properties
+that eliminate the link-update problem hardlink dedup has.
+
+### New Features
+
+- **Reflink-based copy on supported filesystems** — When the destination
+  filesystem supports CoW clones (btrfs, XFS with `reflink=1`, APFS,
+  bcachefs, ReFS detected by name), `copy_individual()` now uses
+  `ioctl(FICLONE)` on Linux and `clonefile(2)` on macOS to clone files
+  via metadata operations instead of reading and writing bytes. A 10 GB
+  file copy on the same btrfs volume now completes in **milliseconds**
+  instead of minutes. The same applies to XFS-with-reflinks (the
+  `/mnt/folders` setup tested in v3.0.0) and APFS on macOS.
+
+- **Reflink-based dedup links** — `create_links()` now tries reflinks
+  *before* hardlinks when the destination FS supports them. This is
+  strictly better than hardlinks because reflinks are CoW: modifying
+  one peer file doesn't affect the others. Eliminates the entire class
+  of "modify one file, accidentally modify peers" bugs that plague
+  hardlink-based dedup.
+
+- **`copy_hybrid` reflink dispatch** — On reflink-capable destinations,
+  the small/large file split is bypassed and all files are routed
+  through `copy_individual` so they all benefit from the metadata-only
+  clone path. Each reflink is one syscall regardless of file size.
+
+- **New `Reflinks:` line** in the Phase 6 duplicate-handling summary:
+  ```
+  Duplicate handling:
+    ✓ Reflinks:           4 (CoW shared blocks; modifying one does not affect peers)
+    → all reflinked (CoW; safe to modify peers)
+  ```
+
+### How it works
+
+When you copy onto a reflink-capable destination:
+
+1. fs_detect identifies the destination as `strategy: reflink`
+2. The banner shows `Dedup: enabled (reflink)`
+3. `copy_individual()` calls `_try_reflink()` per file, which checks
+   that source and destination are on the same filesystem (`st_dev`)
+   and then issues `FICLONE` (Linux) or `clonefile` (macOS)
+4. On success, the destination file shares storage blocks with the
+   source — no bytes are read or written
+5. `create_links()` does the same for deduplicated peers, giving CoW
+   safety without the inode-sharing of hardlinks
+
+If the reflink syscall fails for any reason (cross-filesystem, kernel
+limitation, error), it cleans up any partial destination and falls
+through to the existing byte-stream copy code. **No regressions on
+non-reflink filesystems** — ext4, tmpfs, NTFS, and FAT32 all behave
+exactly as before.
+
+### Architectural significance
+
+Reflink-based dedup is the **architecturally correct** answer to the
+"modifying one file affects its peers" problem we've been working
+around for hardlinks. With CoW:
+
+- Two files can share storage at copy time
+- Modifying one allocates new blocks for that file only
+- The other peer is completely unaffected
+- The user's mental model of "files are independent" matches reality
+
+This makes the future delta-update / Phase-2-link-management work
+unnecessary on reflink filesystems. fast-copy on btrfs/APFS/ReFS is
+now safe to use for any incremental update workflow without worrying
+about hardlink semantics.
+
+### Bug Fixes / Improvements
+
+- **macOS APFS users** — fast-copy is now significantly faster on local
+  APFS copies. Previously the byte-stream path was used; now `clonefile(2)`
+  is called per file, matching what `cp` does internally on macOS Big Sur+.
+
+- **Synology btrfs volumes** — Local backups within `/volume1` (btrfs)
+  on Synology NAS are now near-instant. Combined with the v3.0.0 tar
+  stdin fix that made remote operations work, fast-copy is now optimal
+  on Synology.
+
+- **Architectural detail**: `copy_individual()` now logs `method=reflink`
+  in the per-file JSON log when reflinks are used, so users with
+  `--log-file` can audit which files were cloned vs byte-copied.
+
+- **Windows: tar validator rejected legitimate filenames as "outside
+  destination"** — The path validator in `_validate_tar_member` and the
+  inline check in `_ProgressTarExtractor` used case-sensitive string
+  comparison (`startswith`) to verify extracted paths stay within the
+  destination root. On Windows NTFS (case-insensitive), this incorrectly
+  rejected legitimate files (e.g. `Halo.4...[YTS.MX].srt`) when the
+  user's typed destination path differed in case from the on-disk casing.
+  Fixed by using `os.path.normcase()` before comparison — no-op on Linux,
+  lowercases on Windows/macOS. All 7 path-traversal security tests
+  continue to block malicious inputs.
+
+### Test coverage
+
+- 3 new unit tests for `_try_reflink()` (returns bool, cross-filesystem
+  rejection, cleanup on failure)
+- End-to-end live test on real XFS with `reflink=1` confirms reflinks
+  produce separate inodes (`nlink=1` each) and that modifying one peer
+  doesn't change the others (CoW verified)
+- All 289 existing tests still pass
+
+### Upgrade notes
+
+- **No breaking changes**. Existing command lines work identically.
+- **No new flags**. Reflinks are used automatically when the destination
+  filesystem supports them.
+- **Verify your savings**: After upgrading, run a copy on btrfs/APFS and
+  watch the Phase 5 banner — it should say `Strategy: reflink (CoW)` and
+  the elapsed time should be near-zero for any size of source.
+
 ## v3.0.0 — 2026-04-09
 
 Major release. Introduces automatic filesystem detection, explicit hash

@@ -6,3 +6,7 @@ __pycache__/
 blue1
 downloads1
 languages
+# Test files and dev shims kept local only, not published to GitHub
+test_*.py
+pentest_scenarios.py
+fs_detect.py

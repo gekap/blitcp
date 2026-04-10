@@ -100,7 +100,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -315,10 +315,17 @@ def _validate_tar_member(member, dst_root):
     # Reject null bytes in name
     if '\0' in member.name:
         return "blocked: null byte in name"
-    # Resolve final path and verify it stays within dst_root
+    # Resolve final path and verify it stays within dst_root.
+    # Use os.path.normcase for the comparison so case-insensitive
+    # filesystems (Windows NTFS, macOS HFS+ default, APFS default)
+    # don't reject legitimate paths just because Python's string
+    # comparison is case-sensitive while the filesystem is not.
     resolved = os.path.realpath(os.path.join(dst_root, member.name))
     real_dst = os.path.realpath(dst_root)
-    if not resolved.startswith(real_dst + os.sep) and resolved != real_dst:
+    nc_resolved = os.path.normcase(resolved)
+    nc_real_dst = os.path.normcase(real_dst)
+    if not (nc_resolved == nc_real_dst or
+            nc_resolved.startswith(nc_real_dst + os.sep)):
         return "blocked: resolves outside destination"
     return True
 
@@ -1678,6 +1685,108 @@ def probe_reflink(probe_dir):
         return False
 
 
+# Real reflink copy primitives ---------------------------------------------
+# Distinct from the probe_reflink_* functions above, which only test
+# capability with throwaway files. These are called from copy_individual
+# and create_links to actually create reflink copies of user data.
+
+def _try_reflink_linux(src_path, dst_path):
+    """Create dst_path as a reflink (CoW clone) of src_path via FICLONE.
+    Returns True on success, False on any failure. On failure, removes
+    any partially-created destination file so the caller can fall back.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return False
+
+    machine = platform.machine().lower()
+    if machine not in _RECOGNIZED_LINUX_ARCHS:
+        return False
+
+    try:
+        with open(src_path, "rb") as src_f:
+            with open(dst_path, "wb") as dst_f:
+                fcntl.ioctl(dst_f.fileno(), _LINUX_FICLONE, src_f.fileno())
+        return True
+    except (OSError, IOError):
+        # Remove any partial dst so the caller can cleanly fall back
+        try:
+            if os.path.lexists(dst_path):
+                os.unlink(dst_path)
+        except OSError:
+            pass
+        return False
+
+
+def _try_reflink_macos(src_path, dst_path):
+    """Create dst_path as a clone of src_path via clonefile(2) on APFS.
+    clonefile requires the destination to NOT exist, so we remove any
+    existing entry first."""
+    try:
+        if os.path.lexists(dst_path):
+            try:
+                os.unlink(dst_path)
+            except OSError:
+                return False
+        libc = ctypes.CDLL("libc.dylib")
+        libc.clonefile.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32
+        ]
+        libc.clonefile.restype = ctypes.c_int
+        rc = libc.clonefile(
+            src_path.encode("utf-8"),
+            dst_path.encode("utf-8"),
+            0,
+        )
+        if rc == 0:
+            return True
+        # Cleanup any partial result
+        try:
+            if os.path.lexists(dst_path):
+                os.unlink(dst_path)
+        except OSError:
+            pass
+        return False
+    except (OSError, AttributeError):
+        return False
+
+
+def _try_reflink_windows(src_path, dst_path):
+    """Windows reflink copy via FSCTL_DUPLICATE_EXTENTS_TO_FILE.
+    Currently not implemented — requires DeviceIoControl + cluster-aligned
+    pre-allocation. Deferred to a future release. ReFS users currently
+    fall through to the byte-stream copy path."""
+    return False
+
+
+def _try_reflink(src_path, dst_path):
+    """Try to create dst_path as a reflink/CoW clone of src_path.
+
+    Returns True on success, False if reflink isn't possible (different
+    filesystem, unsupported FS, error). Reflinks only work within a
+    single filesystem — checks st_dev before attempting the syscall to
+    avoid wasted work.
+    """
+    try:
+        src_st = os.stat(src_path)
+        dst_parent = os.path.dirname(dst_path) or "."
+        dst_st = os.stat(dst_parent)
+    except OSError:
+        return False
+
+    if src_st.st_dev != dst_st.st_dev:
+        return False  # cross-filesystem — reflink impossible
+
+    if _system == "Linux":
+        return _try_reflink_linux(src_path, dst_path)
+    elif _system == "Darwin":
+        return _try_reflink_macos(src_path, dst_path)
+    elif _system == "Windows":
+        return _try_reflink_windows(src_path, dst_path)
+    return False
+
+
 def probe_case_sensitivity(probe_dir):
     """Test whether the FS distinguishes 'A' from 'a' as different files."""
     upper = os.path.join(probe_dir, "Case_Probe.tmp")
@@ -2285,16 +2394,25 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     return unique_entries, link_map, saved_bytes
 
 
-def create_links(link_map, dst_root):
+def create_links(link_map, dst_root, fs_strategy=None):
     """
-    Create hard links for deduplicated files.
-    Falls back to symlinks if hard links fail (e.g. FAT32/exFAT USB).
-    Falls back to actual copy as last resort.
+    Create dedup links for duplicated files.
+
+    Fallback chain (best → worst):
+      1. Reflink (CoW clone): metadata-only, CoW-safe so peer files
+         remain independent on write. Used when fs_strategy='reflink'.
+      2. Hardlink: shared inode. Eliminates extra disk usage but all
+         names share data — modifying one modifies all peers.
+      3. Symlink: pointer to canonical. Asymmetric — deleting the
+         canonical breaks the symlink. Rare fallback for unusual FSes.
+      4. Full copy: independent file. Used on FAT32 / exFAT and
+         filesystems without any link support.
     """
     if not link_map:
         return
 
     print(f"  {C.DIM}Creating {len(link_map)} links for duplicates...{C.RESET}", end="", flush=True)
+    reflink_ok = 0
     hardlink_ok = 0
     symlink_ok = 0
     copy_fallback = 0
@@ -2317,7 +2435,19 @@ def create_links(link_map, dst_root):
             _link_size = 0
         _link_target = target if isinstance(target, str) else target[1]
 
-        # Try hard link first (fastest, no extra space)
+        # 1. Try reflink first when the FS supports it. Reflinks are the
+        #    BEST dedup mechanism because they share storage initially but
+        #    are CoW on write — modifying one peer doesn't affect others.
+        #    This eliminates the link-update problem that hardlinks have.
+        if fs_strategy == "reflink":
+            if _try_reflink(_strip_long_path(dst_canonical),
+                            _strip_long_path(dst_dup)):
+                _log("linked", dup_rel, _link_size, method="reflink",
+                     link_target=_link_target)
+                reflink_ok += 1
+                continue
+
+        # 2. Try hard link (fast, no extra space, but inode-shared)
         try:
             os.link(dst_canonical, dst_dup)
             _log("linked", dup_rel, _link_size, method="hardlink", link_target=_link_target)
@@ -2326,7 +2456,7 @@ def create_links(link_map, dst_root):
         except OSError:
             pass
 
-        # Try symlink (works on most filesystems)
+        # 3. Try symlink (works on most filesystems)
         try:
             # Compute relative path from dup to canonical (strip \\?\ for relpath)
             rel_target = os.path.relpath(
@@ -2345,7 +2475,7 @@ def create_links(link_map, dst_root):
         except OSError:
             pass
 
-        # Last resort: actual copy
+        # 4. Last resort: actual copy
         try:
             shutil.copy2(dst_canonical, dst_dup)
             _log("linked", dup_rel, _link_size, method="copy_fallback", link_target=_link_target)
@@ -2354,8 +2484,11 @@ def create_links(link_map, dst_root):
             _log("error", dup_rel, _link_size, error=str(e))
             errors += 1
 
-    total = hardlink_ok + symlink_ok + copy_fallback
+    total = reflink_ok + hardlink_ok + symlink_ok + copy_fallback
     print(f"\r  {C.GREEN}Duplicate handling:{C.RESET}                              ")
+    if reflink_ok:
+        print(f"    {C.GREEN}✓{C.RESET} Reflinks:         {C.BOLD}{reflink_ok:>6}{C.RESET} "
+              f"{C.DIM}(CoW shared blocks; modifying one does not affect peers){C.RESET}")
     if hardlink_ok:
         print(f"    {C.GREEN}✓{C.RESET} Hardlinks:        {C.BOLD}{hardlink_ok:>6}{C.RESET} "
               f"{C.DIM}(shared inode; zero extra disk){C.RESET}")
@@ -2372,12 +2505,14 @@ def create_links(link_map, dst_root):
     if total > 0:
         # Show the breakdown as a percentage so users can see at a glance
         # how much of the dedup benefit they actually got on disk.
-        if hardlink_ok == total:
+        if reflink_ok == total:
+            _disk_msg = f"{C.GREEN}all reflinked (CoW; safe to modify peers){C.RESET}"
+        elif hardlink_ok == total:
             _disk_msg = f"{C.GREEN}all disk savings realized{C.RESET}"
         elif copy_fallback == total:
             _disk_msg = f"{C.YELLOW}no disk savings (bandwidth only){C.RESET}"
         else:
-            _disk_msg = (f"{hardlink_ok + symlink_ok}/{total} linked, "
+            _disk_msg = (f"{reflink_ok + hardlink_ok + symlink_ok}/{total} linked, "
                          f"{copy_fallback} copied")
         print(f"    {C.DIM}→ {_disk_msg}{C.RESET}")
 
@@ -2686,8 +2821,14 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
         print(f"\r  {C.GREEN}Streamed {extracted} files to destination{C.RESET}                    ")
 
 
-def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
-    """Copy large files individually with big buffers in physical disk order."""
+def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
+                    fs_strategy=None):
+    """Copy large files individually with big buffers in physical disk order.
+
+    When fs_strategy='reflink' and source+destination are on the same
+    filesystem, files are cloned via FICLONE/clonefile (instant, metadata-
+    only). On any failure (cross-filesystem, unsupported FS, error), falls
+    back to the byte-stream copy path."""
     mv = memoryview(buf)
 
     for entry in entries:
@@ -2712,6 +2853,21 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
                     pass
                 _log("copied", entry.rel, entry.size, method="individual")
                 progress.update(0, 1)
+                progress.display()
+                continue
+
+            # Try reflink first when the destination FS supports it.
+            # Reflinks are O(1) metadata operations — instant for any size.
+            if fs_strategy == "reflink" and _try_reflink(entry.src, dst_path):
+                # Preserve timestamps and permissions even on reflink
+                try:
+                    st = os.stat(entry.src)
+                    os.utime(dst_path, (st.st_atime, st.st_mtime))
+                    os.chmod(dst_path, stat.S_IMODE(st.st_mode))
+                except OSError:
+                    pass
+                _log("copied", entry.rel, entry.size, method="reflink")
+                progress.update(entry.size, 1)
                 progress.display()
                 continue
 
@@ -2755,12 +2911,33 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None):
             progress.update(entry.size, 1)
 
 
-def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None):
+def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None,
+                fs_strategy=None):
     """
     Hybrid block copy engine:
-      - Small files (<1MB): bundled into tar → single block write → extract
-      - Large files (>=1MB): individual copy with large buffers
+      - Reflink-capable FS (btrfs, XFS reflink, APFS, ReFS): all files via
+        copy_individual using reflinks (instant, metadata-only)
+      - Otherwise: small files (<1MB) bundled into tar block stream, large
+        files (>=1MB) via individual copy with large buffers
     """
+    # On reflink-capable destinations, route ALL files through copy_individual
+    # so each one gets cloned via FICLONE/clonefile. The tar-bundle path for
+    # small files is meant to amortize syscall overhead from byte copies —
+    # but reflinks are metadata-only, so the per-file syscall is essentially
+    # free and there's no benefit to bundling.
+    if fs_strategy == "reflink":
+        total_size = sum(e.size for e in entries)
+        print(f"  Strategy: {C.CYAN}reflink (CoW){C.RESET} for "
+              f"{C.BOLD}{len(entries)}{C.RESET} files, "
+              f"{C.BOLD}{fmt_size(total_size)}{C.RESET}")
+        print(f"    {C.DIM}Metadata-only clone — no data is read or "
+              f"written.{C.RESET}")
+        print()
+        buf = bytearray(buf_size)
+        copy_individual(entries, dst_root, progress, buf, cancel_check,
+                        fs_strategy=fs_strategy)
+        return
+
     small, large = split_by_size(entries)
     small_size = sum(e.size for e in small)
     large_size = sum(e.size for e in large)
@@ -2776,7 +2953,8 @@ def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None):
     if large:
         print(f"  {C.BOLD}── Large files ──{C.RESET}")
         buf = bytearray(buf_size)
-        copy_individual(large, dst_root, progress, buf, cancel_check)
+        copy_individual(large, dst_root, progress, buf, cancel_check,
+                        fs_strategy=fs_strategy)
         if cancel_check and cancel_check():
             return
         print()
@@ -3505,10 +3683,15 @@ class _ProgressTarExtractor:
             return result
 
         # Large file — extract with progress updates during write
-        # Validate with plain paths, use _long_path only for I/O
+        # Validate with plain paths, use _long_path only for I/O.
+        # Use normcase for the comparison to handle case-insensitive
+        # filesystems (Windows NTFS, macOS HFS+/APFS).
         resolved = os.path.realpath(os.path.join(self._dst_root, member.name))
         real_dst = os.path.realpath(self._dst_root)
-        if not resolved.startswith(real_dst + os.sep) and resolved != real_dst:
+        nc_resolved = os.path.normcase(resolved)
+        nc_real_dst = os.path.normcase(real_dst)
+        if not (nc_resolved == nc_real_dst or
+                nc_resolved.startswith(nc_real_dst + os.sep)):
             return "blocked: resolves outside destination"
 
         io_path = _long_path(resolved)
@@ -5124,9 +5307,9 @@ def main():
                                         case_renames=case_renames)
             progress.finish()
 
-            # Create links locally
+            # Create links locally (reflink-aware when supported)
             if link_map:
-                create_links(link_map, dst)
+                create_links(link_map, dst, fs_strategy=fs_strategy)
 
             elapsed = time.time() - t0
             speed = unique_size / elapsed if elapsed > 0 else 0
@@ -5425,12 +5608,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     progress = Progress(unique_size, len(copy_entries))
     t0 = time.time()
-    copy_hybrid(copy_entries, dst, progress, buf_size)
+    copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy)
     progress.finish()
 
     # Create links for duplicates
     if link_map:
-        create_links(link_map, dst)
+        create_links(link_map, dst, fs_strategy=fs_strategy)
 
     elapsed = time.time() - t0
     speed = unique_size / elapsed if elapsed > 0 else 0

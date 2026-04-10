@@ -3,8 +3,9 @@
 A fast, cross-platform command-line tool for copying files and directories at maximum sequential disk speed. Designed for USB drives, external HDDs, NAS backups, and large SSH transfers.
 
 **Key capabilities:**
+- **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
 - Reads files in **physical disk order** (eliminates random seeks on HDDs)
-- **Content-aware deduplication** — copies each unique file once, hard-links duplicates
+- **Content-aware deduplication** — copies each unique file once, hard-links or reflinks duplicates
 - **Automatic filesystem detection** — detects reflink/hardlink/symlink/none capability on the destination and picks the safest dedup strategy
 - **Honest dedup accounting** — on link-incapable destinations (FAT32, exFAT) reports "Bandwidth saved" separately from disk usage
 - **Cross-run dedup database** — SQLite cache remembers hashes across runs
@@ -97,13 +98,58 @@ The two servers do not need to reach each other directly. Data streams through i
 
 Before Phase 2, fast-copy detects the destination filesystem and probes its actual capabilities (hardlink, symlink, reflink CoW clones, case-sensitivity). Detection is ~5 ms on warm cache and uses cheap per-OS APIs (`/proc/self/mountinfo` on Linux, `statfs(2)` on macOS, `GetVolumeInformationW` on Windows) with targeted probes only for ambiguous filesystems (XFS reflink, NTFS Dev Drive, network mounts, FUSE).
 
-The detected strategy is shown in the banner alongside the `Dedup:` line:
+The detected strategy is shown in the banner alongside the `Dedup:` line and determines how dedup links AND how unique files are copied:
 
-| Destination filesystem | Strategy | What it means |
-|---|---|---|
-| btrfs, XFS (reflink=1), APFS, ReFS, bcachefs | **reflink** | CoW clones — duplicates share data on disk but diverge on write |
-| ext4, tmpfs, NTFS, HFS+, f2fs, zfs, NFS, SMB, most others | **hardlink** | Duplicates become hardlinks — zero extra disk space, but all names share an inode |
-| FAT32, exFAT, some FUSE mounts | **none** | No links at all — duplicates are materialized as full copies |
+| Destination filesystem | Strategy | Copy mechanism | Dedup link mechanism |
+|---|---|---|---|
+| btrfs, XFS (reflink=1), APFS, bcachefs | **reflink** | `FICLONE`/`clonefile` (metadata-only, instant) | reflinks (CoW; modifying one peer leaves others untouched) |
+| ext4, tmpfs, NTFS, HFS+, f2fs, NFS, SMB, most others | **hardlink** | byte stream copy with large buffers | `os.link()` hardlinks (shared inode) |
+| FAT32, exFAT, some FUSE mounts | **none** | byte stream copy | full copies (no links possible) |
+
+### Reflink-based copy (v3.1.0+)
+
+On btrfs / XFS-with-reflinks / APFS / bcachefs, fast-copy uses the kernel's CoW clone primitive instead of reading and writing bytes:
+
+- **Linux**: `ioctl(FICLONE)` on btrfs, XFS (`reflink=1`), bcachefs
+- **macOS**: `clonefile(2)` on APFS — same primitive `cp` uses internally on macOS Big Sur+
+- **Windows**: ReFS reflinks via `FSCTL_DUPLICATE_EXTENTS_TO_FILE` (deferred — future release)
+
+This means:
+
+- A **10 GB copy** on the same btrfs volume completes in **milliseconds** instead of minutes
+- A backup of `/home` to `/mnt/btrfs/backup` is essentially **free** until you start modifying files
+- Synology DS720+ users (btrfs at `/volume1`) get near-instant local backups
+- macOS users get the same speed `cp` already provides — fast-copy was previously slower on APFS for the same operation
+
+When the source and destination are on **different filesystems** (e.g. copying from `/home` ext4 to `/mnt/btrfs`), reflink isn't possible and fast-copy automatically falls back to the byte-stream copy. The same-filesystem check via `st_dev` happens before any syscall.
+
+**Important architectural property**: Reflinks are **CoW**. If you modify one of two reflinked files, the kernel allocates new blocks for that file only — the other peer is untouched. This is **fundamentally safer** than hardlinks for any incremental update workflow:
+
+```
+Hardlinks:                    Reflinks:
+  fileA  ┐                      fileA  → blocks 1-100
+         ├→ inode 12345         fileB  → blocks 1-100 (shared)
+  fileB  ┘                      
+                                After modifying fileB:
+  After modifying fileA:        fileA  → blocks 1-100 (unchanged)
+  fileA  ┐                      fileB  → blocks 1-100 (CoW: new alloc only for changes)
+         ├→ inode 12345 (NEW)
+  fileB  ┘  ← also changed!
+```
+
+Run output on a reflink-capable destination:
+
+```
+Phase 5 — Block copy
+  Strategy: reflink (CoW) for 5 files, 12.0 MB
+    Metadata-only clone — no data is read or written.
+
+  ██████████████████████████████ 100%  12.0 MB in 0.1s  avg 209.1 MB/s
+
+  Duplicate handling:
+    ✓ Reflinks:           4 (CoW shared blocks; modifying one does not affect peers)
+    → all reflinked (CoW; safe to modify peers)
+```
 
 On link-incapable filesystems (`strategy: none`), the dedup summary **honestly reports what happened**:
 
@@ -400,8 +446,9 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 
 ## Key Features
 
+- **Reflink-based copy** *(v3.1.0+)* — On btrfs / XFS reflink / APFS / bcachefs, files are cloned via `FICLONE`/`clonefile` (metadata-only, instant) instead of byte-by-byte copy. CoW semantics make modified peers independent.
 - **Block-order reads** — Files read in physical disk order, eliminating random seeks
-- **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links duplicates
+- **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links or reflinks duplicates
 - **Automatic filesystem detection** *(v3.0.0+)* — Detects destination FS type (ext4, btrfs, XFS, APFS, NTFS, FAT32, etc.) and probes capabilities (hardlink, symlink, reflink, case-sensitivity) to pick the safest dedup strategy
 - **Honest dedup accounting** *(v3.0.0+)* — On FAT32/exFAT, reports "Bandwidth saved" separately from "Disk usage" and uses the correct full size for the space check
 - **Explicit hash algorithm selection** *(v3.0.0+)* — `--hash=auto|xxh128|sha256` lets users force a specific algorithm; the choice is displayed in the banner
