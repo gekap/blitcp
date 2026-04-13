@@ -2036,14 +2036,24 @@ def format_fs_info(info):
 
 def _long_path(p):
     """On Windows, prefix paths with \\\\?\\ to bypass the 260-char MAX_PATH limit.
-    Use ONLY for actual file I/O (open, makedirs, walk), NOT for path comparison."""
-    if _system == "Windows" and not p.startswith("\\\\?\\"):
-        return "\\\\?\\" + os.path.abspath(p)
-    return p
+    Use ONLY for actual file I/O (open, makedirs, walk), NOT for path comparison.
+
+    UNC paths (\\\\server\\share\\...) require the \\\\?\\UNC\\ form — prepending a
+    plain \\\\?\\ to a UNC path produces \\\\?\\\\\\server\\share, which Windows
+    rejects with WinError 123."""
+    if _system != "Windows" or p.startswith("\\\\?\\"):
+        return p
+    abs_p = os.path.abspath(p)
+    if abs_p.startswith("\\\\"):
+        # UNC: \\server\share\... → \\?\UNC\server\share\...
+        return "\\\\?\\UNC\\" + abs_p[2:]
+    return "\\\\?\\" + abs_p
 
 
 def _strip_long_path(p):
-    """Strip the \\\\?\\ prefix if present (for path comparison/relpath)."""
+    """Strip the \\\\?\\ or \\\\?\\UNC\\ prefix if present (for path comparison/relpath)."""
+    if p.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + p[8:]
     if p.startswith("\\\\?\\"):
         return p[4:]
     return p
@@ -3017,17 +3027,22 @@ TAR_CHUNK_SIZE = 100 * 1024 * 1024  # 100 MB per tar batch
 
 
 def _batch_by_size(entries, max_bytes=TAR_CHUNK_SIZE, max_files=10000):
-    """Split entries into batches of approximately max_bytes or max_files each."""
+    """Split entries into batches of approximately max_bytes or max_files each.
+
+    Flushes the current batch *before* appending an entry that would overshoot,
+    so a large file doesn't get bundled with earlier small ones into one batch.
+    A single entry larger than max_bytes is still kept on its own."""
     batches = []
     current = []
     current_size = 0
     for e in entries:
-        current.append(e)
-        current_size += e.size
-        if current_size >= max_bytes or len(current) >= max_files:
+        if current and (current_size + e.size > max_bytes or
+                        len(current) >= max_files):
             batches.append(current)
             current = []
             current_size = 0
+        current.append(e)
+        current_size += e.size
     if current:
         batches.append(current)
     return batches
@@ -4640,6 +4655,16 @@ def main():
                         dest="src_password",
                         help="Prompt for SSH password for remote source")
     args = parser.parse_args()
+
+    # Windows cmd.exe/MSVCRT quirk: a trailing `\"` in a quoted path like
+    # "\\host\share\" escapes the closing quote, leaving a literal `"` at
+    # the end of the argument. `"` is never valid in a Windows path, so
+    # strip it to recover the intended path.
+    if _system == "Windows":
+        if args.source and args.source.endswith('"'):
+            args.source = args.source.rstrip('"')
+        if args.destination and args.destination.endswith('"'):
+            args.destination = args.destination.rstrip('"')
 
     # These flags are handled in __main__ before main() is called,
     # but if someone somehow reaches here, handle gracefully
