@@ -1,5 +1,46 @@
 # Changelog
 
+## v3.0.2 — 2026-04-27
+
+Quality-of-life release: glob-pattern excludes and smarter copy
+verification that no longer fails when source files change during
+the copy.
+
+### New Features
+
+- **`--exclude` accepts glob patterns** — Previously exact-name only.
+  `--exclude` now accepts `fnmatch`-style globs and is repeatable, e.g.:
+
+  ```
+  fast-copy /src /dst --exclude .venv --exclude '*.bat' --exclude '.git*'
+  ```
+
+  Matching directories are pruned during the walk (we don't descend
+  into them), giving real speedups on trees with large excluded
+  subdirs like `node_modules`, `.venv`, or `target/`. Works for both
+  local scans and remote SSH source scans (via `find -prune`).
+
+- **Verification distinguishes "grew during copy" from corruption** —
+  When a destination file ends up *larger* than what was recorded at
+  scan time, that almost always means an active writer appended to it
+  during the copy — not corruption. v3.0.2 splits these cases:
+
+  - **Destination smaller than expected** → still a hard failure
+    (`SIZE MISMATCH`, run fails).
+  - **Destination larger than expected** → yellow `GREW DURING COPY`
+    warning, run still succeeds.
+  - The hash spot-check skips files that grew, since their hash is
+    expected to differ by design.
+
+  Applies to both local and remote (SSH) verification paths.
+
+### Upgrade notes
+
+- **No breaking changes**. Existing `--exclude NAME` invocations
+  continue to work — exact names are still valid `fnmatch` patterns.
+- **No new flags**. The `--exclude` semantics are simply more
+  permissive than before.
+
 ## v3.0.1 — 2026-04-10
 
 Reflink-based dedup and copy on btrfs, XFS (reflink=1), APFS, and

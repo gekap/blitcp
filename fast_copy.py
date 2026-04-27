@@ -55,7 +55,9 @@ Options:
   --log-file PATH   Write structured JSON log to file
   --no-dedup        Disable deduplication (copy all files even if identical)
   --overwrite       Overwrite all files, skip identical-file detection
-  --exclude NAME    Exclude files/dirs by name (can use multiple times)
+  --exclude PATTERN Exclude files/dirs by name or glob (e.g. .venv, *.bat,
+                    .git*); directories matching the pattern are pruned.
+                    Repeatable.
   --no-cache        Disable persistent hash cache (cross-run dedup database)
   --force           Skip space check and copy anyway
   --ssh-dst-port PORT   SSH port for remote destination (default: 22)
@@ -90,6 +92,7 @@ import re
 import getpass
 import posixpath
 import shlex
+import fnmatch
 import argparse
 import platform
 import threading
@@ -100,7 +103,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2094,11 +2097,15 @@ def scan_source(src_root, dst_root=None, excludes=None):
     if dst_real and dst_real.startswith(src_real + os.sep):
         print(f"\n  {C.YELLOW}Warning: Destination is inside source — it will be excluded{C.RESET}")
 
-    # Compile exclude patterns
-    exclude_names = {TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME}  # skip our own files
+    # Compile exclude patterns. Patterns are glob-style (fnmatch) and applied
+    # to both file basenames and directory basenames; matching directories are
+    # pruned so we don't descend into them.
+    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME]
     if excludes:
-        for ex in excludes:
-            exclude_names.add(ex)
+        exclude_patterns.extend(excludes)
+
+    def _excluded(name):
+        return any(fnmatch.fnmatch(name, p) for p in exclude_patterns)
 
     def on_walk_error(err):
         """Called by os.walk when it can't list a directory."""
@@ -2136,9 +2143,12 @@ def scan_source(src_root, dst_root=None, excludes=None):
             for d in dirs_to_remove:
                 dirs.remove(d)
 
+        # Prune excluded directories so os.walk doesn't descend into them
+        dirs[:] = [d for d in dirs if not _excluded(d)]
+
         for fname in files:
             # Skip excluded files
-            if fname in exclude_names:
+            if _excluded(fname):
                 continue
 
             src_path = os.path.join(root, fname)
@@ -3242,13 +3252,19 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
     remote_files = scan_remote_destination(ssh, remote_root)
 
     missing = []
-    mismatches = []
+    mismatches = []   # destination smaller than expected → real failure
+    grew = []         # destination larger than expected → likely active writer
+    grew_rels = set()
 
     for entry in entries:
         if entry.rel not in remote_files:
             missing.append(entry.rel)
         elif remote_files[entry.rel] != entry.size:
-            mismatches.append((entry.rel, entry.size, remote_files[entry.rel]))
+            if remote_files[entry.rel] > entry.size:
+                grew.append((entry.rel, entry.size, remote_files[entry.rel]))
+                grew_rels.add(entry.rel)
+            else:
+                mismatches.append((entry.rel, entry.size, remote_files[entry.rel]))
 
     for dup_rel in link_map:
         if dup_rel not in remote_files:
@@ -3256,11 +3272,14 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
 
     total_checked = total_to_check
 
-    # Hash spot-check: verify a sample of files by hashing on remote
+    # Hash spot-check: verify a sample of files by hashing on remote.
+    # Skip files known to have grown during copy — their hash will differ by
+    # design, that's not a corruption signal.
     # remote_hash_files always uses sha256, so re-hash locally with sha256
     hash_failures = []
     if not missing and not mismatches and entries:
-        hashed_entries = [e for e in entries if e.content_hash]
+        hashed_entries = [e for e in entries
+                          if e.content_hash and e.rel not in grew_rels]
         if hashed_entries:
             import random
             sample_size = min(20, len(hashed_entries))
@@ -3275,7 +3294,16 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
                         hash_failures.append(e.rel)
 
     if not missing and not mismatches and not hash_failures:
-        print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK on remote{C.RESET}               ")
+        if grew:
+            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK on remote{C.RESET}"
+                  f" {C.YELLOW}({len(grew)} grew during copy){C.RESET}")
+            for rel, exp, act in grew[:10]:
+                print(f"    {C.YELLOW}GREW DURING COPY: {rel} "
+                      f"(+{act - exp} bytes — likely an active writer){C.RESET}")
+            if len(grew) > 10:
+                print(f"    ... and {len(grew) - 10} more")
+        else:
+            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK on remote{C.RESET}               ")
         return True
     else:
         print(f"\r  {C.RED}✗ Verification failed:{C.RESET}")
@@ -3285,8 +3313,12 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
             print(f"    {C.RED}SIZE MISMATCH: {rel} ({exp} → {act}){C.RESET}")
         for rel in hash_failures[:10]:
             print(f"    {C.RED}HASH MISMATCH: {rel}{C.RESET}")
-        shown = min(len(missing), 10) + min(len(mismatches), 10) + min(len(hash_failures), 10)
-        remain = len(missing) + len(mismatches) + len(hash_failures) - shown
+        for rel, exp, act in grew[:10]:
+            print(f"    {C.YELLOW}GREW DURING COPY: {rel} "
+                  f"(+{act - exp} bytes){C.RESET}")
+        shown = (min(len(missing), 10) + min(len(mismatches), 10)
+                 + min(len(hash_failures), 10) + min(len(grew), 10))
+        remain = len(missing) + len(mismatches) + len(hash_failures) + len(grew) - shown
         if remain > 0:
             print(f"    ... and {remain} more")
         return False
@@ -3329,19 +3361,32 @@ def verify_copy(entries, link_map, dst_root):
                 except OSError:
                     pass
 
-    mismatches = []
+    mismatches = []   # destination smaller than expected → real failure
+    grew = []         # destination larger than expected → likely active writer
     missing = []
     for rel, exp_size in expected.items():
         if rel not in found:
             tag = " (link)" if exp_size is None else ""
             missing.append(f"{rel}{tag}")
         elif exp_size is not None and found[rel] != exp_size:
-            mismatches.append((rel, exp_size, found[rel]))
+            if found[rel] > exp_size:
+                grew.append((rel, exp_size, found[rel]))
+            else:
+                mismatches.append((rel, exp_size, found[rel]))
 
     total_checked = len(expected)
 
     if not missing and not mismatches:
-        print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}               ")
+        if grew:
+            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}"
+                  f" {C.YELLOW}({len(grew)} grew during copy){C.RESET}")
+            for rel, exp, act in grew[:10]:
+                print(f"    {C.YELLOW}GREW DURING COPY: {rel} "
+                      f"(+{act - exp} bytes — likely an active writer){C.RESET}")
+            if len(grew) > 10:
+                print(f"    ... and {len(grew) - 10} more")
+        else:
+            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}               ")
         return True
     else:
         print(f"\r  {C.RED}✗ Verification failed:{C.RESET}")
@@ -3349,8 +3394,11 @@ def verify_copy(entries, link_map, dst_root):
             print(f"    {C.RED}MISSING: {m}{C.RESET}")
         for rel, exp, act in mismatches[:10]:
             print(f"    {C.RED}SIZE MISMATCH: {rel} ({exp} → {act}){C.RESET}")
-        shown = min(len(missing), 10) + min(len(mismatches), 10)
-        remain = len(missing) + len(mismatches) - shown
+        for rel, exp, act in grew[:10]:
+            print(f"    {C.YELLOW}GREW DURING COPY: {rel} "
+                  f"(+{act - exp} bytes){C.RESET}")
+        shown = min(len(missing), 10) + min(len(mismatches), 10) + min(len(grew), 10)
+        remain = len(missing) + len(mismatches) + len(grew) - shown
         if remain > 0:
             print(f"    ... and {remain} more")
         return False
@@ -3472,23 +3520,25 @@ def scan_remote_source(ssh, src_root, excludes=None):
     """Scan remote source tree via SSH find. Returns (entries, errors)."""
     print(f"  {C.DIM}Scanning remote source...{C.RESET}", end="", flush=True)
 
-    exclude_names = {TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME}
+    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME]
     if excludes:
-        for ex in excludes:
-            exclude_names.add(ex)
+        exclude_patterns.extend(excludes)
 
-    exclude_args = " ".join(
-        f"-not -name {shlex.quote(n)}" for n in exclude_names
-    )
+    # Build a -name OR-group used both to prune matching directories and to
+    # reject matching files. shlex.quote keeps glob metacharacters intact for
+    # find's -name (which does its own globbing).
+    name_or = " -o ".join(f"-name {shlex.quote(p)}" for p in exclude_patterns)
+    prune_dirs = rf"-type d \( {name_or} \) -prune"
+    file_filter = rf"-type f ! \( {name_or} \)"
 
     if ssh.caps.get("gnu_find"):
-        cmd = (f'find {shlex.quote(src_root)} -type f {exclude_args} '
-               f'-printf "%s\\t%p\\n" 2>/dev/null')
+        cmd = (f'find {shlex.quote(src_root)} {prune_dirs} -o '
+               f'\\( {file_filter} -printf "%s\\t%p\\n" \\) 2>/dev/null')
     else:
-        cmd = (f'find {shlex.quote(src_root)} -type f {exclude_args} '
-               f'-exec stat -c "%s %n" {{}} + 2>/dev/null || '
-               f'find {shlex.quote(src_root)} -type f {exclude_args} '
-               f'-exec stat -f "%z %N" {{}} + 2>/dev/null')
+        cmd = (f'find {shlex.quote(src_root)} {prune_dirs} -o '
+               f'\\( {file_filter} -exec stat -c "%s %n" {{}} + \\) 2>/dev/null || '
+               f'find {shlex.quote(src_root)} {prune_dirs} -o '
+               f'\\( {file_filter} -exec stat -f "%z %N" {{}} + \\) 2>/dev/null')
 
     out, _, rc = ssh.exec_cmd(cmd, timeout=600)
 
@@ -4628,8 +4678,10 @@ def main():
                         help="Skip space check, copy even if not enough space")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite all files, skip identical-file detection")
-    parser.add_argument("--exclude", action="append", default=[],
-                        help="Exclude files/dirs by name (can use multiple times)")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+                        help="Exclude files/dirs by name or glob (e.g. .venv, "
+                             "*.bat, .git*). Matching directories are pruned. "
+                             "Repeatable.")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
     # Destination SSH options
