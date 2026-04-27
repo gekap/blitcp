@@ -256,6 +256,10 @@ python -m pip install xxhash
 
 If xxHash is not installed, fast-copy silently falls back to SHA-256.
 
+## Documentation
+
+Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATION.md)** — what each option does, defaults, and when to change it. The same content is shown inside the GUI under **Help → Documentation**.
+
 ## Usage
 
 ```
