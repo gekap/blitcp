@@ -1,5 +1,89 @@
 # Changelog
 
+## v3.1.0 — 2026-05-16
+
+Big release built around bulk-backup workflows for VM-image / Longhorn-style
+sources: multi-source command lines, sparse-file awareness, sudo
+auto-elevation, and a tamper-resistant audit trail. Plus one
+long-standing SSH reliability fix.
+
+### New Features
+
+- **Multiple sources on the command line (cp -r style)** — The CLI now
+  accepts one or more sources followed by a destination:
+
+  ```
+  fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc
+  ```
+
+  The shell can glob-expand into N source paths (files *or* directories);
+  each one is copied as its own subtree under the destination, preserving
+  its basename. Previously this errored with
+  `unrecognized arguments: …` because only one positional source was
+  allowed. Existing single-source `fast-copy SRC DST` invocations are
+  unaffected.
+
+- **Sparse-file support (Linux/macOS)** — VM disk images, Longhorn
+  `volume-head-*.img` replicas, and other sparse files are now detected
+  automatically (`st_blocks * 512 < st_size`) and copied with
+  `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or
+  the destination disk. The Phase 3 space check uses the **allocated**
+  byte count on sparse-capable destinations, so a 2.3 TB sparse tree
+  holding 12 GB of real data no longer rejects a 900 GB destination.
+  The scan output reports the sparse summary up front, e.g.:
+
+  ```
+  Sparse: 346 sparse files — 2.3 TB logical, 12.2 GB on disk
+  Data to write: 12.2 GB (after sparse holes skipped 2.2 TB)
+  ```
+
+  Falls back to dense copy on Windows and on filesystems that don't
+  support holes (FAT32, exFAT); the resulting file is still
+  byte-identical to the source.
+
+- **`--use-sudo` self-elevation** — Saves typing `sudo python
+  fast_copy.py …` for the common case where the source or destination
+  needs root (Longhorn replicas, container volumes, system paths).
+  fast-copy re-execs itself under `sudo` and lets sudo prompt for the
+  password on the terminal as usual. Linux/macOS only.
+
+- **Tamper-resistant audit log under sudo** — When running under sudo
+  (detected via `SUDO_USER`), fast-copy writes a hidden
+  `.fast_copy_audit.jsonl` to the destination directory, one JSON
+  record per run. Each record captures the original (pre-elevation)
+  username, the full command, source/destination, the per-file copy
+  list, and run summary. After each write the file is `chattr +i`
+  (immutable) so even root cannot edit or delete it without first
+  running `chattr -i`. The next sudo run clears the flag, appends its
+  record, and re-immutables. Degrades gracefully (writes the record
+  unprotected, with a warning) on filesystems without immutable
+  support — tmpfs, FAT32, NFS.
+
+### Reliability Fixes
+
+- **SSH rekey timeout no longer kills long transfers** — Paramiko's
+  default periodic SSH re-key (after ~1 GB transferred) could time out
+  mid-transfer on slow or busy servers and tear down the session with
+  `Key-exchange timed out waiting for key negotiation`. We now raise
+  the rekey thresholds high enough that re-key effectively never fires
+  during a single bulk transfer, eliminating the failure mode reported
+  on multi-GB Longhorn → SFTP backups.
+
+### Upgrade notes
+
+- **No breaking changes.** Existing single-source CLI invocations and
+  the existing `--log-file` behavior are unchanged.
+- **New flag**: `--use-sudo`. The audit log only writes when the
+  process is *actually* running under sudo, regardless of how root was
+  reached.
+- **Audit file management**: to inspect, `sudo cat
+  <dst>/.fast_copy_audit.jsonl` (reads work on immutable files). To
+  remove entirely, `sudo chattr -i <path> && sudo rm <path>`.
+- **Sparse copy scope**: the wire format for SSH transfers is still
+  dense — sparse-aware copy applies to local→local destinations only.
+  Remote backup of sparse files materializes the holes as zeros on the
+  remote, same as before.
+
 ## v3.0.2 — 2026-04-27
 
 Quality-of-life release: glob-pattern excludes and smarter copy

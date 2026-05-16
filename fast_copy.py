@@ -76,6 +76,20 @@ Requires: python -m pip install paramiko
 
 import os
 import sys
+
+# Install a quiet excepthook before any heavy imports so that pressing Ctrl+C
+# during module loading prints a one-line message instead of a 12-frame
+# traceback through Python's import machinery.
+def _quiet_excepthook(exctype, value, tb):
+    if issubclass(exctype, KeyboardInterrupt):
+        try:
+            sys.stderr.write("\n  Interrupted.\n")
+        except Exception:
+            pass
+        sys.exit(130)
+    sys.__excepthook__(exctype, value, tb)
+sys.excepthook = _quiet_excepthook
+
 import stat
 import time
 import glob as globmod
@@ -97,13 +111,14 @@ import argparse
 import platform
 import threading
 from pathlib import Path
+import errno
 from collections import namedtuple, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.0.2"
+__version__ = "3.1.0"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -114,7 +129,32 @@ DEFAULT_THREADS = 4
 HASH_CHUNK = 1048571            # ~1MB chunks for hashing (prime for alignment)
 HASH_ALGO = "xxh128"            # try xxhash first, fallback to sha256
 
-FileEntry = namedtuple("FileEntry", ["src", "rel", "size", "physical_offset", "content_hash"])
+FileEntry = namedtuple(
+    "FileEntry",
+    ["src", "rel", "size", "physical_offset", "content_hash", "alloc_size"],
+    defaults=[None],  # alloc_size=None means "dense" (same as size)
+)
+
+
+def _detect_sparse_alloc(st):
+    """Return on-disk allocated bytes if file is sparse, else None.
+
+    A file is "sparse" when its allocated blocks occupy noticeably less space
+    than its declared size — common for VM disk images and Longhorn replica
+    `volume-head-*.img` files. We allow a 4KB slack for filesystem overhead
+    so we don't flag normal files with one-block inline data."""
+    blocks = getattr(st, "st_blocks", None)
+    if blocks is None:
+        return None
+    allocated = blocks * 512
+    if allocated + 4096 < st.st_size:
+        return allocated
+    return None
+
+
+def _effective_alloc(entry):
+    """Return the on-disk bytes this entry will need on a sparse-capable FS."""
+    return entry.alloc_size if entry.alloc_size is not None else entry.size
 
 # ════════════════════════════════════════════════════════════════════════════
 # STRUCTURED LOG — collects per-file actions for --log-file output
@@ -146,6 +186,98 @@ def write_log_file(path, summary):
         json.dump(log, f, indent=2)
     _log_entries.clear()
     print(f"  Log:     {C.BOLD}{path}{C.RESET}")
+
+
+SUDO_AUDIT_FILE = ".fast_copy_audit.jsonl"
+
+
+def _is_under_sudo():
+    """True when the current process was launched via sudo.
+
+    sudo sets SUDO_USER to the original (pre-elevation) username. This is the
+    most reliable signal — checking geteuid()==0 alone catches anyone running
+    as root, including direct logins."""
+    return bool(os.environ.get("SUDO_USER"))
+
+
+def _set_immutable(path, immutable):
+    """Set or clear the Linux immutable attribute (chattr +i / -i).
+
+    Returns True on success, False if chattr is unavailable, the filesystem
+    doesn't support immutability (tmpfs, FAT32, NFS, …), or we lack
+    privileges. Callers must treat False as "no protection" rather than a
+    fatal error — the audit record itself is still useful even unprotected."""
+    if _system != "Linux":
+        return False
+    try:
+        import subprocess
+        subprocess.run(
+            ["chattr", "+i" if immutable else "-i", path],
+            check=True, capture_output=True, timeout=10,
+        )
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False
+
+
+def write_sudo_audit(dst_dir, src_display, summary):
+    """Append a hidden, immutable audit record to <dst>/.fast_copy_audit.jsonl.
+
+    Only fires when the process is running under sudo — captures who invoked
+    sudo, the command, what was copied, and the full per-file list from
+    _log_entries. The file is one JSON object per line so it can accumulate
+    across runs.
+
+    Tamper-resistance: after each write the file is chattr +i (immutable),
+    so even root cannot modify or delete it without first running
+    `chattr -i`. The next sudo invocation does that automatically before
+    appending its own record, then re-immutables the file."""
+    if not _is_under_sudo():
+        return
+    if not dst_dir or not os.path.isdir(dst_dir):
+        return  # remote destination or dst not yet created — skip
+    import datetime
+    audit_path = os.path.join(dst_dir, SUDO_AUDIT_FILE)
+
+    # If a prior run left the file immutable, clear the flag so we can append.
+    pre_existing_immutable = False
+    if os.path.exists(audit_path):
+        pre_existing_immutable = _set_immutable(audit_path, False)
+
+    record = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "sudo_user": os.environ.get("SUDO_USER"),
+        "sudo_uid": os.environ.get("SUDO_UID"),
+        "sudo_gid": os.environ.get("SUDO_GID"),
+        "effective_uid": os.geteuid() if hasattr(os, "geteuid") else None,
+        "command": " ".join(sys.argv),
+        "cwd": os.environ.get("PWD") or os.getcwd(),
+        "source": src_display,
+        "destination": dst_dir,
+        "summary": summary,
+        "files": list(_log_entries),
+    }
+    try:
+        with open(audit_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        try:
+            os.chmod(audit_path, 0o600)
+        except OSError:
+            pass
+        # Re-apply the immutable flag so the record can't be tampered with.
+        # If the FS or chattr isn't available, note it but don't fail the run.
+        made_immutable = _set_immutable(audit_path, True)
+        if made_immutable:
+            tamper_note = "immutable"
+        elif pre_existing_immutable:
+            tamper_note = "WARNING: was immutable but couldn't restore"
+        else:
+            tamper_note = "not immutable (chattr unavailable or unsupported FS)"
+        print(f"  Audit:   {C.BOLD}{audit_path}{C.RESET} "
+              f"{C.DIM}(sudo run by {os.environ.get('SUDO_USER')}, "
+              f"{tamper_note}){C.RESET}")
+    except OSError as e:
+        print(f"  {C.YELLOW}Could not write audit file: {e}{C.RESET}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -651,6 +783,11 @@ class SSHConnection:
 
         transport = self.client.get_transport()
         transport.set_keepalive(30)
+        # Push rekey thresholds high so the periodic SSH key re-exchange
+        # doesn't fire mid-transfer — slow/busy servers can fail to respond
+        # in time and the rekey timeout kills the whole session.
+        transport.packetizer.REKEY_BYTES = pow(2, 40)          # 1 TiB
+        transport.packetizer.REKEY_PACKETS = pow(2, 40)
         # Increase default window/packet size for much faster SFTP throughput
         transport.default_window_size = 16 * 1024 * 1024      # 16 MB
         transport.default_max_packet_size = 512 * 1024         # 512 KB
@@ -2100,7 +2237,8 @@ def scan_source(src_root, dst_root=None, excludes=None):
     # Compile exclude patterns. Patterns are glob-style (fnmatch) and applied
     # to both file basenames and directory basenames; matching directories are
     # pruned so we don't descend into them.
-    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME]
+    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME,
+                        SUDO_AUDIT_FILE]
     if excludes:
         exclude_patterns.extend(excludes)
 
@@ -2154,10 +2292,12 @@ def scan_source(src_root, dst_root=None, excludes=None):
             src_path = os.path.join(root, fname)
             rel_path = os.path.relpath(_strip_long_path(src_path), src_root).replace(os.sep, "/")
             try:
-                sz = os.path.getsize(src_path)
+                st = os.stat(src_path)
+                alloc = _detect_sparse_alloc(st)
                 entries.append(FileEntry(
-                    src=src_path, rel=rel_path, size=sz,
+                    src=src_path, rel=rel_path, size=st.st_size,
                     physical_offset=0, content_hash=None,
+                    alloc_size=alloc,
                 ))
                 scan_count += 1
                 if scan_count % 1000 == 0:
@@ -2228,7 +2368,7 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
                       end="", flush=True)
 
     new_entries = [
-        FileEntry(e.src, e.rel, e.size, offsets[i], e.content_hash)
+        e._replace(physical_offset=offsets[i])
         for i, e in enumerate(entries)
     ]
     new_entries.sort(key=lambda e: e.physical_offset)
@@ -2322,7 +2462,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
 
     # Update all entries with hashes
     hashed_entries = [
-        FileEntry(e.src, e.rel, e.size, e.physical_offset, hashes[i])
+        e._replace(content_hash=hashes[i])
         for i, e in enumerate(entries)
     ]
 
@@ -2598,8 +2738,7 @@ def resolve_case_conflicts(entries, link_map, dst):
     new_entries = []
     for e in entries:
         if e.rel in renames:
-            new_entries.append(FileEntry(e.src, renames[e.rel], e.size,
-                                        e.physical_offset, e.content_hash))
+            new_entries.append(e._replace(rel=renames[e.rel]))
         else:
             new_entries.append(e)
 
@@ -2841,6 +2980,79 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
         print(f"\r  {C.GREEN}Streamed {extracted} files to destination{C.RESET}                    ")
 
 
+_HAS_SEEK_HOLE = hasattr(os, "SEEK_HOLE") and hasattr(os, "SEEK_DATA")
+
+
+def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
+    """Copy preserving sparseness via SEEK_DATA / SEEK_HOLE.
+
+    Walks the source one data-extent at a time and writes only the data
+    bytes to the destination, seek-skipping over holes. The destination
+    file is truncated to the source's logical size at the end so any
+    trailing hole is preserved.
+
+    Progress is advanced by *logical* bytes (including holes) so the
+    overall progress bar still reaches 100% — actual disk writes are
+    much smaller for heavily-sparse files."""
+    mv = memoryview(buf)
+    buf_size = len(buf)
+    with open(src_path, "rb") as fin, open(dst_path, "wb") as fout:
+        src_fd = fin.fileno()
+        src_size = os.fstat(src_fd).st_size
+        offset = 0
+        while offset < src_size:
+            if cancel_check and cancel_check():
+                try:
+                    os.remove(dst_path)
+                except OSError:
+                    pass
+                return False
+            try:
+                data_start = os.lseek(src_fd, offset, os.SEEK_DATA)
+            except OSError as e:
+                # ENXIO: no more data — rest of file is hole. Done.
+                if e.errno == errno.ENXIO:
+                    break
+                raise
+            try:
+                hole_start = os.lseek(src_fd, data_start, os.SEEK_HOLE)
+            except OSError:
+                # No more holes — data runs to EOF.
+                hole_start = src_size
+
+            # Account for the hole we just skipped over.
+            if data_start > offset:
+                progress.update(data_start - offset)
+
+            fin.seek(data_start)
+            fout.seek(data_start)
+            remaining = hole_start - data_start
+            while remaining > 0:
+                if cancel_check and cancel_check():
+                    try:
+                        os.remove(dst_path)
+                    except OSError:
+                        pass
+                    return False
+                chunk = min(buf_size, remaining)
+                n = fin.readinto(mv[:chunk])
+                if n == 0:
+                    break
+                fout.write(mv[:n])
+                progress.update(n)
+                progress.display()
+                remaining -= n
+            offset = hole_start
+
+        # Materialize the file at full logical size so any trailing hole
+        # is preserved by the filesystem (rather than the file ending
+        # short at the last data extent).
+        fout.truncate(src_size)
+        if src_size > offset:
+            progress.update(src_size - offset)
+    return True
+
+
 def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     fs_strategy=None):
     """Copy large files individually with big buffers in physical disk order.
@@ -2891,22 +3103,33 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                 progress.display()
                 continue
 
-            with open(entry.src, "rb") as fin, open(dst_path, "wb") as fout:
-                while True:
-                    # Check for cancellation during large file copy
-                    if cancel_check and cancel_check():
-                        # Clean up partial file
-                        try:
-                            os.remove(dst_path)
-                        except OSError:
-                            pass
-                        return
-                    n = fin.readinto(buf)
-                    if not n:
-                        break
-                    fout.write(mv[:n])
-                    progress.update(n)
-                    progress.display()
+            # Sparse-aware path: when the source file has unallocated holes,
+            # use SEEK_DATA/SEEK_HOLE to skip them. Critical for VM disk
+            # images / Longhorn replica `.img` files where logical size is
+            # huge but actual allocated bytes are small.
+            if (_HAS_SEEK_HOLE and entry.alloc_size is not None
+                    and entry.alloc_size < entry.size):
+                ok = _copy_sparse(entry.src, dst_path, buf, progress,
+                                  cancel_check)
+                if not ok:
+                    return
+            else:
+                with open(entry.src, "rb") as fin, open(dst_path, "wb") as fout:
+                    while True:
+                        # Check for cancellation during large file copy
+                        if cancel_check and cancel_check():
+                            # Clean up partial file
+                            try:
+                                os.remove(dst_path)
+                            except OSError:
+                                pass
+                            return
+                        n = fin.readinto(buf)
+                        if not n:
+                            break
+                        fout.write(mv[:n])
+                        progress.update(n)
+                        progress.display()
 
             # Preserve timestamps and permissions
             try:
@@ -2940,6 +3163,20 @@ def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None,
       - Otherwise: small files (<1MB) bundled into tar block stream, large
         files (>=1MB) via individual copy with large buffers
     """
+    # Reflink (FICLONE / clonefile) only works *within* the same filesystem.
+    # The destination FS detection alone doesn't catch the cross-mount case,
+    # so probe the actual source(s) here. If any source is on a different
+    # st_dev than the destination, every reflink call will EXDEV and fall
+    # back to byte copy — so don't promise "metadata-only" in the banner.
+    if fs_strategy == "reflink" and entries:
+        try:
+            dst_dev = os.stat(dst_root).st_dev
+            src_devs = {os.stat(e.src).st_dev for e in entries[:64]}
+            if len(src_devs) != 1 or dst_dev not in src_devs:
+                fs_strategy = None
+        except OSError:
+            pass
+
     # On reflink-capable destinations, route ALL files through copy_individual
     # so each one gets cloned via FICLONE/clonefile. The tar-bundle path for
     # small files is meant to amortize syscall overhead from byte copies —
@@ -3520,7 +3757,8 @@ def scan_remote_source(ssh, src_root, excludes=None):
     """Scan remote source tree via SSH find. Returns (entries, errors)."""
     print(f"  {C.DIM}Scanning remote source...{C.RESET}", end="", flush=True)
 
-    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME]
+    exclude_patterns = [TAR_BUNDLE_NAME, DEDUP_DB_NAME, REMOTE_MANIFEST_NAME,
+                        SUDO_AUDIT_FILE]
     if excludes:
         exclude_patterns.extend(excludes)
 
@@ -3590,7 +3828,7 @@ def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS,
     hashed_entries = []
     for e in entries:
         h = remote_hashes.get(e.rel)
-        hashed_entries.append(FileEntry(e.src, e.rel, e.size, e.physical_offset, h))
+        hashed_entries.append(e._replace(content_hash=h))
         if h:
             hashed += 1
 
@@ -4652,8 +4890,14 @@ def main():
     parser.add_argument("--update", nargs="?", const=True, default=False,
                         metavar="VERSION",
                         help="Download and install latest (or a specific version)")
-    parser.add_argument("source", nargs="?", help="Source folder, file, or glob pattern (e.g. *.zip)")
-    parser.add_argument("destination", nargs="?", help="Destination (USB drive path, etc)")
+    parser.add_argument("paths", nargs="*", metavar="SOURCE ... DESTINATION",
+                        help="One or more sources, followed by the destination. "
+                             "A source can be a folder, file, or glob pattern "
+                             "(e.g. *.zip). Multiple sources are copied "
+                             "side-by-side under destination, preserving their "
+                             "basenames (cp -r style). Glob in the basename "
+                             "also works for SSH sources, e.g. "
+                             "user@host:/data/*.tar.gz")
     parser.add_argument("--buffer", type=int, default=DEFAULT_BUFFER_MB,
                         help=f"Buffer size in MB (default: {DEFAULT_BUFFER_MB})")
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS,
@@ -4684,6 +4928,11 @@ def main():
                              "Repeatable.")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
+    parser.add_argument("--use-sudo", action="store_true",
+                        help="Re-exec self under sudo if not already root. "
+                             "sudo will prompt for the password on the terminal. "
+                             "Useful when source or destination needs root "
+                             "(e.g. /var/lib/longhorn/replicas). Linux/macOS only.")
     # Destination SSH options
     parser.add_argument("--ssh-dst-port", "--ssh-port", type=int, default=22,
                         dest="ssh_port",
@@ -4708,6 +4957,21 @@ def main():
                         help="Prompt for SSH password for remote source")
     args = parser.parse_args()
 
+    # Split positional paths into (sources..., destination). When 2+ positionals
+    # are given, the last one is the destination and any earlier ones are
+    # sources — matches `cp src1 src2 ... dst/` semantics.
+    args.extra_sources = []
+    if len(args.paths) >= 2:
+        args.destination = args.paths[-1]
+        args.source = args.paths[0]
+        args.extra_sources = args.paths[1:-1]
+    elif len(args.paths) == 1:
+        args.source = args.paths[0]
+        args.destination = None
+    else:
+        args.source = None
+        args.destination = None
+
     # Windows cmd.exe/MSVCRT quirk: a trailing `\"` in a quoted path like
     # "\\host\share\" escapes the closing quote, leaving a literal `"` at
     # the end of the argument. `"` is never valid in a Windows path, so
@@ -4717,6 +4981,9 @@ def main():
             args.source = args.source.rstrip('"')
         if args.destination and args.destination.endswith('"'):
             args.destination = args.destination.rstrip('"')
+        args.extra_sources = [
+            s.rstrip('"') if s.endswith('"') else s for s in args.extra_sources
+        ]
 
     # These flags are handled in __main__ before main() is called,
     # but if someone somehow reaches here, handle gracefully
@@ -4732,6 +4999,10 @@ def main():
 
     global _log_enabled
     if args.log_file:
+        _log_enabled = True
+    # When running under sudo, always capture per-file entries so we can
+    # write the hidden audit file at the end of the copy.
+    if _is_under_sudo():
         _log_enabled = True
 
     src_arg = args.source
@@ -4772,13 +5043,61 @@ def main():
         dst = os.path.abspath(args.destination)
 
     # ── Resolve source ───────────────────────────────────────────────
-    src_mode = None  # "dir", "file", "glob", or "remote"
+    src_mode = None  # "dir", "file", "glob", "multi", "remote", or "remote_glob"
     glob_files = []
+    multi_sources = []  # absolute paths, set when src_mode == "multi"
+    remote_glob_pattern = None  # set when src_mode == "remote_glob"
 
-    if src_remote:
-        src = src_remote.path
-        src_mode = "remote"
-        src_display = f"{src_remote.user}@{src_remote.host}:{src}"
+    if args.extra_sources and src_remote:
+        print(f"{C.RED}Error: multi-source mode does not support SSH sources "
+              f"(got remote source with {len(args.extra_sources)} additional path"
+              f"{'s' if len(args.extra_sources) != 1 else ''}){C.RESET}")
+        sys.exit(1)
+
+    if args.extra_sources:
+        # Multi-source: shell-expanded glob (e.g. `pvc-*`) or N explicit paths
+        # on the command line. Each source becomes its own subtree under
+        # destination, preserving its basename (cp -r style).
+        all_src = [src_arg] + args.extra_sources
+        for s in all_src:
+            if parse_remote_path(s):
+                print(f"{C.RED}Error: multi-source mode does not support SSH sources "
+                      f"(got '{s}'){C.RESET}")
+                sys.exit(1)
+            if not os.path.exists(s):
+                print(f"{C.RED}Error: source not found: {s}{C.RESET}")
+                sys.exit(1)
+        multi_sources = [os.path.abspath(s) for s in all_src]
+        src_mode = "multi"
+        src = os.path.commonpath(multi_sources)
+        if not os.path.isdir(src):
+            src = os.path.dirname(src)
+        _shown = ", ".join(os.path.basename(p.rstrip(os.sep))
+                           for p in multi_sources[:2])
+        if len(multi_sources) > 2:
+            _shown += f", +{len(multi_sources) - 2} more"
+        src_display = f"{len(multi_sources)} sources ({_shown}) under {src}"
+    elif src_remote:
+        # Detect a glob pattern in the basename — the only place we support
+        # it. A glob in a middle component (e.g. /foo/*/bar) would require
+        # a recursive remote walk, which is out of scope here.
+        rpath = src_remote.path
+        rbase = posixpath.basename(rpath)
+        rparent = posixpath.dirname(rpath)
+        _glob_chars = set("*?[")
+        if any(c in rbase for c in _glob_chars):
+            if any(c in rparent for c in _glob_chars):
+                print(f"{C.RED}Error: glob characters are only supported in the "
+                      f"final path component for remote sources.{C.RESET}")
+                sys.exit(1)
+            src = rparent if rparent else "."
+            src_mode = "remote_glob"
+            remote_glob_pattern = rbase
+            src_display = f"{src_remote.user}@{src_remote.host}:{rpath}"
+        else:
+            src = rpath
+            src_mode = "remote"
+            src_display = f"{src_remote.user}@{src_remote.host}:{src}"
     else:
         src = os.path.abspath(src_arg)
         if os.path.isdir(src):
@@ -4821,8 +5140,13 @@ def main():
     print(f"  Source:      {C.BOLD}{src_display}{C.RESET}")
     if src_mode == "remote":
         print(f"               {C.DIM}(SSH remote, port {src_remote.port}){C.RESET}")
+    elif src_mode == "remote_glob":
+        print(f"               {C.DIM}(SSH remote glob, port {src_remote.port}){C.RESET}")
     elif src_mode == "glob":
         print(f"               {C.DIM}{len(glob_files)} files matched{C.RESET}")
+    elif src_mode == "multi":
+        print(f"               {C.DIM}{len(multi_sources)} sources "
+              f"(cp -r style){C.RESET}")
     elif src_mode == "file":
         print(f"               {C.DIM}(single file){C.RESET}")
     if dst_remote:
@@ -4904,17 +5228,52 @@ def main():
         # mirroring the local "file" mode logic, so that tar cd works.
         if len(entries) == 1 and entries[0].rel == ".":
             fname = posixpath.basename(src)
-            e = entries[0]
-            entries[0] = FileEntry(e.src, fname, e.size,
-                                   e.physical_offset, e.content_hash)
+            entries[0] = entries[0]._replace(rel=fname)
             src = posixpath.dirname(src)
+    elif src_mode == "remote_glob":
+        # Expand the basename glob via SFTP listdir + fnmatch. src is already
+        # the parent directory; remote_glob_pattern is the basename pattern.
+        sftp = src_ssh.open_sftp()
+        try:
+            attrs = sftp.listdir_attr(src)
+        except IOError as e:
+            print(f"\n  {C.RED}Error: cannot list remote directory "
+                  f"{src!r}: {e}{C.RESET}")
+            src_ssh.close()
+            sys.exit(1)
+        matched = [a for a in attrs
+                   if fnmatch.fnmatch(a.filename, remote_glob_pattern)
+                   and not stat.S_ISDIR(a.st_mode or 0)]
+        # Honor --exclude on basename
+        if args.exclude:
+            matched = [a for a in matched
+                       if not any(fnmatch.fnmatch(a.filename, p)
+                                  for p in args.exclude)]
+        if not matched:
+            print(f"\n  {C.RED}Error: no remote files matched "
+                  f"{remote_glob_pattern!r} in {src}{C.RESET}")
+            src_ssh.close()
+            sys.exit(1)
+        entries = []
+        errors = []
+        for a in matched:
+            entries.append(FileEntry(
+                src=posixpath.join(src, a.filename),
+                rel=a.filename,
+                size=a.st_size or 0,
+                physical_offset=0,
+                content_hash=None,
+            ))
+        print(f"  {C.GREEN}Found {len(entries)} file(s){C.RESET} "
+              f"matching {C.BOLD}{remote_glob_pattern}{C.RESET} in {src}")
     elif src_mode == "file":
         fname = os.path.basename(src)
-        sz = os.path.getsize(src)
-        entries = [FileEntry(src=src, rel=fname, size=sz,
-                             physical_offset=0, content_hash=None)]
+        st = os.stat(src)
+        entries = [FileEntry(src=src, rel=fname, size=st.st_size,
+                             physical_offset=0, content_hash=None,
+                             alloc_size=_detect_sparse_alloc(st))]
         errors = []
-        print(f"  {C.GREEN}Found 1 file{C.RESET} ({fmt_size(sz)})")
+        print(f"  {C.GREEN}Found 1 file{C.RESET} ({fmt_size(st.st_size)})")
         src = os.path.dirname(src)
     elif src_mode == "glob":
         entries = []
@@ -4923,12 +5282,39 @@ def main():
             abs_f = os.path.abspath(fpath)
             rel = os.path.relpath(abs_f, src)
             try:
-                sz = os.path.getsize(abs_f)
-                entries.append(FileEntry(src=abs_f, rel=rel, size=sz,
-                                         physical_offset=0, content_hash=None))
+                st = os.stat(abs_f)
+                entries.append(FileEntry(src=abs_f, rel=rel, size=st.st_size,
+                                         physical_offset=0, content_hash=None,
+                                         alloc_size=_detect_sparse_alloc(st)))
             except OSError as e:
                 errors.append((abs_f, str(e)))
         print(f"  {C.GREEN}Found {len(entries)} files{C.RESET}")
+    elif src_mode == "multi":
+        # cp -r src1 src2 ... dst/  → each source preserves its basename
+        # under destination. Directories are walked; files are added directly.
+        entries = []
+        errors = []
+        for s in multi_sources:
+            base = os.path.basename(s.rstrip(os.sep)) or s
+            if os.path.isfile(s):
+                try:
+                    st = os.stat(s)
+                    alloc = _detect_sparse_alloc(st)
+                    entries.append(FileEntry(src=s, rel=base, size=st.st_size,
+                                             physical_offset=0, content_hash=None,
+                                             alloc_size=alloc))
+                except OSError as e:
+                    errors.append((s, str(e)))
+            elif os.path.isdir(s):
+                sub_entries, sub_errors = scan_source(
+                    s, dst if not dst_remote else None, args.exclude
+                )
+                for e in sub_entries:
+                    new_rel = f"{base}/{e.rel}" if e.rel and e.rel != "." else base
+                    entries.append(e._replace(rel=new_rel))
+                errors.extend(sub_errors)
+        print(f"  {C.GREEN}Found {len(entries)} files{C.RESET} "
+              f"across {len(multi_sources)} sources")
     else:
         entries, errors = scan_source(src, dst if not dst_remote else None, args.exclude)
 
@@ -4947,7 +5333,7 @@ def main():
     # For remote sources, we track the rename separately (via case_renames)
     # because entry.rel must stay as the original filename for tar to find it.
     _dst_file_rename = None  # (new_rel, old_rel) if file-destination detected
-    if len(entries) == 1 and (src_mode in ("file", "remote") or
+    if len(entries) == 1 and (src_mode in ("file", "remote", "remote_glob") or
                               (src_mode == "glob" and len(glob_files) == 1)):
         _detected = False
         if dst_remote:
@@ -4978,9 +5364,7 @@ def main():
             else:
                 # For local sources, we can rename entry.rel directly since
                 # the file is read by its absolute src path, not rel.
-                e = entries[0]
-                entries[0] = FileEntry(e.src, dst_base, e.size,
-                                       e.physical_offset, e.content_hash)
+                entries[0] = entries[0]._replace(rel=dst_base)
             print(f"  {C.DIM}Destination is a file path — "
                   f"saving as {dst_base}{C.RESET}")
 
@@ -4990,6 +5374,17 @@ def main():
     print(f"  Total: {C.BOLD}{fmt_size(total_size)}{C.RESET} in "
           f"{C.BOLD}{total_files}{C.RESET} files  "
           f"(avg {fmt_size(avg_size)}/file)")
+
+    # Sparse-file summary: surface VM-image / sparse-replica savings up front
+    # so the user understands why "Data to write" is much smaller than "Total".
+    sparse_entries = [e for e in entries if e.alloc_size is not None]
+    if sparse_entries:
+        sparse_logical = sum(e.size for e in sparse_entries)
+        sparse_alloc = sum(e.alloc_size for e in sparse_entries)
+        print(f"  Sparse: {C.BOLD}{len(sparse_entries)}{C.RESET} sparse files — "
+              f"{fmt_size(sparse_logical)} logical, "
+              f"{C.GREEN}{fmt_size(sparse_alloc)}{C.RESET} on disk "
+              f"({fmt_size(sparse_logical - sparse_alloc)} skippable as holes)")
 
     # ── Phase 2: Deduplication ───────────────────────────────────────
     dedup_db = None
@@ -5040,8 +5435,7 @@ def main():
             case_renames[old_rel] = new_rel
             for i, e in enumerate(copy_entries):
                 if e.rel == old_rel:
-                    copy_entries[i] = FileEntry(e.src, new_rel, e.size,
-                                                e.physical_offset, e.content_hash)
+                    copy_entries[i] = e._replace(rel=new_rel)
                     break
         elif src_remote and dst_remote:
             # R2R: can't rename during tar pipe — will rename after copy.
@@ -5183,10 +5577,10 @@ def main():
                                 ("ullAvailVirtual", ctypes.c_ulonglong),
                                 ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
                             ]
-                        stat = MEMORYSTATUSEX()
-                        stat.dwLength = ctypes.sizeof(stat)
-                        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-                        avail = stat.ullAvailPhys
+                        mem_stat = MEMORYSTATUSEX()
+                        mem_stat.dwLength = ctypes.sizeof(mem_stat)
+                        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_stat))
+                        avail = mem_stat.ullAvailPhys
                     except Exception:
                         pass
 
@@ -5230,8 +5624,7 @@ def main():
                     # Update entry.rel so verify sees the new name
                     for i, e in enumerate(copy_entries):
                         if e.rel == old_rel:
-                            copy_entries[i] = FileEntry(e.src, new_rel, e.size,
-                                                        e.physical_offset, e.content_hash)
+                            copy_entries[i] = e._replace(rel=new_rel)
                             break
 
             # Create links on dest
@@ -5647,9 +6040,26 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
               f"total disk usage will be {fmt_size(full_size)}.{C.RESET}")
         required = full_size
     else:
-        print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
-              + (f" (after dedup saved {fmt_size(saved_bytes)})"
-                 if saved_bytes > 0 else ""))
+        # Sparse files (e.g. VM disk images): if the destination FS supports
+        # holes (anything except FAT32/exFAT), only the allocated extents
+        # take disk space — adjust the requirement so a 1.5 TB sparse image
+        # holding 12 GB of real data doesn't reject a 500 GB destination.
+        if _HAS_SEEK_HOLE and fs_strategy != "none":
+            alloc_total = sum(_effective_alloc(e) for e in copy_entries)
+            sparse_saved = unique_size - alloc_total
+        else:
+            alloc_total = unique_size
+            sparse_saved = 0
+        required = alloc_total
+        msg = f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
+        notes = []
+        if saved_bytes > 0:
+            notes.append(f"dedup saved {fmt_size(saved_bytes)}")
+        if sparse_saved > 0:
+            notes.append(f"sparse holes skipped {fmt_size(sparse_saved)}")
+        if notes:
+            msg += " (after " + ", ".join(notes) + ")"
+        print(msg)
 
     if not check_destination_space(dst, required, args.force):
         sys.exit(1)
@@ -5676,7 +6086,17 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
             print(f"  ... and {len(copy_entries) - 20} more files")
         if link_map:
             print(f"\n  Plus {len(link_map)} duplicate files to be linked")
-        print(f"\n  Unique data: {fmt_size(unique_size)}")
+        # Show the on-disk bytes that will actually be written, accounting
+        # for sparse holes the sparse-aware copy will skip. Matches the
+        # "Data to write" figure printed in Phase 3.
+        if _HAS_SEEK_HOLE and fs_strategy != "none":
+            alloc_total = sum(_effective_alloc(e) for e in copy_entries)
+        else:
+            alloc_total = unique_size
+        print(f"\n  Data to write: {fmt_size(alloc_total)}"
+              + (f"  {C.DIM}(logical {fmt_size(unique_size)}, "
+                 f"sparse holes skipped {fmt_size(unique_size - alloc_total)})"
+                 f"{C.RESET}" if alloc_total < unique_size else ""))
         return
 
     # ── Phase 5: Block copy ─────────────────────────────────────────
@@ -5716,10 +6136,36 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     if skipped_count:
         print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
               f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
-    print(f"  Data:    {C.BOLD}{fmt_size(unique_size)}{C.RESET} written"
-          + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
+    # Match Phase 3's "Data to write" — when sparse-aware copy elided holes,
+    # report the actual on-disk byte count and keep the logical total in
+    # parens so the savings are visible.
+    if _HAS_SEEK_HOLE and fs_strategy != "none":
+        alloc_total = sum(_effective_alloc(e) for e in copy_entries)
+    else:
+        alloc_total = unique_size
+    data_line = f"  Data:    {C.BOLD}{fmt_size(alloc_total)}{C.RESET} written"
+    notes = []
+    if saved_bytes > 0:
+        notes.append(f"{fmt_size(saved_bytes)} saved by dedup")
+    if alloc_total < unique_size:
+        notes.append(f"logical {fmt_size(unique_size)}, sparse holes "
+                     f"skipped {fmt_size(unique_size - alloc_total)}")
+    if notes:
+        data_line += f"  {C.DIM}(" + ", ".join(notes) + f"){C.RESET}"
+    print(data_line)
     print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
     print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    # Hidden audit file when running under sudo — written BEFORE write_log_file
+    # since the latter clears _log_entries.
+    write_sudo_audit(dst, args.source, {
+        "mode": "local_to_local",
+        "total_files": total_files, "copied": len(copy_entries),
+        "linked": len(link_map), "skipped": skipped_count,
+        "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+        "total_bytes": total_bytes, "bytes_written": unique_size,
+        "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+        "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+    })
     if args.log_file:
         write_log_file(args.log_file, {
             "source": args.source, "destination": dst,
@@ -5759,6 +6205,23 @@ if __name__ == "__main__":
             target_ver = sys.argv[idx + 1]
         self_update(target_version=target_ver)
         sys.exit(0)
+    # --use-sudo: re-exec self under sudo so the user doesn't have to type
+    # `sudo python fast_copy.py …`. sudo prompts for the password
+    # interactively on the terminal; we strip the flag from argv so the
+    # elevated process doesn't loop.
+    if "--use-sudo" in sys.argv:
+        if not hasattr(os, "geteuid"):
+            print(f"Error: --use-sudo is not supported on {_system}",
+                  file=sys.stderr)
+            sys.exit(1)
+        if os.geteuid() != 0:
+            new_argv = [a for a in sys.argv if a != "--use-sudo"]
+            try:
+                os.execvp("sudo", ["sudo", sys.executable] + new_argv)
+            except (OSError, FileNotFoundError) as e:
+                print(f"Error: cannot exec sudo: {e}", file=sys.stderr)
+                sys.exit(1)
+
     # Windows: clean up .old file from previous update on normal runs
     if _system == "Windows":
         try:
