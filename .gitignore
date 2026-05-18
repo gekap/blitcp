@@ -10,3 +10,4 @@ languages
 test_*.py
 pentest_scenarios.py
 fs_detect.py
+check_exploits.py

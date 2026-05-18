@@ -118,7 +118,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.1.0"
+__version__ = "3.1.1"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -191,6 +191,66 @@ def write_log_file(path, summary):
 SUDO_AUDIT_FILE = ".fast_copy_audit.jsonl"
 
 
+def _is_elevated():
+    """True when running with elevated privileges (sudo or direct root)."""
+    if os.environ.get("SUDO_USER"):
+        return True
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _safe_open_read_fd(path):
+    """Open a file for reading.
+
+    When elevated (sudo / euid==0), use O_NOFOLLOW so that a TOCTOU race
+    between scan and copy cannot redirect the read through a symlink — a
+    non-root attacker who plants `<src>/leak -> /etc/shadow` must not be
+    able to exfiltrate root-readable files.
+
+    When not elevated, open without O_NOFOLLOW so in-tree symlinks (which
+    the scan filter explicitly allows for non-elevated runs) still resolve
+    to their target content."""
+    flags = os.O_RDONLY
+    if _is_elevated() and hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return os.open(path, flags)
+
+
+def _safe_open_write_fd(path, truncate=True):
+    """Open a destination file for writing, refusing to follow a symlink.
+
+    Prevents an attacker who can write the destination directory from
+    pre-planting `<dst>/file -> /root/.bashrc` and tricking root into
+    overwriting an arbitrary file. Returns an open fd; caller wraps with
+    os.fdopen() and is responsible for closing."""
+    flags = os.O_WRONLY | os.O_CREAT
+    flags |= (os.O_TRUNC if truncate else 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return os.open(path, flags, 0o600)
+
+
+def _safe_apply_meta(fd, dst_path, src_st):
+    """Apply mtime/atime and mode from src_st to dst_path.
+
+    Uses fchmod via fd (symlink-safe) and lstat-checks dst_path before
+    os.utime — refuses if dst_path has somehow become a symlink between
+    the open and now."""
+    try:
+        os.fchmod(fd, stat.S_IMODE(src_st.st_mode))
+    except OSError:
+        pass
+    try:
+        lst = os.lstat(dst_path)
+        if not stat.S_ISLNK(lst.st_mode):
+            os.utime(dst_path, (src_st.st_atime, src_st.st_mtime))
+    except OSError:
+        pass
+
+
 def _is_under_sudo():
     """True when the current process was launched via sudo.
 
@@ -200,13 +260,32 @@ def _is_under_sudo():
     return bool(os.environ.get("SUDO_USER"))
 
 
+def _sudo_user_home():
+    """Resolve $SUDO_USER's home directory, or None if unavailable.
+
+    Why: the audit file lives in the invoking user's home so a non-root
+    attacker can't pre-plant a symlink at the destination path and trick
+    root into chmod / chattr / appending on an arbitrary file."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user:
+        return None
+    try:
+        import pwd
+        return pwd.getpwnam(sudo_user).pw_dir
+    except (KeyError, ImportError, OSError):
+        return None
+
+
 def _set_immutable(path, immutable):
     """Set or clear the Linux immutable attribute (chattr +i / -i).
 
     Returns True on success, False if chattr is unavailable, the filesystem
     doesn't support immutability (tmpfs, FAT32, NFS, …), or we lack
     privileges. Callers must treat False as "no protection" rather than a
-    fatal error — the audit record itself is still useful even unprotected."""
+    fatal error — the audit record itself is still useful even unprotected.
+
+    Caller MUST verify the path is not a symlink before calling — chattr
+    follows symlinks and could otherwise be redirected to a sensitive file."""
     if _system != "Linux":
         return False
     try:
@@ -220,13 +299,21 @@ def _set_immutable(path, immutable):
         return False
 
 
-def write_sudo_audit(dst_dir, src_display, summary):
-    """Append a hidden, immutable audit record to <dst>/.fast_copy_audit.jsonl.
+def write_sudo_audit(src_display, dst_display, summary):
+    """Append a hidden, immutable audit record to ~$SUDO_USER/.fast_copy_audit.jsonl.
 
     Only fires when the process is running under sudo — captures who invoked
     sudo, the command, what was copied, and the full per-file list from
     _log_entries. The file is one JSON object per line so it can accumulate
     across runs.
+
+    Location: $SUDO_USER's home directory (not the copy destination) so a
+    non-root attacker can't influence the audit path.
+
+    Symlink/hardlink hardening:
+      • lstat the path; refuse if it's a symlink or non-regular file
+      • open with O_NOFOLLOW | O_APPEND | O_CREAT, fchmod via fd
+      • refuse if st_nlink > 1 (hardlink-pinned to a sensitive target)
 
     Tamper-resistance: after each write the file is chattr +i (immutable),
     so even root cannot modify or delete it without first running
@@ -234,14 +321,30 @@ def write_sudo_audit(dst_dir, src_display, summary):
     appending its own record, then re-immutables the file."""
     if not _is_under_sudo():
         return
-    if not dst_dir or not os.path.isdir(dst_dir):
-        return  # remote destination or dst not yet created — skip
+    audit_dir = _sudo_user_home()
+    if not audit_dir or not os.path.isdir(audit_dir):
+        return
     import datetime
-    audit_path = os.path.join(dst_dir, SUDO_AUDIT_FILE)
+    audit_path = os.path.join(audit_dir, SUDO_AUDIT_FILE)
 
-    # If a prior run left the file immutable, clear the flag so we can append.
     pre_existing_immutable = False
-    if os.path.exists(audit_path):
+    try:
+        lst = os.lstat(audit_path)
+    except FileNotFoundError:
+        lst = None
+    except OSError as e:
+        print(f"  {C.YELLOW}Audit: cannot stat {audit_path}: {e}{C.RESET}")
+        return
+    if lst is not None:
+        if stat.S_ISLNK(lst.st_mode):
+            print(f"  {C.RED}Audit: refusing — {audit_path} is a symlink{C.RESET}")
+            return
+        if not stat.S_ISREG(lst.st_mode):
+            print(f"  {C.RED}Audit: refusing — {audit_path} is not a regular file{C.RESET}")
+            return
+        if lst.st_nlink > 1:
+            print(f"  {C.RED}Audit: refusing — {audit_path} has {lst.st_nlink} hardlinks{C.RESET}")
+            return
         pre_existing_immutable = _set_immutable(audit_path, False)
 
     record = {
@@ -253,31 +356,57 @@ def write_sudo_audit(dst_dir, src_display, summary):
         "command": " ".join(sys.argv),
         "cwd": os.environ.get("PWD") or os.getcwd(),
         "source": src_display,
-        "destination": dst_dir,
+        "destination": dst_display,
         "summary": summary,
         "files": list(_log_entries),
     }
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     try:
-        with open(audit_path, "a") as f:
-            f.write(json.dumps(record) + "\n")
+        fd = os.open(audit_path, flags, 0o600)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            print(f"  {C.RED}Audit: refusing — symlink at {audit_path}{C.RESET}")
+        else:
+            print(f"  {C.YELLOW}Could not open audit file: {e}{C.RESET}")
+        return
+    try:
         try:
-            os.chmod(audit_path, 0o600)
+            fst = os.fstat(fd)
+            if not stat.S_ISREG(fst.st_mode):
+                print(f"  {C.RED}Audit: refusing — opened non-regular file{C.RESET}")
+                return
+            if fst.st_nlink > 1:
+                print(f"  {C.RED}Audit: refusing — {audit_path} has {fst.st_nlink} hardlinks{C.RESET}")
+                return
+        except OSError as e:
+            print(f"  {C.YELLOW}Audit: fstat failed: {e}{C.RESET}")
+            return
+        try:
+            os.write(fd, (json.dumps(record) + "\n").encode("utf-8"))
+        except OSError as e:
+            print(f"  {C.YELLOW}Could not write audit file: {e}{C.RESET}")
+            return
+        try:
+            os.fchmod(fd, 0o600)
         except OSError:
             pass
-        # Re-apply the immutable flag so the record can't be tampered with.
-        # If the FS or chattr isn't available, note it but don't fail the run.
-        made_immutable = _set_immutable(audit_path, True)
-        if made_immutable:
-            tamper_note = "immutable"
-        elif pre_existing_immutable:
-            tamper_note = "WARNING: was immutable but couldn't restore"
-        else:
-            tamper_note = "not immutable (chattr unavailable or unsupported FS)"
-        print(f"  Audit:   {C.BOLD}{audit_path}{C.RESET} "
-              f"{C.DIM}(sudo run by {os.environ.get('SUDO_USER')}, "
-              f"{tamper_note}){C.RESET}")
-    except OSError as e:
-        print(f"  {C.YELLOW}Could not write audit file: {e}{C.RESET}")
+    finally:
+        os.close(fd)
+
+    made_immutable = _set_immutable(audit_path, True)
+    if made_immutable:
+        tamper_note = "immutable"
+    elif pre_existing_immutable:
+        tamper_note = "WARNING: was immutable but couldn't restore"
+    else:
+        tamper_note = "not immutable (chattr unavailable or unsupported FS)"
+    print(f"  Audit:   {C.BOLD}{audit_path}{C.RESET} "
+          f"{C.DIM}(sudo run by {os.environ.get('SUDO_USER')}, "
+          f"{tamper_note}){C.RESET}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -680,6 +809,39 @@ def parse_remote_path(path_str):
 _ParamikoHostKeyBase = paramiko.MissingHostKeyPolicy if _has_paramiko else object
 
 
+def _user_known_hosts_path():
+    """Path to known_hosts. Under sudo we route to $SUDO_USER's home so
+    accepted keys persist for the human user, not for root's profile."""
+    home = _sudo_user_home()
+    if home:
+        return os.path.join(home, ".ssh", "known_hosts")
+    return os.path.expanduser("~/.ssh/known_hosts")
+
+
+def _chown_to_sudo_user(path):
+    """Chown a file (and its parent .ssh dir if root-created) back to
+    $SUDO_USER after writing under sudo. No-op if not under sudo."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user or not (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return
+    try:
+        import pwd
+        pw = pwd.getpwnam(sudo_user)
+    except (KeyError, ImportError, OSError):
+        return
+    try:
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except OSError:
+        pass
+    ssh_dir = os.path.dirname(path)
+    try:
+        st = os.lstat(ssh_dir)
+        if st.st_uid == 0:
+            os.chown(ssh_dir, pw.pw_uid, pw.pw_gid)
+    except OSError:
+        pass
+
+
 class _InteractiveHostKeyPolicy(_ParamikoHostKeyBase):
     """Prompts the user to accept unknown host keys, like OpenSSH does."""
 
@@ -704,8 +866,7 @@ class _InteractiveHostKeyPolicy(_ParamikoHostKeyBase):
             raise paramiko.SSHException(
                 f"Host key for {hostname} rejected by user"
             )
-        # Save to ~/.ssh/known_hosts
-        known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+        known_hosts = _user_known_hosts_path()
         os.makedirs(os.path.dirname(known_hosts), exist_ok=True)
         try:
             host_keys = paramiko.HostKeys(known_hosts)
@@ -714,6 +875,7 @@ class _InteractiveHostKeyPolicy(_ParamikoHostKeyBase):
         host_keys.add(hostname, key_type, key)
         try:
             host_keys.save(known_hosts)
+            _chown_to_sudo_user(known_hosts)
             print(f"  {C.GREEN}Host key saved to {known_hosts}{C.RESET}")
         except (IOError, OSError) as e:
             print(f"  {C.YELLOW}Could not save host key: {e}{C.RESET}")
@@ -738,7 +900,7 @@ class SSHConnection:
             self.client.load_system_host_keys()
         except IOError:
             pass
-        known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+        known_hosts = _user_known_hosts_path()
         if os.path.isfile(known_hosts):
             try:
                 self.client.load_host_keys(known_hosts)
@@ -2249,11 +2411,18 @@ def scan_source(src_root, dst_root=None, excludes=None):
         """Called by os.walk when it can't list a directory."""
         dir_errors.append((err.filename, str(err)))
 
-    # followlinks=True so we traverse Windows junctions & symlinks
-    # Use _long_path on Windows to see files beyond 260-char MAX_PATH
+    # followlinks=True on Windows so junctions are traversed (junctions are
+    # treated as directories by NTFS and are the normal way symbolic links
+    # show up there). On POSIX, followlinks=False so a non-root attacker who
+    # plants a symlink in the source tree cannot redirect a root-privileged
+    # read (e.g. dropping `<src>/leak -> /etc/shadow`).
+    # Use _long_path on Windows to see files beyond 260-char MAX_PATH.
     walk_src = _long_path(src_root)
+    follow_links_setting = (_system == "Windows")
+    elevated = _is_under_sudo() or (hasattr(os, "geteuid") and os.geteuid() == 0)
     symlink_warnings = []
-    for root, dirs, files in os.walk(walk_src, followlinks=True, onerror=on_walk_error):
+    rejected_symlinks = []
+    for root, dirs, files in os.walk(walk_src, followlinks=follow_links_setting, onerror=on_walk_error):
         # Circular symlink protection
         try:
             real = os.path.realpath(_strip_long_path(root))
@@ -2292,6 +2461,26 @@ def scan_source(src_root, dst_root=None, excludes=None):
             src_path = os.path.join(root, fname)
             rel_path = os.path.relpath(_strip_long_path(src_path), src_root).replace(os.sep, "/")
             try:
+                lst = os.lstat(src_path)
+            except OSError as e:
+                errors.append((_strip_long_path(src_path), str(e)))
+                continue
+            # Symlink in source: refuse outright when running elevated.
+            # Otherwise, allow only if its realpath stays inside the source.
+            if stat.S_ISLNK(lst.st_mode):
+                if elevated:
+                    rejected_symlinks.append(_strip_long_path(src_path))
+                    continue
+                try:
+                    real_target = os.path.realpath(src_path)
+                except OSError:
+                    rejected_symlinks.append(_strip_long_path(src_path))
+                    continue
+                if not (real_target == src_real or
+                        real_target.startswith(src_real + os.sep)):
+                    rejected_symlinks.append(_strip_long_path(src_path))
+                    continue
+            try:
                 st = os.stat(src_path)
                 alloc = _detect_sparse_alloc(st)
                 entries.append(FileEntry(
@@ -2304,6 +2493,14 @@ def scan_source(src_root, dst_root=None, excludes=None):
                     print(f"\r  {C.DIM}Scanning... {scan_count} files{C.RESET}", end="", flush=True)
             except OSError as e:
                 errors.append((_strip_long_path(src_path), str(e)))
+    if rejected_symlinks:
+        reason = ("running as root — symlinks not followed" if elevated
+                  else "target escapes source tree")
+        print(f"  {C.YELLOW}Skipped {len(rejected_symlinks)} symlinks ({reason}):{C.RESET}")
+        for p in rejected_symlinks[:5]:
+            print(f"    {C.YELLOW}→ {p}{C.RESET}")
+        if len(rejected_symlinks) > 5:
+            print(f"    ... and {len(rejected_symlinks) - 5} more")
 
     print(f"\r  {C.GREEN}Found {len(entries)} files{C.RESET}                    ")
 
@@ -2884,16 +3081,28 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
                     if (cancel_check and cancel_check()) or consumer_done.is_set():
                         break
                     try:
-                        with open(entry.src, "rb") as f:
+                        try:
+                            src_fd = _safe_open_read_fd(entry.src)
+                        except OSError as e:
+                            if e.errno == errno.ELOOP:
+                                _log("error", entry.rel, entry.size,
+                                     error="symlink in source (elevated)")
+                                progress.update(entry.size, 1)
+                                continue
+                            raise
+                        with os.fdopen(src_fd, "rb") as f:
                             data = f.read(SMALL_FILE_THRESHOLD + 1)
+                            try:
+                                st = os.fstat(f.fileno())
+                            except OSError:
+                                st = None
 
                         info = tarfile.TarInfo(name=entry.rel)
                         info.size = len(data)
-                        try:
-                            st = os.stat(entry.src)
+                        if st is not None:
                             info.mtime = st.st_mtime
-                            info.mode = st.st_mode
-                        except OSError:
+                            info.mode = stat.S_IMODE(st.st_mode)
+                        else:
                             info.mtime = time.time()
 
                         tar.addfile(info, io.BytesIO(data))
@@ -2996,7 +3205,22 @@ def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
     much smaller for heavily-sparse files."""
     mv = memoryview(buf)
     buf_size = len(buf)
-    with open(src_path, "rb") as fin, open(dst_path, "wb") as fout:
+    try:
+        src_fd_raw = _safe_open_read_fd(src_path)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            print(f"\n  {C.RED}Refusing to follow symlink: {src_path}{C.RESET}")
+            return False
+        raise
+    try:
+        dst_fd_raw = _safe_open_write_fd(dst_path, truncate=True)
+    except OSError as e:
+        os.close(src_fd_raw)
+        if e.errno == errno.ELOOP:
+            print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
+            return False
+        raise
+    with os.fdopen(src_fd_raw, "rb") as fin, os.fdopen(dst_fd_raw, "wb") as fout:
         src_fd = fin.fileno()
         src_size = os.fstat(src_fd).st_size
         offset = 0
@@ -3050,6 +3274,11 @@ def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
         fout.truncate(src_size)
         if src_size > offset:
             progress.update(src_size - offset)
+        try:
+            src_st = os.fstat(src_fd)
+            _safe_apply_meta(fout.fileno(), dst_path, src_st)
+        except OSError:
+            pass
     return True
 
 
@@ -3075,14 +3304,23 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             os.makedirs(dst_dir, exist_ok=True)
 
             if entry.size == 0:
-                with open(dst_path, "wb"):
-                    pass
                 try:
-                    st = os.stat(entry.src)
-                    os.utime(dst_path, (st.st_atime, st.st_mtime))
-                    os.chmod(dst_path, stat.S_IMODE(st.st_mode))
-                except OSError:
-                    pass
+                    fd = _safe_open_write_fd(dst_path, truncate=True)
+                except OSError as e:
+                    if e.errno == errno.ELOOP:
+                        print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
+                        _log("error", entry.rel, entry.size, error="symlink at destination")
+                        continue
+                    raise
+                try:
+                    try:
+                        st = os.lstat(entry.src)
+                    except OSError:
+                        st = None
+                    if st is not None and not stat.S_ISLNK(st.st_mode):
+                        _safe_apply_meta(fd, dst_path, st)
+                finally:
+                    os.close(fd)
                 _log("copied", entry.rel, entry.size, method="individual")
                 progress.update(0, 1)
                 progress.display()
@@ -3091,11 +3329,15 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             # Try reflink first when the destination FS supports it.
             # Reflinks are O(1) metadata operations — instant for any size.
             if fs_strategy == "reflink" and _try_reflink(entry.src, dst_path):
-                # Preserve timestamps and permissions even on reflink
+                # Preserve timestamps and permissions even on reflink.
+                # _try_reflink creates dst_path itself; verify it's not a symlink before chmod.
                 try:
-                    st = os.stat(entry.src)
-                    os.utime(dst_path, (st.st_atime, st.st_mtime))
-                    os.chmod(dst_path, stat.S_IMODE(st.st_mode))
+                    dl = os.lstat(dst_path)
+                    if not stat.S_ISLNK(dl.st_mode):
+                        st = os.lstat(entry.src)
+                        if not stat.S_ISLNK(st.st_mode):
+                            os.utime(dst_path, (st.st_atime, st.st_mtime))
+                            os.chmod(dst_path, stat.S_IMODE(st.st_mode))
                 except OSError:
                     pass
                 _log("copied", entry.rel, entry.size, method="reflink")
@@ -3114,7 +3356,25 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                 if not ok:
                     return
             else:
-                with open(entry.src, "rb") as fin, open(dst_path, "wb") as fout:
+                try:
+                    src_fd_raw = _safe_open_read_fd(entry.src)
+                except OSError as e:
+                    if e.errno == errno.ELOOP:
+                        print(f"\n  {C.RED}Refusing to follow symlink: {entry.src}{C.RESET}")
+                        _log("error", entry.rel, entry.size, error="symlink in source")
+                        continue
+                    raise
+                try:
+                    dst_fd_raw = _safe_open_write_fd(dst_path, truncate=True)
+                except OSError as e:
+                    os.close(src_fd_raw)
+                    if e.errno == errno.ELOOP:
+                        print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
+                        _log("error", entry.rel, entry.size, error="symlink at destination")
+                        continue
+                    raise
+                with os.fdopen(src_fd_raw, "rb") as fin, os.fdopen(dst_fd_raw, "wb") as fout:
+                    dst_fd_keep = fout.fileno()
                     while True:
                         # Check for cancellation during large file copy
                         if cancel_check and cancel_check():
@@ -3130,14 +3390,11 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                         fout.write(mv[:n])
                         progress.update(n)
                         progress.display()
-
-            # Preserve timestamps and permissions
-            try:
-                st = os.stat(entry.src)
-                os.utime(dst_path, (st.st_atime, st.st_mtime))
-                os.chmod(dst_path, stat.S_IMODE(st.st_mode))
-            except OSError:
-                pass
+                    try:
+                        st = os.fstat(fin.fileno())
+                        _safe_apply_meta(dst_fd_keep, dst_path, st)
+                    except OSError:
+                        pass
 
             _log("copied", entry.rel, entry.size, method="individual")
             progress.update(0, 1)
@@ -3243,7 +3500,16 @@ def copy_individual_remote(entries, ssh, remote_root, progress, buf_size):
                 progress.display()
                 continue
 
-            with open(entry.src, "rb") as fin:
+            try:
+                src_fd = _safe_open_read_fd(entry.src)
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    print(f"\n  {C.RED}Refusing to follow symlink: {entry.src}{C.RESET}")
+                    _log("error", entry.rel, entry.size, error="symlink in source (elevated)")
+                    progress.update(entry.size, 1)
+                    continue
+                raise
+            with os.fdopen(src_fd, "rb") as fin:
                 with sftp.open(remote_path, "wb") as fout:
                     fout.set_pipelined(True)
                     while True:
@@ -3253,10 +3519,15 @@ def copy_individual_remote(entries, ssh, remote_root, progress, buf_size):
                         fout.write(mv[:n])
                         progress.update(n)
                         progress.display()
+                try:
+                    st = os.fstat(fin.fileno())
+                except OSError:
+                    st = None
 
             # Preserve timestamps
             try:
-                st = os.stat(entry.src)
+                if st is None:
+                    st = os.stat(entry.src)
                 sftp.utime(remote_path, (st.st_atime, st.st_mtime))
             except OSError:
                 pass
@@ -3329,14 +3600,22 @@ def _stream_tar_batch_to_remote(batch, ssh, remote_root, progress):
                         _log("error", entry.rel, entry.size, error=f"unsafe path: {check}")
                         errors += 1
                         continue
-                    st = os.stat(entry.src)
-                    actual_size = st.st_size
-                    info = tarfile.TarInfo(name=entry.rel)
-                    info.size = actual_size
-                    info.mtime = st.st_mtime
-                    info.mode = st.st_mode & 0o7777
-
-                    with open(entry.src, "rb") as f:
+                    try:
+                        src_fd = _safe_open_read_fd(entry.src)
+                    except OSError as e:
+                        if e.errno == errno.ELOOP:
+                            _log("error", entry.rel, entry.size,
+                                 error="symlink in source (elevated)")
+                            errors += 1
+                            continue
+                        raise
+                    with os.fdopen(src_fd, "rb") as f:
+                        st = os.fstat(f.fileno())
+                        actual_size = st.st_size
+                        info = tarfile.TarInfo(name=entry.rel)
+                        info.size = actual_size
+                        info.mtime = st.st_mtime
+                        info.mode = st.st_mode & 0o7777
                         tar.addfile(info, f)
 
                     _log("copied", entry.rel, entry.size, method="tar_stream")
@@ -3892,12 +4171,21 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
             if entry.size == 0:
-                with open(dst_path, "wb"):
-                    pass
+                try:
+                    fd = _safe_open_write_fd(dst_path, truncate=True)
+                except OSError as e:
+                    if e.errno == errno.ELOOP:
+                        print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
+                        _log("error", entry.rel, entry.size, error="symlink at destination")
+                        continue
+                    raise
+                os.close(fd)
                 try:
                     rstat = sftp.stat(remote_path)
-                    os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
-                    os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
+                    dl = os.lstat(dst_path)
+                    if not stat.S_ISLNK(dl.st_mode):
+                        os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
+                        os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
                 except (OSError, IOError):
                     pass
                 _log("copied", entry.rel, entry.size, method="sftp")
@@ -3905,7 +4193,15 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
                 progress.display()
                 continue
 
-            with sftp.open(remote_path, "rb") as fin, open(dst_path, "wb") as fout:
+            try:
+                dst_fd_raw = _safe_open_write_fd(dst_path, truncate=True)
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
+                    _log("error", entry.rel, entry.size, error="symlink at destination")
+                    continue
+                raise
+            with sftp.open(remote_path, "rb") as fin, os.fdopen(dst_fd_raw, "wb") as fout:
                 fin.prefetch(min(entry.size, 256 * 1024 * 1024))  # cap at 256MB to limit memory
                 while True:
                     data = fin.read(buf_size)
@@ -3917,8 +4213,10 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
 
             try:
                 rstat = sftp.stat(remote_path)
-                os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
-                os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
+                dl = os.lstat(dst_path)
+                if not stat.S_ISLNK(dl.st_mode):
+                    os.utime(dst_path, (rstat.st_atime, rstat.st_mtime))
+                    os.chmod(dst_path, stat.S_IMODE(rstat.st_mode))
             except (OSError, IOError):
                 pass
 
@@ -4005,7 +4303,13 @@ class _ProgressTarExtractor:
 
         written = 0
         try:
-            with open(io_path, "wb") as fout:
+            try:
+                io_fd = _safe_open_write_fd(io_path, truncate=True)
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    return "blocked: symlink at destination path"
+                raise
+            with os.fdopen(io_fd, "wb") as fout:
                 while True:
                     chunk = fileobj.read(1048576)  # 1 MB
                     if not chunk:
@@ -4719,8 +5023,14 @@ def check_update_info():
     print()
 
 
-def self_update(target_version=None):
-    """Download and install a release. If target_version is None, install latest."""
+def self_update(target_version=None, expected_sha256=None):
+    """Download and install a release. If target_version is None, install latest.
+
+    expected_sha256: optional hex SHA-256 string. If provided, the downloaded
+    binary's SHA-256 must match exactly or the update is refused. Use this to
+    verify the release against a hash obtained out-of-band (release page, etc.)
+    — defends against a compromised release publisher pushing a trojan that
+    would later run as root via --use-sudo."""
     import urllib.request
     import urllib.error
 
@@ -4815,9 +5125,23 @@ def self_update(target_version=None):
 
         print(f" {C.GREEN}{fmt_size(len(data))} downloaded{C.RESET}")
 
-        # Compute SHA-256 of download for audit trail
+        # Compute SHA-256 of download. If the caller supplied a pinned hash
+        # (out-of-band — typically from the GitHub release page), verify it.
+        # Otherwise the hash is printed only for an audit trail.
         dl_hash = hashlib.sha256(data).hexdigest()
         print(f"  SHA-256: {C.DIM}{dl_hash}{C.RESET}")
+        if expected_sha256:
+            want = expected_sha256.strip().lower()
+            if dl_hash.lower() != want:
+                print(f"\n  {C.RED}Error: SHA-256 mismatch — refusing update.{C.RESET}")
+                print(f"  {C.RED}expected: {want}{C.RESET}")
+                print(f"  {C.RED}got:      {dl_hash}{C.RESET}")
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                sys.exit(1)
+            print(f"  {C.GREEN}SHA-256 matches pinned value.{C.RESET}")
 
     except (urllib.error.URLError, OSError) as e:
         print(f"\n  {C.RED}Download failed: {e}{C.RESET}")
@@ -6157,7 +6481,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
     # Hidden audit file when running under sudo — written BEFORE write_log_file
     # since the latter clears _log_entries.
-    write_sudo_audit(dst, args.source, {
+    write_sudo_audit(args.source, dst, {
         "mode": "local_to_local",
         "total_files": total_files, "copied": len(copy_entries),
         "linked": len(link_map), "skipped": skipped_count,
@@ -6190,6 +6514,16 @@ if __name__ == "__main__":
         check_update_info()
         sys.exit(0)
     if "--update" in sys.argv:
+        # Refuse self-update under sudo: a compromised release publisher would
+        # otherwise install a trojan that runs as root the moment the user
+        # invokes the next sudo run. Force the user to update as themselves
+        # first, then re-elevate explicitly.
+        if (hasattr(os, "geteuid") and os.geteuid() == 0) or os.environ.get("SUDO_USER"):
+            print("Error: --update is not allowed under sudo. "
+                  "Run as your normal user; the updated binary will only run "
+                  "as root via a separate, deliberate sudo invocation.",
+                  file=sys.stderr)
+            sys.exit(1)
         # Windows: clean up .old file from previous update
         if _system == "Windows":
             try:
@@ -6203,7 +6537,18 @@ if __name__ == "__main__":
         target_ver = None
         if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
             target_ver = sys.argv[idx + 1]
-        self_update(target_version=target_ver)
+        # Optional pinned SHA-256: --update-sha256 <hex>
+        expected_sha = None
+        if "--update-sha256" in sys.argv:
+            sidx = sys.argv.index("--update-sha256")
+            if sidx + 1 >= len(sys.argv):
+                print("Error: --update-sha256 requires a hex value.", file=sys.stderr)
+                sys.exit(1)
+            expected_sha = sys.argv[sidx + 1].strip().lower()
+            if len(expected_sha) != 64 or any(c not in "0123456789abcdef" for c in expected_sha):
+                print("Error: --update-sha256 must be 64 hex characters.", file=sys.stderr)
+                sys.exit(1)
+        self_update(target_version=target_ver, expected_sha256=expected_sha)
         sys.exit(0)
     # --use-sudo: re-exec self under sudo so the user doesn't have to type
     # `sudo python fast_copy.py …`. sudo prompts for the password
@@ -6215,6 +6560,33 @@ if __name__ == "__main__":
                   file=sys.stderr)
             sys.exit(1)
         if os.geteuid() != 0:
+            # Before elevating, refuse if the script file, its directory, or
+            # the Python interpreter could be modified by anyone other than
+            # the invoker or root. A non-root attacker with write access to
+            # any of those would otherwise own the resulting root process.
+            def _check_safe_for_sudo(path, label):
+                try:
+                    rp = os.path.realpath(path)
+                    st = os.stat(rp)
+                except OSError as e:
+                    print(f"Error: --use-sudo: cannot stat {label} ({path}): {e}",
+                          file=sys.stderr)
+                    sys.exit(1)
+                me = os.geteuid()
+                if st.st_uid not in (0, me):
+                    print(f"Error: --use-sudo: {label} {rp} is owned by uid={st.st_uid} "
+                          f"(not root or invoking user uid={me}). Refusing to elevate.",
+                          file=sys.stderr)
+                    sys.exit(1)
+                if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    print(f"Error: --use-sudo: {label} {rp} is group/world writable "
+                          f"(mode={oct(st.st_mode & 0o777)}). "
+                          f"Fix: chmod go-w {rp}", file=sys.stderr)
+                    sys.exit(1)
+                return rp
+            script_real = _check_safe_for_sudo(_get_self_path(), "script")
+            _check_safe_for_sudo(os.path.dirname(script_real), "script directory")
+            _check_safe_for_sudo(sys.executable, "Python interpreter")
             new_argv = [a for a in sys.argv if a != "--use-sudo"]
             try:
                 os.execvp("sudo", ["sudo", sys.executable] + new_argv)

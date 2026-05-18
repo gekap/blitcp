@@ -1,5 +1,93 @@
 # Changelog
 
+## v3.1.1 — 2026-05-18
+
+Security hardening release. Closes seven local privilege-escalation
+vectors that an unprivileged attacker on the same host could chain
+through `--use-sudo`. No new features, no behavior change for
+non-elevated copies of regular files. Threat model: a non-root attacker
+with write access to *either* the source tree, the destination tree,
+the script, or the script's directory tries to redirect root-privileged
+I/O (planted symlinks, hardlinks, group-writable script, sudo-mode
+auto-update) to a target only root can touch.
+
+### Security fixes
+
+- **Symlink-safe destination writes.** The copy / sparse-copy / SFTP /
+  tar-extract paths now open destination files with `O_NOFOLLOW` and
+  apply `chmod` via the open fd (`fchmod`). A non-root attacker can no
+  longer pre-plant `<dst>/file -> /root/.bashrc` and trick a sudo run
+  into overwriting an arbitrary root-owned file.
+
+- **Symlink-safe source enumeration.** `os.walk` now uses
+  `followlinks=False` on POSIX (Windows junctions unaffected). The
+  scanner `lstat`s each candidate: under sudo or `euid==0` all
+  symlinks are refused with a visible "Skipped N symlinks" message;
+  for non-elevated runs only symlinks whose realpath escapes the
+  source tree are skipped, so in-tree symlinks keep working.
+
+- **TOCTOU-safe source reads under sudo.** All file-read producers
+  (`copy_individual`, `_copy_sparse`, `copy_block_stream` small-file
+  tar pipe, `copy_to_remote_sftp`, `copy_tar_stream_remote`) route
+  through a shared `_safe_open_read_fd()` that adds `O_NOFOLLOW` when
+  elevated, so an attacker who races the scan→copy window cannot swap
+  a regular file for a symlink and exfiltrate `/etc/shadow` or the
+  like. Non-elevated runs still resolve in-tree symlinks normally.
+
+- **Audit file moved to invoking user's home.** The hidden
+  `.fast_copy_audit.jsonl` now lives in `~$SUDO_USER` instead of the
+  copy destination, so an attacker who controls the destination path
+  can no longer pre-plant the audit filename as a symlink to
+  `/etc/shadow` and trick root into `chattr +i` / `chmod 0600` /
+  appending on a sensitive file. The audit open uses
+  `O_NOFOLLOW | O_APPEND | O_CREAT`, `fchmod` via fd, and an
+  `st_nlink > 1` refusal so hardlink-pinned targets are also blocked.
+
+- **`--update` refused under sudo.** Self-update aborts when
+  `geteuid() == 0` or `$SUDO_USER` is set. A compromised release
+  publisher can therefore only install code that runs as the invoking
+  user — the user must explicitly re-elevate via a separate `sudo`
+  invocation before the new binary touches root.
+
+- **Optional `--update-sha256 <hex>` pin.** When supplied, the
+  downloaded binary's SHA-256 is compared to a 64-char hex value (e.g.
+  copied from the GitHub release page) and the update is refused on
+  mismatch. The hash is validated for format up front. Without the
+  flag, existing HTTPS / hostname-allowlist / size checks still apply
+  but no integrity pinning is performed.
+
+- **`--use-sudo` preflight on script & interpreter.** Before
+  re-executing under sudo, fast-copy refuses if `fast_copy.py`, its
+  parent directory, or `sys.executable` is owned by anyone other than
+  root or the invoking user, or is group/world-writable. Closes the
+  trojan-the-script path: an attacker in your group can no longer
+  silently edit `fast_copy.py` and wait for your next sudo run.
+
+### Other changes
+
+- **SSH `known_hosts` routed to invoking user under sudo.** Accepted
+  host keys are written to `~$SUDO_USER/.ssh/known_hosts` and chowned
+  back to that user, so TOFU acceptance persists for the human
+  operator rather than disappearing into `/root/.ssh/`.
+
+- **`check_exploits.py`** — new verification script that reproduces
+  each of the eleven attack scenarios (planted symlinks at source /
+  destination / audit path, simulated elevated runs, group-writable
+  script, world-writable script directory, refused `--update` under
+  sudo, `--update-sha256` format check, known_hosts routing, TOCTOU
+  race) without requiring real root, and asserts each vector is
+  refused. Run with `python3 check_exploits.py`.
+
+### Compatibility
+
+No CLI changes for existing workflows. Non-elevated copies of regular
+files and in-tree symlinks behave identically to v3.1.0. Sudo runs
+will now log a "Skipped N symlinks" line if the source contains any
+symlinks (intentional — they were previously followed silently). The
+sudo audit file now lives in `~$SUDO_USER/.fast_copy_audit.jsonl`
+instead of `<dst>/.fast_copy_audit.jsonl`; old audit files in
+destinations are left in place and ignored.
+
 ## v3.1.0 — 2026-05-16
 
 Big release built around bulk-backup workflows for VM-image / Longhorn-style
