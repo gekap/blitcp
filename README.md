@@ -4,6 +4,10 @@ A fast, cross-platform command-line tool for copying files and directories at ma
 
 **Key capabilities:**
 - **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
+- **Sparse-file awareness** *(v3.1.0+)* — VM disk images and Longhorn replicas are copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk (2.3 TB logical → 12 GB on disk on real backups)
+- **Multiple sources per command** *(v3.1.0+)* — `fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style
+- **`--use-sudo` self-elevation + tamper-resistant audit log** *(v3.1.0+)* — re-execs under sudo for root-only paths and writes a `chattr +i` JSONL audit trail of who ran what
+- **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` everywhere, audit file in `~$SUDO_USER`, script-perm preflight, `--update` refused under sudo
 - Reads files in **physical disk order** (eliminates random seeks on HDDs)
 - **Content-aware deduplication** — copies each unique file once, hard-links or reflinks duplicates
 - **Automatic filesystem detection** — detects reflink/hardlink/symlink/none capability on the destination and picks the safest dedup strategy
@@ -171,6 +175,55 @@ FS:          xfs → reflink
              detect=4.3ms probe=1.1ms (4 probes)
 ```
 
+### Bulk-backup workflow for VM images and Longhorn replicas (v3.1.0+)
+
+v3.1.0 added a set of features that together make fast-copy practical for sysadmin-style bulk backups: copying many sparse VM disks or Longhorn replicas from system paths that require root, with a tamper-evident audit trail.
+
+**Multiple sources per command.** Pass any number of source paths followed by the destination — each source is copied as its own subtree under the destination, preserving its basename:
+
+```bash
+# Shell glob expands to N source paths
+fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
+
+# Or list them explicitly
+fast-copy /etc /var/log /home/operator /mnt/incident_snapshot/
+```
+
+Existing single-source `fast-copy SRC DST` invocations are unaffected.
+
+**Sparse-file awareness (Linux/macOS).** Files where `st_blocks * 512 < st_size` are auto-detected and copied with `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. The Phase 3 space check uses the **allocated** byte count on sparse-capable destinations, so a 2.3 TB sparse tree holding 12 GB of real data no longer rejects a 900 GB destination. Scan output reports the summary up front:
+
+```
+Sparse:  346 sparse files — 2.3 TB logical, 12.2 GB on disk
+Data to write: 12.2 GB (after sparse holes skipped 2.2 TB)
+```
+
+Falls back to dense copy on Windows and on filesystems without hole support (FAT32, exFAT). The wire format for SSH transfers is still dense — sparse-aware copy applies to local→local destinations only.
+
+**`--use-sudo` self-elevation.** Saves typing `sudo python fast_copy.py …` for the common case where the source or destination requires root (Longhorn replicas, container volumes, system paths). fast-copy re-execs itself under sudo and lets sudo prompt for the password on the terminal as usual. Linux/macOS only.
+
+```bash
+fast-copy --use-sudo /var/lib/longhorn/replicas/pvc-x123 /mnt/backup/
+```
+
+**Tamper-resistant audit log.** When running under sudo (detected via `$SUDO_USER`), fast-copy writes a hidden `.fast_copy_audit.jsonl` to `~$SUDO_USER/` — one JSON record per run capturing the pre-elevation username, the full command, source/destination, the per-file copy list, and run summary. After each write the file is `chattr +i` (immutable) so even root cannot edit or delete it without first running `chattr -i`. The next sudo run clears the flag, appends its record, and re-immutables. Degrades gracefully (writes the record unprotected, with a warning) on tmpfs/FAT32/NFS where immutability isn't supported.
+
+To inspect: `sudo cat ~/.fast_copy_audit.jsonl` (reads work on immutable files). To remove: `sudo chattr -i <path> && sudo rm <path>`.
+
+### Security model for `--use-sudo` (v3.1.1+)
+
+The convenience flag re-execs the tool under sudo, so anything fast-copy does while elevated runs as root. v3.1.1 closes seven local-privilege-escalation paths in that flow against a non-root attacker on the same host who can write the source tree, the destination tree, or the script's directory:
+
+- **`O_NOFOLLOW` on every destination open** (block-stream / sparse / individual / SFTP / tar-extract paths). A planted symlink like `<dst>/file -> /root/.bashrc` no longer redirects root-privileged writes.
+- **Audit file moved to `~$SUDO_USER`** with `O_NOFOLLOW`, `fchmod` via fd, and a `st_nlink > 1` refusal so a pre-planted symlink or hardlink at the audit path cannot trick root into `chattr +i` / `chmod 0600` / appending on a sensitive file.
+- **Source walk uses `followlinks=False` on POSIX** and `lstat`-checks each entry: under sudo, all symlinks are refused with a visible "Skipped N symlinks" warning; without sudo, only symlinks whose realpath escapes the source root are skipped.
+- **TOCTOU-safe source reads under sudo.** All five file-read producers route through a shared opener that adds `O_NOFOLLOW` when elevated, so an attacker who races the scan→copy window cannot swap a regular file for a symlink and exfiltrate `/etc/shadow`.
+- **`--update` is refused under sudo.** A compromised release publisher can no longer auto-trojan root — the user has to explicitly re-elevate after updating. Optional `--update-sha256 <hex>` (64-char hex from the release page) adds out-of-band integrity pinning.
+- **`--use-sudo` preflight on script + interpreter.** Refuses to elevate if `fast_copy.py`, its directory, or `sys.executable` is owned by someone other than root/invoker, or is group/world-writable. Closes the "edit the script and wait" trojan path.
+- **SSH `known_hosts` routed to `~$SUDO_USER`** so accepted TOFU keys persist for the human operator rather than disappearing into `/root/.ssh/`.
+
+No CLI change for non-elevated copies of regular files. Under sudo, the only behavior change is that symlinks in the source are skipped (with a visible warning) rather than silently followed.
+
 ### Hash algorithm selection
 
 fast-copy uses a content hash to detect duplicates during dedup and to verify files after copy. Choose the algorithm with `--hash`:
@@ -266,21 +319,26 @@ Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATI
 usage: fast_copy.py [-h] [--buffer BUFFER] [--threads THREADS] [--dry-run]
                     [-v] [--no-verify] [--no-dedup] [--hash {auto,xxh128,sha256}]
                     [--no-cache] [--force] [--overwrite] [--exclude EXCLUDE]
-                    [--log-file LOG_FILE]
+                    [--log-file LOG_FILE] [--use-sudo]
                     [--ssh-src-port PORT] [--ssh-src-key PATH] [--ssh-src-password]
                     [--ssh-dst-port PORT] [--ssh-dst-key PATH] [--ssh-dst-password]
                     [-z]
-                    source destination
+                    source [source ...] destination
 
 positional arguments:
-  source               Source folder, file, glob, or remote (user@host:/path)
+  source               One or more source folders, files, globs, or remote
+                       (user@host:/path). When two or more positionals are given,
+                       the last is the destination and earlier ones are sources.
   destination          Destination path or remote (user@host:/path)
 
 options:
   -h, --help              Show help message and exit
   --version, -V           Show version and exit
   --check-update          Show available updates and release notes
-  --update [VERSION]      Download and install latest (or a specific version)
+  --update [VERSION]      Download and install latest (or a specific version).
+                          Refused under sudo (v3.1.1+).
+  --update-sha256 HEX     Verify the downloaded binary against a 64-char SHA-256
+                          obtained out-of-band from the GitHub release page (v3.1.1+).
   --buffer BUFFER         Buffer size in MB (default: 64)
   --threads THREADS       Threads for hashing/layout (default: 4)
   --dry-run               Show copy plan without copying
@@ -296,6 +354,11 @@ options:
   --force                 Skip space check, copy even if not enough space
   --overwrite             Overwrite all files, skip identical-file detection
   --exclude EXCLUDE       Exclude files/dirs by name (can use multiple times)
+  --use-sudo              Re-exec self under sudo if not already root (v3.1.0+).
+                          Useful when source or destination needs root, e.g.
+                          /var/lib/longhorn/replicas. Linux/macOS only. Refuses
+                          to elevate if the script or its directory is
+                          group/world-writable (v3.1.1+).
 
 SSH source options:
   --ssh-src-port PORT     SSH port for remote source (default: 22)
@@ -349,6 +412,22 @@ python fast_copy.py user@host:/data /local \
 # Destination on non-standard port (e.g., Synology NAS)
 python fast_copy.py /local/data "user@nas:/volume1/Shared Folder/backup" \
     --ssh-dst-port 2205 --ssh-dst-password
+```
+
+### Bulk-backup workflow (v3.1.0+)
+
+```bash
+# Multiple sources at once (cp -r style)
+fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
+
+# Sparse VM disks — only the allocated bytes are read and written
+fast-copy --use-sudo /var/lib/libvirt/images /mnt/backup/
+
+# Auto-elevate under sudo; writes an immutable audit log to ~/.fast_copy_audit.jsonl
+fast-copy --use-sudo /etc /var/log /home/operator /mnt/incident_snapshot/
+
+# Verify a self-update against a hash from the release page
+fast-copy --update --update-sha256 <paste-64-char-hex-from-release-page>
 ```
 
 ### Other options
@@ -450,6 +529,11 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 
 ## Key Features
 
+- **Sparse-file awareness** *(v3.1.0+)* — VM disk images, Longhorn replicas, and other sparse files are auto-detected (`st_blocks * 512 < st_size`) and copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. Phase 3 space check uses allocated bytes on sparse-capable destinations.
+- **Multiple sources per command** *(v3.1.0+)* — `fast-copy SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style).
+- **`--use-sudo` self-elevation** *(v3.1.0+)* — Re-execs under sudo for paths that need root (Longhorn replicas, container volumes). Linux/macOS only.
+- **Tamper-resistant audit log** *(v3.1.0+, hardened in v3.1.1+)* — Under sudo, writes an immutable (`chattr +i`) JSONL of every run to `~$SUDO_USER/.fast_copy_audit.jsonl` — captures invoking user, command, source/dest, per-file copy list, summary. Even root can't quietly delete a record.
+- **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` on every destination open and on source reads under sudo; audit file moved out of attacker-controllable destination paths; `--update` refused under sudo (with optional `--update-sha256` integrity pin); script-perm preflight refuses to elevate if `fast_copy.py` or its directory is group/world-writable.
 - **Reflink-based copy** *(v3.1.0+)* — On btrfs / XFS reflink / APFS / bcachefs, files are cloned via `FICLONE`/`clonefile` (metadata-only, instant) instead of byte-by-byte copy. CoW semantics make modified peers independent.
 - **Block-order reads** — Files read in physical disk order, eliminating random seeks
 - **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links or reflinks duplicates
