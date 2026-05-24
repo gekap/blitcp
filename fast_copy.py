@@ -47,6 +47,13 @@ Examples:
   python fast_copy.py user@src:/data user@dst:/backup -z --no-dedup
   python fast_copy.py user@host:/data /local --src-port 2222
 
+  # Incident snapshot — preserve full source paths under destination
+  python fast_copy.py --use-sudo -R /etc /var/log /home/operator \\
+                                    /mnt/incident_snapshot/
+  # → produces /mnt/incident_snapshot/etc/, /var/log/, /home/operator/
+  # (without -R, sources would land under their basenames only: etc/, log/,
+  #  operator/, losing the /var/ and /home/ parent components.)
+
 Options:
   --buffer MB       Read/write buffer size in MB (default: 64)
   --threads N       Threads for hashing & layout resolution (default: 4)
@@ -58,6 +65,10 @@ Options:
   --exclude PATTERN Exclude files/dirs by name or glob (e.g. .venv, *.bat,
                     .git*); directories matching the pattern are pruned.
                     Repeatable.
+  -R, --keep-parents
+                    Preserve each source's full parent path under destination
+                    (rsync -R). /etc /var/log dst/  →  dst/etc/ + dst/var/log/
+                    instead of dst/etc/ + dst/log/. Multi-source & glob only.
   --no-cache        Disable persistent hash cache (cross-run dedup database)
   --force           Skip space check and copy anyway
   --ssh-dst-port PORT   SSH port for remote destination (default: 22)
@@ -118,7 +129,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.1.1"
+__version__ = "3.1.2"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -5198,6 +5209,19 @@ def self_update(target_version=None, expected_sha256=None):
     sys.exit(0)
 
 
+def _keep_parents_rel(s):
+    # --keep-parents (rsync -R): preserve the source path verbatim under the
+    # destination — strip the leading separator / drive letter so the result
+    # is a relative path. /var/log → var/log, ./foo/bar → foo/bar.
+    if os.name == "nt" and len(s) >= 2 and s[1] == ":":
+        s = s[2:]
+    while s.startswith("./") or s.startswith(".\\"):
+        s = s[2:]
+    s = s.lstrip(os.sep).lstrip("/")
+    s = s.replace(os.sep, "/").rstrip("/")
+    return s or "."
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
@@ -5250,6 +5274,17 @@ def main():
                         help="Exclude files/dirs by name or glob (e.g. .venv, "
                              "*.bat, .git*). Matching directories are pruned. "
                              "Repeatable.")
+    parser.add_argument("-R", "--keep-parents", action="store_true",
+                        dest="keep_parents",
+                        help="Preserve each source's full parent path under the "
+                             "destination (rsync -R semantics). Without this, "
+                             "multi-source and glob copies use the source's "
+                             "basename only — `/etc /var/log dst/` writes to "
+                             "`dst/etc/` and `dst/log/`. With --keep-parents, "
+                             "they write to `dst/etc/` and `dst/var/log/`. "
+                             "Use for incident snapshots and forensic captures "
+                             "where source provenance must be preserved. "
+                             "No effect on single-source copies.")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
     parser.add_argument("--use-sudo", action="store_true",
@@ -5370,6 +5405,7 @@ def main():
     src_mode = None  # "dir", "file", "glob", "multi", "remote", or "remote_glob"
     glob_files = []
     multi_sources = []  # absolute paths, set when src_mode == "multi"
+    multi_sources_raw = []  # original CLI strings, parallel to multi_sources
     remote_glob_pattern = None  # set when src_mode == "remote_glob"
 
     if args.extra_sources and src_remote:
@@ -5392,6 +5428,7 @@ def main():
                 print(f"{C.RED}Error: source not found: {s}{C.RESET}")
                 sys.exit(1)
         multi_sources = [os.path.abspath(s) for s in all_src]
+        multi_sources_raw = list(all_src)
         src_mode = "multi"
         src = os.path.commonpath(multi_sources)
         if not os.path.isdir(src):
@@ -5449,6 +5486,13 @@ def main():
             src_display = src
         else:
             src_display = src
+
+    # --keep-parents only changes layout for multi-source and glob copies.
+    # For a single file/dir source it would have no observable effect; warn
+    # so the user knows the flag didn't do anything.
+    if args.keep_parents and src_mode in ("dir", "file", "remote"):
+        print(f"  {C.YELLOW}Note: --keep-parents has no effect with a single "
+              f"source. Use 2+ source paths or a glob pattern.{C.RESET}")
 
     # Detect destination filesystem early so we can fold the strategy
     # into the Dedup banner line and use it for Phase 2/3.
@@ -5604,7 +5648,10 @@ def main():
         errors = []
         for fpath in glob_files:
             abs_f = os.path.abspath(fpath)
-            rel = os.path.relpath(abs_f, src)
+            if args.keep_parents:
+                rel = _keep_parents_rel(fpath)
+            else:
+                rel = os.path.relpath(abs_f, src)
             try:
                 st = os.stat(abs_f)
                 entries.append(FileEntry(src=abs_f, rel=rel, size=st.st_size,
@@ -5615,11 +5662,16 @@ def main():
         print(f"  {C.GREEN}Found {len(entries)} files{C.RESET}")
     elif src_mode == "multi":
         # cp -r src1 src2 ... dst/  → each source preserves its basename
-        # under destination. Directories are walked; files are added directly.
+        # under destination. With --keep-parents, the source's full parent
+        # path is preserved instead (rsync -R semantics). Directories are
+        # walked; files are added directly.
         entries = []
         errors = []
-        for s in multi_sources:
-            base = os.path.basename(s.rstrip(os.sep)) or s
+        for s, s_raw in zip(multi_sources, multi_sources_raw):
+            if args.keep_parents:
+                base = _keep_parents_rel(s_raw)
+            else:
+                base = os.path.basename(s.rstrip(os.sep)) or s
             if os.path.isfile(s):
                 try:
                     st = os.stat(s)

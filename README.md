@@ -5,7 +5,7 @@ A fast, cross-platform command-line tool for copying files and directories at ma
 **Key capabilities:**
 - **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
 - **Sparse-file awareness** *(v3.1.0+)* — VM disk images and Longhorn replicas are copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk (2.3 TB logical → 12 GB on disk on real backups)
-- **Multiple sources per command** *(v3.1.0+)* — `fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style
+- **Multiple sources per command** *(v3.1.0+, `-R` v3.1.2+)* — `fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style. Add `-R` / `--keep-parents` to preserve full parent paths (rsync `-R`) for incident snapshots
 - **`--use-sudo` self-elevation + tamper-resistant audit log** *(v3.1.0+)* — re-execs under sudo for root-only paths and writes a `chattr +i` JSONL audit trail of who ran what
 - **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` everywhere, audit file in `~$SUDO_USER`, script-perm preflight, `--update` refused under sudo
 - Reads files in **physical disk order** (eliminates random seeks on HDDs)
@@ -189,7 +189,18 @@ fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
 fast-copy /etc /var/log /home/operator /mnt/incident_snapshot/
 ```
 
-Existing single-source `fast-copy SRC DST` invocations are unaffected.
+The default layout uses each source's **basename** under the destination — `/etc` lands at `dst/etc/`, `/var/log` at `dst/log/`. That matches `cp -r` and is the right choice when sources have unique basenames (Longhorn `pvc-*` replicas, VM disks). It is **not** the right choice for incident snapshots, forensic captures, or any multi-source copy where source provenance must survive: `/var/log` and `/usr/local/log` would both collapse to `dst/log/`, and `dst/log/` itself does not tell a future analyst which `log/` it came from.
+
+**`-R, --keep-parents` (v3.1.2+)** preserves each source's full parent path under the destination — rsync `-R` semantics:
+
+```bash
+fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/incident_snapshot/
+# →  /mnt/incident_snapshot/etc/
+# →  /mnt/incident_snapshot/var/log/
+# →  /mnt/incident_snapshot/home/operator/
+```
+
+The flag affects multi-source mode (≥2 paths) and glob mode (quoted patterns fast-copy expands internally). Single-source copies emit a one-line note and are unchanged. Existing single-source `fast-copy SRC DST` invocations are unaffected by either the flag or the default behavior.
 
 **Sparse-file awareness (Linux/macOS).** Files where `st_blocks * 512 < st_size` are auto-detected and copied with `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. The Phase 3 space check uses the **allocated** byte count on sparse-capable destinations, so a 2.3 TB sparse tree holding 12 GB of real data no longer rejects a 900 GB destination. Scan output reports the summary up front:
 
@@ -319,7 +330,7 @@ Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATI
 usage: fast_copy.py [-h] [--buffer BUFFER] [--threads THREADS] [--dry-run]
                     [-v] [--no-verify] [--no-dedup] [--hash {auto,xxh128,sha256}]
                     [--no-cache] [--force] [--overwrite] [--exclude EXCLUDE]
-                    [--log-file LOG_FILE] [--use-sudo]
+                    [-R] [--log-file LOG_FILE] [--use-sudo]
                     [--ssh-src-port PORT] [--ssh-src-key PATH] [--ssh-src-password]
                     [--ssh-dst-port PORT] [--ssh-dst-key PATH] [--ssh-dst-password]
                     [-z]
@@ -354,6 +365,10 @@ options:
   --force                 Skip space check, copy even if not enough space
   --overwrite             Overwrite all files, skip identical-file detection
   --exclude EXCLUDE       Exclude files/dirs by name (can use multiple times)
+  -R, --keep-parents      Preserve each source's full parent path under the
+                          destination (rsync -R semantics). Multi-source and
+                          glob copies only — no effect on single source.
+                          (v3.1.2+)
   --use-sudo              Re-exec self under sudo if not already root (v3.1.0+).
                           Useful when source or destination needs root, e.g.
                           /var/lib/longhorn/replicas. Linux/macOS only. Refuses
@@ -423,8 +438,13 @@ fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
 # Sparse VM disks — only the allocated bytes are read and written
 fast-copy --use-sudo /var/lib/libvirt/images /mnt/backup/
 
-# Auto-elevate under sudo; writes an immutable audit log to ~/.fast_copy_audit.jsonl
+# Auto-elevate under sudo; writes an immutable audit log to ~/.fast_copy_audit.jsonl.
+# Without -R, sources land as /mnt/snap/etc/, /mnt/snap/log/ (basename only).
 fast-copy --use-sudo /etc /var/log /home/operator /mnt/incident_snapshot/
+
+# Same, but preserve full parent paths for forensic provenance (v3.1.2+).
+# Result: /mnt/snap/etc/, /mnt/snap/var/log/, /mnt/snap/home/operator/.
+fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/incident_snapshot/
 
 # Verify a self-update against a hash from the release page
 fast-copy --update --update-sha256 <paste-64-char-hex-from-release-page>
@@ -530,7 +550,7 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 ## Key Features
 
 - **Sparse-file awareness** *(v3.1.0+)* — VM disk images, Longhorn replicas, and other sparse files are auto-detected (`st_blocks * 512 < st_size`) and copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. Phase 3 space check uses allocated bytes on sparse-capable destinations.
-- **Multiple sources per command** *(v3.1.0+)* — `fast-copy SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style).
+- **Multiple sources per command** *(v3.1.0+)* — `fast-copy SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style). Pass `-R` / `--keep-parents` *(v3.1.2+)* to preserve each source's full parent path instead — rsync `-R` semantics, the right choice for incident snapshots and forensic captures.
 - **`--use-sudo` self-elevation** *(v3.1.0+)* — Re-execs under sudo for paths that need root (Longhorn replicas, container volumes). Linux/macOS only.
 - **Tamper-resistant audit log** *(v3.1.0+, hardened in v3.1.1+)* — Under sudo, writes an immutable (`chattr +i`) JSONL of every run to `~$SUDO_USER/.fast_copy_audit.jsonl` — captures invoking user, command, source/dest, per-file copy list, summary. Even root can't quietly delete a record.
 - **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` on every destination open and on source reads under sudo; audit file moved out of attacker-controllable destination paths; `--update` refused under sudo (with optional `--update-sha256` integrity pin); script-perm preflight refuses to elevate if `fast_copy.py` or its directory is group/world-writable.

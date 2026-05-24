@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.1.2 — 2026-05-24
+
+Adds `-R, --keep-parents` to multi-source and glob copies. Without the
+flag (unchanged default), each source is written under its basename:
+`fast-copy /etc /var/log dst/` produces `dst/etc/` and `dst/log/`. With
+the flag, each source's full parent path is preserved (rsync `-R`
+semantics): the same command produces `dst/etc/` and `dst/var/log/`.
+
+### Why this matters
+
+The basename layout is great for Longhorn-style backups where every
+source has a unique name (`pvc-*`). It's wrong for incident snapshots,
+forensic captures, and any case where mixing sources from different
+parent directories needs unambiguous provenance — `dst/log/` does not
+tell a future analyst whether the original was `/var/log` or
+`/usr/local/log`, and two sources with the same basename would silently
+merge. `--keep-parents` preserves the full path so the snapshot tree
+mirrors the source filesystem exactly.
+
+### Scope
+
+- Affects multi-source mode (≥2 source paths) and glob mode (single
+  quoted pattern fast-copy expands internally).
+- Single-source copies (`fast-copy /var/log dst/`) emit a one-line note
+  and are unchanged — the flag has no observable effect there.
+- No change to any other code path: dedup, sparse-file detection,
+  `--use-sudo` hardening, SSH transfers, and the v3.1.1 security
+  posture are all identical.
+
+### Usage
+
+```bash
+# Incident snapshot — preserve full /etc, /var/log, /home/operator
+fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/snap/
+# Produces /mnt/snap/etc/, /mnt/snap/var/log/, /mnt/snap/home/operator/
+
+# Longhorn replicas (no flag needed — unique basenames already)
+fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup/
+```
+
 ## v3.1.1 — 2026-05-18
 
 Security hardening release. Closes seven local privilege-escalation
