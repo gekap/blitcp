@@ -13,6 +13,12 @@ This document is the canonical reference for every option exposed by both the CL
 - [Dedup Options](#dedup-options)
 - [SSH Options](#ssh-options)
 - [Copy Modes](#copy-modes)
+- [Credentials manager (`creds`)](#credentials-manager-creds)
+- [Cloud storage (S3 / Azure / GCS)](#cloud-storage-s3--azure--gcs)
+- [Listing remote objects (`ls` / `list-objects`)](#listing-remote-objects-ls--list-objects)
+- [Dependency check (`deps` / `doctor`)](#dependency-check-deps--doctor)
+- [Updating (`--check-update`, `--update`, `--update-sha256`, `--version`)](#updating---check-update---update---update-sha256---version)
+- [Running the GUI binary as CLI (`--fc-core`)](#running-the-gui-binary-as-cli---fc-core)
 - [How It Works](#how-it-works)
 - [Tips](#tips)
 
@@ -198,6 +204,171 @@ CLI: `--ssh-src-password`, `--ssh-dst-password`
 | Local | Remote (SSH) | Upload | SFTP + tar streaming over SSH |
 | Remote (SSH) | Local | Download | SFTP + tar streaming from SSH |
 | Remote (SSH) | Remote (SSH) | Relay | Data relayed through your machine via SSH |
+
+---
+
+## Credentials manager (`creds`)
+
+`fast_copy.py creds` stores reusable **cloud** (S3 / Azure / GCS) and **SSH** connections so you can refer to them by name instead of typing endpoints, keys, and paths on every copy. Connections live in a credentials file (default shown by `creds list`); the file can be encrypted at rest with **AES-256-GCM**.
+
+```
+fast_copy.py creds <sub> [NAME] [FILE]
+```
+
+`FILE` is an optional path to a non-default credentials file. `NAME` is the connection name (required for `add`/`edit`/`remove`/`test`).
+
+| Subcommand | What it does |
+|------------|--------------|
+| `list` | Show saved connections (secrets masked). |
+| `add NAME [-y]` | Add a connection interactively (type `s3`/`azure`/`gcs`/`ssh`). Prompts before overwriting an existing name; `-y`/`--force` skips the prompt. |
+| `edit NAME` | Edit a connection interactively. **Enter** keeps the current value; `-` clears an optional field. |
+| `remove NAME` | Delete a connection. |
+| `test NAME` | Live connection check (cloud API call or SSH login). |
+| `encrypt` | Encrypt the credentials file at rest (AES-256-GCM, bound to this `fast_copy.py`). |
+| `decrypt` | Decrypt back to plaintext (mode `0600`). |
+| `rekey` | Re-bind an encrypted file to the current binary. |
+| `lock` / `unlock` | Set/clear OS file immutability (tamper-resistance; needs root — see `--use-sudo`). |
+
+**Encryption is offered by default** when a new credentials file is first created — secrets are not written in plaintext unless you decline. The passphrase comes from the `FAST_COPY_CREDS_PASSPHRASE` environment variable, or from a hidden interactive prompt.
+
+> **Passphrase via environment variable:** set `FAST_COPY_CREDS_PASSPHRASE` to unlock an encrypted file non-interactively (scripts, cron). On Linux this value is readable from `/proc/<pid>/environ` by same-UID processes, so prefer the hidden prompt on shared/multi-user hosts.
+
+The `lock`/`unlock` subcommands need root for `chattr`-style immutability. Use `--use-sudo` to have the command re-exec itself under `sudo`:
+
+```
+# add and test a connection
+fast_copy.py creds add aws-prod
+fast_copy.py creds test aws-prod
+
+# list, encrypt, lock
+fast_copy.py creds list
+fast_copy.py creds encrypt
+fast_copy.py creds lock --use-sudo
+
+# non-interactive unlock for an encrypted file
+FAST_COPY_CREDS_PASSPHRASE='…' fast_copy.py creds list
+```
+
+The lock is tamper-resistance only — root can reverse it. Run `creds unlock` before editing a locked file.
+
+---
+
+## Cloud storage (S3 / Azure / GCS)
+
+fast-copy can copy **to and from** object storage. Cloud connections are managed through the [credentials manager](#credentials-manager-creds).
+
+**1. Add a cloud connection** (`creds add` prompts for the type and its settings — endpoint/keys for S3, account/key or connection string for Azure, project/service-account JSON for GCS). You can also set a **default bucket/container** (and an optional default prefix) so you can refer to the connection by name alone:
+
+```
+fast_copy.py creds add aws-prod        # type: s3
+fast_copy.py creds add az-backups      # type: azure
+fast_copy.py creds add gcs-archive     # type: gcs
+```
+
+**2. Use a saved connection as a source or destination endpoint.** Two equivalent forms:
+
+| Form | Meaning |
+|------|---------|
+| `NAME` | The connection's **default bucket/container** (and default prefix, if set). Requires a default bucket on the connection. |
+| `NAME:subpath` | A folder/prefix **inside** the default bucket (added on top of the default prefix). E.g. `gcs-archive:backup/2024`. |
+| `s3://NAME@bucket/prefix` | Explicit bucket/prefix using connection `NAME` for credentials. Also `az://NAME@container/prefix` and `gs://NAME@bucket/prefix`. |
+| `s3://bucket/prefix` | Bucket/prefix using ambient/default credentials (no saved connection). Also `az://…` and `gs://…`. |
+
+> Connection names resolve to the connection's `type` (`s3`, `az`, `gs`, or `ssh`). The cloud URL schemes are exactly `s3://`, `az://`, and `gs://`; the optional `NAME@` prefix selects a saved connection's credentials (bucket names can't contain `@`, so this is unambiguous).
+
+```
+# upload a local folder to the default bucket of aws-prod
+fast_copy.py /data aws-prod:uploads/2024
+
+# download from a GCS connection to a local folder
+fast_copy.py gcs-archive:backup/2024 /restore
+
+# explicit bucket with a named connection's credentials
+fast_copy.py /data s3://aws-prod@my-bucket/incoming
+
+# bucket using ambient credentials (no saved connection)
+fast_copy.py /data s3://my-bucket/incoming
+```
+
+If a connection has **no default bucket**, use the `NAME:<bucket>/<key>` shorthand or the `s3://NAME@<bucket>/<key>` form (or add a default bucket with `creds edit NAME`).
+
+---
+
+## Listing remote objects (`ls` / `list-objects`)
+
+List objects under a cloud location, or files in a remote SSH directory, from the terminal:
+
+```
+fast_copy.py ls <connection[:folder] | s3://bucket/prefix | user@host:/path>
+```
+
+- **Cloud:** a saved cloud connection name, or an `s3://` / `az://` / `gs://` URL.
+- **SSH:** a saved ssh connection name, or a `user@host:/path` (listed via SFTP).
+
+Options: `--credentials-file FILE`, and for SSH targets `--ssh-port N`, `--ssh-key PATH`, `--ssh-password`, `--ssh-strict-host-key-checking`.
+
+```
+fast_copy.py ls aws-prod
+fast_copy.py ls gcs-archive:backup
+fast_copy.py ls s3://bucket/prefix --credentials-file creds.json
+fast_copy.py ls user@host:/var/log --ssh-key ~/.ssh/id_ed25519
+```
+
+> Listing an encrypted cloud connection needs the passphrase — set `FAST_COPY_CREDS_PASSPHRASE` or run in a terminal. A bare `user@host:/path` is listed directly over SSH and never triggers a credentials passphrase prompt.
+
+---
+
+## Dependency check (`deps` / `doctor`)
+
+Report which optional Python packages are installed and what each one enables (cloud SDKs, faster hashing, SSH, etc.). Aliases: `deps`, `check-deps`, `doctor`.
+
+```
+fast_copy.py deps
+```
+
+With `--install` (`-i`), pip-installs the missing packages:
+
+```
+fast_copy.py deps --install
+```
+
+On a frozen (bundled-executable) build the dependencies are baked into the binary, so `pip install` does not apply and the command just reports status.
+
+---
+
+## Updating (`--check-update`, `--update`, `--update-sha256`, `--version`)
+
+| Flag | What it does |
+|------|--------------|
+| `--version` / `-V` | Print the installed version and exit. |
+| `--check-update` | Check whether a newer release is available (no changes made). |
+| `--update [VERSION]` | Self-update to the latest release, or to a specific `VERSION` if given. |
+| `--update-sha256 <hex>` | Pin the expected SHA-256 (64 hex chars) of the downloaded binary; the update aborts on a mismatch. Use together with `--update`. |
+
+```
+fast_copy.py --version
+fast_copy.py --check-update
+fast_copy.py --update
+fast_copy.py --update v3.6.4
+fast_copy.py --update --update-sha256 <64-hex-from-release-page>
+```
+
+> `--update` is refused under `sudo` (running as root or with `SUDO_USER` set): update as your normal user first, then re-elevate deliberately for the next root run.
+
+---
+
+## Running the GUI binary as CLI (`--fc-core`)
+
+The bundled GUI binary embeds the full CLI engine. Invoke it with `--fc-core` and **prefix any CLI arguments** to run it exactly like the standalone CLI (copies, `creds`, `ls`, `deps`, update, etc.):
+
+```
+fast_copy_gui --fc-core /data /mnt/usb/data
+fast_copy_gui --fc-core creds list
+fast_copy_gui --fc-core ls aws-prod
+fast_copy_gui --fc-core --version
+```
+
+> **Windows caveat:** the GUI is a *windowed* binary, so console output may not appear. For routine CLI use, prefer the dedicated console binary `fast_copy-windows.exe` (i.e. `fast_copy.exe`) instead of the GUI's `--fc-core` passthrough.
 
 ---
 
