@@ -709,9 +709,9 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 ## Support
 
-If you find this tool useful, consider a donation:
+fast-copy is free and open source — the best way to support it is to help it grow:
 
-| Currency | Address |
-|----------|---------|
-| **USDC** (Base) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
-| **ETH** (ERC-20) | `0xca8a1223300ab7fff6de983d642b96084305cccb` |
+- ⭐ **Star the repository** and **spread the word** — share it with anyone who moves a lot of data.
+- 🐛 **Report bugs and ideas** via [issues](https://github.com/gekap/fast-copy/issues) or pull requests.
+
+If you'd like to make a donation, please [get in touch](https://fast-copy.dev/#contact).
