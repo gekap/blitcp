@@ -2,10 +2,14 @@
 
 A fast, cross-platform command-line tool for copying files and directories at maximum sequential disk speed. Designed for USB drives, external HDDs, NAS backups, and large SSH transfers.
 
+## Downloads
+
+Prebuilt CLI and GUI binaries for Windows, macOS and Linux are on the [Releases page](https://github.com/gekap/fast-copy/releases). The Windows builds are Authenticode code-signed via the free [SignPath Foundation](https://signpath.org/) open-source code-signing program.
+
 **Key capabilities:**
 - **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
 - **Sparse-file awareness** *(v3.1.0+)* — VM disk images and Longhorn replicas are copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk (2.3 TB logical → 12 GB on disk on real backups)
-- **Multiple sources per command** *(v3.1.0+, `-R` v3.1.2+)* — `fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style. Add `-R` / `--keep-parents` to preserve full parent paths (rsync `-R`) for incident snapshots
+- **Multiple sources per command** *(v3.1.0+)* — `fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style
 - **`--use-sudo` self-elevation + tamper-resistant audit log** *(v3.1.0+)* — re-execs under sudo for root-only paths and writes a `chattr +i` JSONL audit trail of who ran what
 - **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` everywhere, audit file in `~$SUDO_USER`, script-perm preflight, `--update` refused under sudo
 - Reads files in **physical disk order** (eliminates random seeks on HDDs)
@@ -189,18 +193,7 @@ fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
 fast-copy /etc /var/log /home/operator /mnt/incident_snapshot/
 ```
 
-The default layout uses each source's **basename** under the destination — `/etc` lands at `dst/etc/`, `/var/log` at `dst/log/`. That matches `cp -r` and is the right choice when sources have unique basenames (Longhorn `pvc-*` replicas, VM disks). It is **not** the right choice for incident snapshots, forensic captures, or any multi-source copy where source provenance must survive: `/var/log` and `/usr/local/log` would both collapse to `dst/log/`, and `dst/log/` itself does not tell a future analyst which `log/` it came from.
-
-**`-R, --keep-parents` (v3.1.2+)** preserves each source's full parent path under the destination — rsync `-R` semantics:
-
-```bash
-fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/incident_snapshot/
-# →  /mnt/incident_snapshot/etc/
-# →  /mnt/incident_snapshot/var/log/
-# →  /mnt/incident_snapshot/home/operator/
-```
-
-The flag affects multi-source mode (≥2 paths) and glob mode (quoted patterns fast-copy expands internally). Single-source copies emit a one-line note and are unchanged. Existing single-source `fast-copy SRC DST` invocations are unaffected by either the flag or the default behavior.
+Existing single-source `fast-copy SRC DST` invocations are unaffected.
 
 **Sparse-file awareness (Linux/macOS).** Files where `st_blocks * 512 < st_size` are auto-detected and copied with `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. The Phase 3 space check uses the **allocated** byte count on sparse-capable destinations, so a 2.3 TB sparse tree holding 12 GB of real data no longer rejects a 900 GB destination. Scan output reports the summary up front:
 
@@ -320,6 +313,147 @@ python -m pip install xxhash
 
 If xxHash is not installed, fast-copy silently falls back to SHA-256.
 
+## Desktop GUI
+
+An optional native desktop GUI (`fast_copy_gui_qt.py`) exposes **every** CLI feature
+— all four transfer modes (L2L / L2R / R2L / R2R), dedup, metadata preservation,
+SSH, exclude patterns, and tuning — in an attractive dark-themed window. It is a thin
+shell: it builds the command line and runs `fast_copy.py` as a subprocess, so the
+proven copy engine does the work unchanged.
+
+```bash
+# Install the GUI dependency (the engine itself stays stdlib-only)
+python -m pip install -r requirements-gui.txt   # PySide6
+
+# Launch
+python fast_copy_gui_qt.py
+```
+
+Features:
+
+- **Multiple sources** — add rows to copy several sources side-by-side under one
+  destination (cp -r style). SSH sources are disabled while more than one source is
+  listed, matching the engine.
+- **Live progress** — real progress bar with speed, ETA, file count, and bytes,
+  plus a scrolling log of the engine's output. A read-only **command preview** shows
+  the exact command that will run.
+- **Dry run / Start / Cancel** — Cancel sends an interrupt so the engine stops
+  cleanly (the same `Interrupted.` path as Ctrl-C on the CLI).
+
+### SSH from the GUI
+
+- **Key-based auth is the recommended path** and works with no caveats: type
+  `user@host:/path` in a source or destination field, expand the **SSH** panel, and
+  point it at your private key (or rely on your SSH agent / default keys).
+- **Password auth** is supported by passing the password through the environment to
+  the child process (never on the command line, so it never appears in `ps` or the
+  command preview). This requires a current engine build (`--ssh-src-password-env` /
+  `--ssh-dst-password-env`); the GUI detects support automatically and prompts you to
+  use key auth otherwise.
+
+### Running as root from the GUI
+
+Tick **Run as root** to elevate via **pkexec** (a graphical PolicyKit prompt) on
+Linux. Where pkexec is unavailable (macOS, minimal installs), the option is disabled —
+run the CLI with `--use-sudo` in a terminal for root copies. Because pkexec scrubs the
+environment, SSH passwords can't be combined with **Run as root**; use key auth for
+remote endpoints in that case.
+
+## Object storage — S3, Azure Blob, Google Cloud Storage (v3.6.0+)
+
+Cloud URLs work as **both source and destination**, in every direction:
+
+```bash
+# Install the cloud SDKs you need (all optional, lazily imported)
+python -m pip install -r requirements-cloud.txt
+
+fast_copy.py /data s3://bucket/backups/         # upload
+fast_copy.py s3://bucket/backups/ /restore/     # download
+fast_copy.py s3://bucket/a/ s3://bucket/b/       # bucket-to-bucket (server-side)
+fast_copy.py /data az://container/backups/       # Azure Blob
+fast_copy.py /data gs://bucket/backups/          # Google Cloud Storage
+```
+
+Supported schemes: **`s3://`** (AWS + S3-compatible: MinIO, Cloudflare R2,
+Wasabi, Backblaze B2), **`az://`** (Azure Blob), **`gs://`** (native GCS).
+
+Highlights:
+
+- **Round-trip fidelity** — each object stores fast-copy metadata
+  (`fc_relpath`, `fc_mtime`, `fc_mode`, `fc_hash`, …); a download restores
+  timestamps and mode and re-hashes to verify integrity.
+- **Dedup** — within a run, duplicate files are server-side-copied
+  (S3 CopyObject / Azure Copy Blob / GCS rewrite) so the bytes never leave the
+  cloud; across runs, an unchanged tree is skipped via a manifest object.
+  Bandwidth saved is reported separately from storage used.
+- **Verification** — uploads are HEAD-sampled against the stored hash;
+  downloads are re-hashed and compared (a mismatch exits non-zero).
+
+### Credentials
+
+| Provider | Flags | Environment / default chain |
+|----------|-------|------------------------------|
+| S3 | `--endpoint-url`, `--s3-region`, `--s3-profile` | `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `~/.aws`, instance profile |
+| Azure | `--az-connection-string`, `--az-account`, `--az-key` | `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` |
+| GCS | `--gcs-project`, `--gcs-credentials` | Application Default Credentials |
+
+In the **GUI**, type a cloud URL into a Source/Destination field and fill in
+**Settings → Cloud credentials**; secrets are passed to the engine through the
+environment, never on the command line.
+
+#### Named connections (multiple accounts / S3 vendors)
+
+For more than one S3 endpoint (e.g. Artesca, Qumulo, MinIO, AWS) plus Azure and
+GCS, save each as a **named connection** and reference it in the URL as
+`scheme://name@bucket/key`:
+
+```bash
+# Create/manage connections interactively (secrets prompted hidden, file is 0600)
+fast_copy.py creds add artesca       # type=s3, endpoint, key/secret …
+fast_copy.py creds add aws
+fast_copy.py creds list              # names/types/endpoints, secrets masked
+fast_copy.py creds test artesca      # live connection check
+
+# Then select per endpoint — source and destination can use different vendors:
+fast_copy.py s3://minio@data/   s3://aws@backups/
+fast_copy.py s3://artesca@vol1/ az://azureprod@container/
+```
+
+Connections live in **`credentials.json` next to `fast_copy.py`** (its own
+directory), which the engine auto-loads. This is predictable, travels with the
+script, and avoids the Microsoft-Store Python `%APPDATA%` sandbox that silently
+virtualizes writes. Override with the `FAST_COPY_CREDENTIALS` env var, an
+explicit path argument to `creds`, or `--credentials-file PATH`. The schema is a
+`{"connections": {name: {type, …}}}` map (`type` is `s3`/`az`/`gs`). The GUI's
+**Cloud credentials** panel reads/writes the same file via its *Saved
+connections* dropdown. A connection named `default` (matching the URL scheme) is
+used when no `name@` is given.
+
+#### Encryption at rest
+
+The file can be **encrypted** so secrets aren't stored in plaintext:
+
+```bash
+fast_copy.py creds encrypt        # AES-256-GCM; prompts for a passphrase
+fast_copy.py creds decrypt        # back to plaintext
+fast_copy.py creds rekey          # re-bind after updating fast_copy.py
+fast_copy.py creds lock | unlock  # set/clear OS immutability (needs root)
+```
+
+Design (and honest limits):
+
+- **Confidentiality comes from your passphrase** (`scrypt` → AES-256-GCM), supplied
+  via a hidden prompt or `FAST_COPY_CREDS_PASSPHRASE`. The GUI has a matching
+  *Creds passphrase* field, passed to the engine through the environment.
+- The file is **bound to this `fast_copy.py`** (its SHA-256 is the cipher's
+  associated data) for **tamper-evidence** — a swapped binary is detected. Because
+  the *key* is your passphrase, a normal update never locks you out; it just warns
+  and `creds rekey` re-binds.
+- `creds lock` is **tamper-resistance, not secrecy, and not absolute** — setting it
+  needs root, and root can always reverse it. It is unavailable/weak off Linux.
+
+> Object-storage transfers take a **single source** per run.
+
 ## Documentation
 
 Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATION.md)** — what each option does, defaults, and when to change it. The same content is shown inside the GUI under **Help → Documentation**.
@@ -330,7 +464,7 @@ Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATI
 usage: fast_copy.py [-h] [--buffer BUFFER] [--threads THREADS] [--dry-run]
                     [-v] [--no-verify] [--no-dedup] [--hash {auto,xxh128,sha256}]
                     [--no-cache] [--force] [--overwrite] [--exclude EXCLUDE]
-                    [-R] [--log-file LOG_FILE] [--use-sudo]
+                    [--log-file LOG_FILE] [--use-sudo]
                     [--ssh-src-port PORT] [--ssh-src-key PATH] [--ssh-src-password]
                     [--ssh-dst-port PORT] [--ssh-dst-key PATH] [--ssh-dst-password]
                     [-z]
@@ -365,10 +499,6 @@ options:
   --force                 Skip space check, copy even if not enough space
   --overwrite             Overwrite all files, skip identical-file detection
   --exclude EXCLUDE       Exclude files/dirs by name (can use multiple times)
-  -R, --keep-parents      Preserve each source's full parent path under the
-                          destination (rsync -R semantics). Multi-source and
-                          glob copies only — no effect on single source.
-                          (v3.1.2+)
   --use-sudo              Re-exec self under sudo if not already root (v3.1.0+).
                           Useful when source or destination needs root, e.g.
                           /var/lib/longhorn/replicas. Linux/macOS only. Refuses
@@ -438,13 +568,8 @@ fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
 # Sparse VM disks — only the allocated bytes are read and written
 fast-copy --use-sudo /var/lib/libvirt/images /mnt/backup/
 
-# Auto-elevate under sudo; writes an immutable audit log to ~/.fast_copy_audit.jsonl.
-# Without -R, sources land as /mnt/snap/etc/, /mnt/snap/log/ (basename only).
+# Auto-elevate under sudo; writes an immutable audit log to ~/.fast_copy_audit.jsonl
 fast-copy --use-sudo /etc /var/log /home/operator /mnt/incident_snapshot/
-
-# Same, but preserve full parent paths for forensic provenance (v3.1.2+).
-# Result: /mnt/snap/etc/, /mnt/snap/var/log/, /mnt/snap/home/operator/.
-fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/incident_snapshot/
 
 # Verify a self-update against a hash from the release page
 fast-copy --update --update-sha256 <paste-64-char-hex-from-release-page>
@@ -550,7 +675,7 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 ## Key Features
 
 - **Sparse-file awareness** *(v3.1.0+)* — VM disk images, Longhorn replicas, and other sparse files are auto-detected (`st_blocks * 512 < st_size`) and copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. Phase 3 space check uses allocated bytes on sparse-capable destinations.
-- **Multiple sources per command** *(v3.1.0+)* — `fast-copy SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style). Pass `-R` / `--keep-parents` *(v3.1.2+)* to preserve each source's full parent path instead — rsync `-R` semantics, the right choice for incident snapshots and forensic captures.
+- **Multiple sources per command** *(v3.1.0+)* — `fast-copy SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style).
 - **`--use-sudo` self-elevation** *(v3.1.0+)* — Re-execs under sudo for paths that need root (Longhorn replicas, container volumes). Linux/macOS only.
 - **Tamper-resistant audit log** *(v3.1.0+, hardened in v3.1.1+)* — Under sudo, writes an immutable (`chattr +i`) JSONL of every run to `~$SUDO_USER/.fast_copy_audit.jsonl` — captures invoking user, command, source/dest, per-file copy list, summary. Even root can't quietly delete a record.
 - **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` on every destination open and on source reads under sudo; audit file moved out of attacker-controllable destination paths; `--update` refused under sudo (with optional `--update-sha256` integrity pin); script-perm preflight refuses to elevate if `fast_copy.py` or its directory is group/world-writable.

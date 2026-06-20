@@ -3,13 +3,13 @@
 # Licensed under the Apache License, Version 2.0
 # See LICENSE file for details.
 """
-FAST BLOCK-ORDER COPY — Copies files and folders at maximum speed via SSH.
+FAST BLOCK-ORDER COPY — Copies files and folders at maximum speed.
 
-Supports all four copy modes:
+Supports local, SSH, and cloud object-storage endpoints in any combination:
   • local  → local   (block-order copy with dedup)
-  • local  → remote  (SFTP + tar stream to SSH server)
-  • remote → local   (SFTP + tar stream from SSH server)
+  • local  ↔ remote  (SFTP + tar stream over SSH)
   • remote → remote  (relay through local machine: src SSH → dst SSH)
+  • local  ↔ cloud   (s3:// / az:// / gs:// object storage)
 
 Features:
   • Reads files in PHYSICAL disk order (eliminates random seeks)
@@ -25,68 +25,27 @@ Features:
   • Incremental sync — skips files already present and identical
   • Small-file bundling via tar pipe for fast network transfers
 
-Usage:
-  python fast_copy.py <source> <destination>
-
-  Source and destination can be local paths or remote SSH paths (user@host:/path).
-
-Examples:
-  # Local to local
-  python fast_copy.py /home/user/data /media/usb/data
-
-  # Local to remote
-  python fast_copy.py /data user@server:/backup/data
-
-  # Remote to local
-  python fast_copy.py user@server:/data /local/backup
-
-  # Remote to remote (relay through local machine)
-  python fast_copy.py user@src-host:/data user@dst-host:/backup/data
-
-  # With options
-  python fast_copy.py user@src:/data user@dst:/backup -z --no-dedup
-  python fast_copy.py user@host:/data /local --src-port 2222
-
-  # Incident snapshot — preserve full source paths under destination
-  python fast_copy.py --use-sudo -R /etc /var/log /home/operator \\
-                                    /mnt/incident_snapshot/
-  # → produces /mnt/incident_snapshot/etc/, /var/log/, /home/operator/
-  # (without -R, sources would land under their basenames only: etc/, log/,
-  #  operator/, losing the /var/ and /home/ parent components.)
-
-Options:
-  --buffer MB       Read/write buffer size in MB (default: 64)
-  --threads N       Threads for hashing & layout resolution (default: 4)
-  --dry-run         Show copy plan without copying
-  --no-verify       Skip post-copy verification
-  --log-file PATH   Write structured JSON log to file
-  --no-dedup        Disable deduplication (copy all files even if identical)
-  --overwrite       Overwrite all files, skip identical-file detection
-  --exclude PATTERN Exclude files/dirs by name or glob (e.g. .venv, *.bat,
-                    .git*); directories matching the pattern are pruned.
-                    Repeatable.
-  -R, --keep-parents
-                    Preserve each source's full parent path under destination
-                    (rsync -R). /etc /var/log dst/  →  dst/etc/ + dst/var/log/
-                    instead of dst/etc/ + dst/log/. Multi-source & glob only.
-  --no-cache        Disable persistent hash cache (cross-run dedup database)
-  --force           Skip space check and copy anyway
-  --ssh-dst-port PORT   SSH port for remote destination (default: 22)
-  --ssh-dst-key PATH    SSH private key for remote destination
-  --ssh-dst-password    Prompt for SSH password for destination
-  --ssh-src-port PORT   SSH port for remote source (default: 22)
-  --ssh-src-key PATH    SSH private key for remote source
-  --ssh-src-password    Prompt for SSH password for source
-  -z, --compress    Enable SSH compression (good for slow links)
-  --version, -V     Show version and exit
-  --check-update    Show available updates and release notes
-  --update [VERSION]  Download and install (latest, or a specific version)
+Usage, options, subcommands (creds, ls), and examples:
+  python fast_copy.py --help
 
 Requires: python -m pip install paramiko
 """
 
 import os
 import sys
+import warnings
+
+# The cryptography package prints a CryptographyDeprecationWarning to stderr at
+# import time when running on an end-of-life Python (e.g. the Python 3.8 that
+# the frozen Windows build is compiled against). It is noise the user can do
+# nothing about, and it pollutes clean commands like --version. Silence it
+# before any import can trigger it; the message text is matched so unrelated
+# warnings still surface.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Python 3\.\d+ is no longer supported",
+)
+warnings.filterwarnings("ignore", module=r"cryptography(\..*)?")
 
 # Install a quiet excepthook before any heavy imports so that pressing Ctrl+C
 # during module loading prints a one-line message instead of a 12-frame
@@ -101,6 +60,24 @@ def _quiet_excepthook(exctype, value, tb):
     sys.__excepthook__(exctype, value, tb)
 sys.excepthook = _quiet_excepthook
 
+# Windows consoles often default to a legacy codepage (e.g. cp1253 on Greek
+# systems) that cannot encode the box-drawing / progress glyphs we print. That
+# would crash mid-run with a UnicodeEncodeError instead of copying. Switch the
+# console to UTF-8 and force UTF-8 on our streams with replacement, so output is
+# always safe: modern terminals render it correctly, legacy ones degrade to a
+# replacement char instead of aborting.
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 import stat
 import time
 import glob as globmod
@@ -111,9 +88,12 @@ import hashlib
 import tarfile
 import io
 import json
+import base64
 import sqlite3
 import tempfile
 import re
+import textwrap
+import atexit
 import getpass
 import posixpath
 import shlex
@@ -129,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.1.2"
+__version__ = "3.7.4"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -137,6 +117,10 @@ GITHUB_REPO = "gekap/fast-copy"
 # ════════════════════════════════════════════════════════════════════════════
 DEFAULT_BUFFER_MB = 64
 DEFAULT_THREADS = 4
+# Object storage has no tar-pipe equivalent: every file is a separate PUT/GET,
+# dominated by request latency. Overlapping many in-flight requests is the only
+# small-file win available, so cloud concurrency defaults higher than --threads.
+DEFAULT_CLOUD_CONCURRENCY = 16
 HASH_CHUNK = 1048571            # ~1MB chunks for hashing (prime for alignment)
 HASH_ALGO = "xxh128"            # try xxhash first, fallback to sha256
 
@@ -244,22 +228,728 @@ def _safe_open_write_fd(path, truncate=True):
     return os.open(path, flags, 0o600)
 
 
-def _safe_apply_meta(fd, dst_path, src_st):
-    """Apply mtime/atime and mode from src_st to dst_path.
+class PreserveSpec:
+    """Which metadata kinds to copy alongside file bytes.
 
-    Uses fchmod via fd (symlink-safe) and lstat-checks dst_path before
-    os.utime — refuses if dst_path has somehow become a symlink between
-    the open and now."""
+    The CLI builds one of these from --preserve TOKENS where TOKENS is a
+    comma-separated subset of: mode, times, owner, xattr, acl, all, none.
+    Defaults to mode+times (matches v3.1.x behavior); --use-sudo promotes
+    it to 'all' unless --preserve was passed explicitly."""
+
+    KINDS = ("mode", "times", "owner", "xattr", "acl")
+
+    def __init__(self, mode=True, times=True, owner=False, xattr=False, acl=False):
+        self.mode = mode
+        self.times = times
+        self.owner = owner
+        self.xattr = xattr
+        self.acl = acl
+
+    @classmethod
+    def from_tokens(cls, raw):
+        if raw is None:
+            return cls()
+        tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+        spec = cls(mode=False, times=False)
+        for t in tokens:
+            if t == "none":
+                return cls(mode=False, times=False)
+            if t == "all":
+                return cls(mode=True, times=True, owner=True, xattr=True, acl=True)
+            if t in cls.KINDS:
+                setattr(spec, t, True)
+            else:
+                raise ValueError(f"unknown --preserve token: {t!r} "
+                                 f"(known: {', '.join(cls.KINDS + ('all', 'none'))})")
+        return spec
+
+    def any_extended(self):
+        """True if any beyond-mode-times kind is requested."""
+        return self.owner or self.xattr or self.acl
+
+    def __repr__(self):
+        on = [k for k in self.KINDS if getattr(self, k)]
+        return f"PreserveSpec({','.join(on) or 'none'})"
+
+
+_preserve_spec = PreserveSpec()
+_preserve_stats = {
+    "xattr_ok": 0, "xattr_skip_unsupported": 0, "xattr_err": 0,
+    "acl_ok": 0,   "acl_skip_unsupported": 0,   "acl_err": 0,
+    "owner_ok": 0, "owner_skip_unprivileged": 0, "owner_err": 0,
+    # Captured most-recent error string from a Windows SD operation, surfaced
+    # in the end-of-run summary so users see WHY ACL set failed (winerror=…).
+    "_last_acl_err": None,
+}
+_preserve_dst_caps = {"xattr": None, "acl": None}  # None=unknown, True/False after probe
+
+
+def _set_preserve_spec(spec):
+    """Module-wide singleton; set once from main() after argparse."""
+    global _preserve_spec
+    _preserve_spec = spec
+
+
+def _is_elevated_for_preserve():
+    """Stricter than _is_elevated(): chown only works as real root."""
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _probe_dst_xattr_support(dst_root):
+    """Cache + return whether dst can store extended attributes.
+
+    Linux/macOS: tries os.setxattr on a probe file. FAT32/exFAT fail; ext4,
+    btrfs, XFS, APFS succeed.
+
+    Windows: tries to write an Alternate Data Stream on a probe file. NTFS
+    supports ADS; ReFS supports it with limits; FAT32/exFAT don't. ADS is
+    the NTFS analog of POSIX xattrs from --preserve's point of view."""
+    if _preserve_dst_caps["xattr"] is not None:
+        return _preserve_dst_caps["xattr"]
+
+    if _system == "Windows":
+        try:
+            os.makedirs(dst_root, exist_ok=True)
+            fd, probe = tempfile.mkstemp(prefix=".fc_xattr_probe_", dir=dst_root)
+            os.close(fd)
+            try:
+                with open(probe + ":fc.probe", "wb") as f:
+                    f.write(b"1")
+                _preserve_dst_caps["xattr"] = True
+            finally:
+                try:
+                    os.remove(probe)
+                except OSError:
+                    pass
+        except (OSError, AttributeError):
+            _preserve_dst_caps["xattr"] = False
+        return _preserve_dst_caps["xattr"]
+
+    if not hasattr(os, "setxattr"):
+        _preserve_dst_caps["xattr"] = False
+        return False
     try:
-        os.fchmod(fd, stat.S_IMODE(src_st.st_mode))
-    except OSError:
-        pass
+        os.makedirs(dst_root, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".fc_xattr_probe_", dir=dst_root)
+        try:
+            os.close(fd)
+            os.setxattr(probe, "user.fast_copy.probe", b"1")
+            os.removexattr(probe, "user.fast_copy.probe")
+            _preserve_dst_caps["xattr"] = True
+        finally:
+            try:
+                os.remove(probe)
+            except OSError:
+                pass
+    except (OSError, AttributeError):
+        _preserve_dst_caps["xattr"] = False
+    return _preserve_dst_caps["xattr"]
+
+
+def _probe_dst_acl_support(dst_root):
+    """Cache + return whether the destination filesystem can carry ACLs.
+
+      • Linux: setfacl shell-out probe (POSIX 1e ACLs).
+      • macOS: chmod +a probe (NFSv4-style ACLs).
+      • Windows: win32security GetNamedSecurityInfo probe (NTFS / ReFS DACL).
+      • Other: not supported, returns False."""
+    if _preserve_dst_caps["acl"] is not None:
+        return _preserve_dst_caps["acl"]
+
+    if _system == "Windows":
+        # NTFS / ReFS both expose a Security Descriptor on every file.
+        # FAT32 / exFAT do not. Probe by trying to GET the SD on a tempfile
+        # — that's a read-only check, no privileges needed.
+        try:
+            import win32security
+        except ImportError:
+            _preserve_dst_caps["acl"] = False
+            return False
+        try:
+            os.makedirs(dst_root, exist_ok=True)
+            fd, probe = tempfile.mkstemp(prefix=".fc_acl_probe_", dir=dst_root)
+            os.close(fd)
+            try:
+                SE_FILE_OBJECT = 1
+                # Just attempt to read the DACL — if the FS doesn't support
+                # security descriptors at all, this errors out cleanly.
+                win32security.GetNamedSecurityInfo(
+                    probe, SE_FILE_OBJECT,
+                    win32security.DACL_SECURITY_INFORMATION,
+                )
+                _preserve_dst_caps["acl"] = True
+            finally:
+                try:
+                    os.remove(probe)
+                except OSError:
+                    pass
+        except Exception:
+            _preserve_dst_caps["acl"] = False
+        return _preserve_dst_caps["acl"]
+
+    if _system not in ("Linux", "Darwin"):
+        _preserve_dst_caps["acl"] = False
+        return False
     try:
-        lst = os.lstat(dst_path)
-        if not stat.S_ISLNK(lst.st_mode):
-            os.utime(dst_path, (src_st.st_atime, src_st.st_mtime))
+        import subprocess
+        os.makedirs(dst_root, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".fc_acl_probe_", dir=dst_root)
+        os.close(fd)
+        try:
+            if _system == "Linux":
+                r = subprocess.run(["setfacl", "-m", "u::rw", probe],
+                                   capture_output=True, timeout=5)
+            else:  # Darwin
+                # On macOS we just check that `chmod +a` is callable and the
+                # underlying FS accepts an ACE. Use the current user so the
+                # operation has a chance of succeeding without elevated perms.
+                me = os.environ.get("USER") or os.environ.get("LOGNAME") or "nobody"
+                r = subprocess.run(["chmod", "+a",
+                                    f"{me} allow read", probe],
+                                   capture_output=True, timeout=5)
+            _preserve_dst_caps["acl"] = (r.returncode == 0)
+        finally:
+            try:
+                os.remove(probe)
+            except OSError:
+                pass
+    except (OSError, subprocess.SubprocessError, FileNotFoundError):
+        _preserve_dst_caps["acl"] = False
+    return _preserve_dst_caps["acl"]
+
+
+def _copy_xattrs(src_path, dst_path):
+    """Copy extended attributes from src_path to dst_path.
+
+    Per-attr OSErrors are counted but do not stop the copy. Returns True if
+    any xattr was successfully written (counts toward 'preserved'), False
+    if the file had no xattrs to copy."""
+    if not hasattr(os, "listxattr"):
+        return None
+    try:
+        names = os.listxattr(src_path, follow_symlinks=False)
     except OSError:
-        pass
+        _preserve_stats["xattr_err"] += 1
+        return False
+    if not names:
+        return None
+    wrote_any = False
+    for name in names:
+        try:
+            value = os.getxattr(src_path, name, follow_symlinks=False)
+            os.setxattr(dst_path, name, value, follow_symlinks=False)
+            wrote_any = True
+        except OSError as e:
+            # ENOTSUP: destination FS doesn't support xattrs at all.
+            # EPERM: trusted/system xattr requires root.
+            if e.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+                _preserve_stats["xattr_skip_unsupported"] += 1
+                return False
+            _preserve_stats["xattr_err"] += 1
+    if wrote_any:
+        _preserve_stats["xattr_ok"] += 1
+    return wrote_any
+
+
+def _copy_posix_acls(src_path, dst_path):
+    """Copy POSIX-style ACLs from src to dst.
+
+    Dispatches by platform:
+      • Linux: getfacl/setfacl shell-out (mature, tested).
+      • macOS: chmod +a / ls -le shell-out (experimental — see
+        _copy_acls_macos for the caveats).
+      • Other (Windows/BSD): not supported; returns None silently."""
+    if _preserve_dst_caps["acl"] is False:
+        _preserve_stats["acl_skip_unsupported"] += 1
+        return False
+    if _system == "Linux":
+        return _copy_acls_linux(src_path, dst_path)
+    if _system == "Darwin":
+        return _copy_acls_macos(src_path, dst_path)
+    return None
+
+
+def _copy_acls_linux(src_path, dst_path):
+    """Linux POSIX 1e ACLs via getfacl/setfacl. Same code as v3.2.0 dev built."""
+    try:
+        import subprocess
+        # -p: don't strip leading / from paths. -E: numeric uid/gid (portable).
+        get = subprocess.run(["getfacl", "-p", "-E", "--", src_path],
+                             capture_output=True, timeout=10)
+        if get.returncode != 0 or not get.stdout.strip():
+            return None
+        # Rewrite the "# file:" header so setfacl applies to dst_path.
+        text = get.stdout.decode("utf-8", errors="replace")
+        out_lines = []
+        for line in text.splitlines():
+            if line.startswith("# file:"):
+                out_lines.append(f"# file: {dst_path}")
+            else:
+                out_lines.append(line)
+        rewritten = "\n".join(out_lines) + "\n"
+        put = subprocess.run(["setfacl", "--restore=-"],
+                             input=rewritten.encode("utf-8"),
+                             capture_output=True, timeout=10)
+        if put.returncode == 0:
+            _preserve_stats["acl_ok"] += 1
+            return True
+        _preserve_stats["acl_err"] += 1
+        return False
+    except (OSError, subprocess.SubprocessError, FileNotFoundError):
+        _preserve_stats["acl_err"] += 1
+        return False
+
+
+def _list_ntfs_streams_windows(path):
+    """Enumerate Alternate Data Streams on an NTFS file.
+
+    Returns a list of stream names (without the file name; e.g.
+    [":Zone.Identifier:$DATA", ":com.dropbox.attributes:$DATA"]).
+    The default $DATA stream (the file's main content) is excluded —
+    that's already handled by the normal copy.
+
+    Uses kernel32.FindFirstStreamW directly via ctypes so this code path
+    doesn't require pywin32 (ADS is a real Windows file-system feature
+    that Python's stdlib doesn't expose; ctypes is the minimum cost)."""
+    if _system != "Windows":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+    ERROR_HANDLE_EOF = 38
+
+    class WIN32_FIND_STREAM_DATA(ctypes.Structure):
+        _fields_ = [
+            ("StreamSize", ctypes.c_longlong),  # LARGE_INTEGER
+            ("cStreamName", ctypes.c_wchar * (260 + 36)),  # MAX_PATH + 36
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.FindFirstStreamW.argtypes = [
+        wintypes.LPCWSTR, ctypes.c_int,
+        ctypes.POINTER(WIN32_FIND_STREAM_DATA), wintypes.DWORD,
+    ]
+    kernel32.FindFirstStreamW.restype = wintypes.HANDLE
+    kernel32.FindNextStreamW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(WIN32_FIND_STREAM_DATA),
+    ]
+    kernel32.FindNextStreamW.restype = wintypes.BOOL
+    kernel32.FindClose.argtypes = [wintypes.HANDLE]
+    kernel32.FindClose.restype = wintypes.BOOL
+
+    streams = []
+    data = WIN32_FIND_STREAM_DATA()
+    # STREAM_INFO_LEVELS.FindStreamInfoStandard = 0
+    handle = kernel32.FindFirstStreamW(path, 0, ctypes.byref(data), 0)
+    if handle == INVALID_HANDLE_VALUE:
+        return streams
+    try:
+        while True:
+            name = data.cStreamName
+            # The default $DATA stream is just "::$DATA" — that's the file's
+            # main content, skip it.
+            if name and name != "::$DATA":
+                streams.append(name)
+            ok = kernel32.FindNextStreamW(handle, ctypes.byref(data))
+            if not ok:
+                err = ctypes.get_last_error()
+                if err == ERROR_HANDLE_EOF:
+                    break
+                break  # any other error: stop enumeration silently
+    finally:
+        kernel32.FindClose(handle)
+    return streams
+
+
+def _copy_ads_windows(src_path, dst_path):
+    """Copy NTFS Alternate Data Streams from src to dst.
+
+    Each non-default stream (e.g. `:Zone.Identifier` from browser MOTW)
+    is opened via the standard Python `open()` against `path:streamname`,
+    which Windows resolves natively. Errors per stream are counted; the
+    main file copy is unaffected.
+
+    Validated on Windows 10/11 + NTFS with pywin32 — round-trips
+    Zone.Identifier (MOTW) and multi-byte stream names. Returns None on
+    non-Windows, True if any stream was copied, False on read/write failure."""
+    if _system != "Windows":
+        return None
+    if _preserve_dst_caps["xattr"] is False:
+        _preserve_stats["xattr_skip_unsupported"] += 1
+        return False
+
+    try:
+        streams = _list_ntfs_streams_windows(src_path)
+    except OSError:
+        _preserve_stats["xattr_err"] += 1
+        return False
+
+    if not streams:
+        return None
+
+    wrote_any = False
+    for stream in streams:
+        # Stream names come back like ":Zone.Identifier:$DATA". Strip the
+        # ":$DATA" type suffix; we'll re-address as path + ":Name" which
+        # Windows interprets as the same stream.
+        name = stream
+        if name.endswith(":$DATA"):
+            name = name[: -len(":$DATA")]
+        if not name.startswith(":"):
+            name = ":" + name
+        src_full = src_path + name
+        dst_full = dst_path + name
+        try:
+            with open(src_full, "rb") as fin, open(dst_full, "wb") as fout:
+                while True:
+                    chunk = fin.read(1 << 20)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+            wrote_any = True
+        except OSError:
+            _preserve_stats["xattr_err"] += 1
+
+    if wrote_any:
+        _preserve_stats["xattr_ok"] += 1
+    return wrote_any
+
+
+def _copy_acls_windows(src_path, dst_path, set_owner=False, set_dacl=True):
+    """Copy NTFS Security Descriptor parts (owner + group + DACL) from src to dst.
+
+    Uses pywin32's win32security GetNamedSecurityInfo / SetNamedSecurityInfo.
+
+    Important design point: **owner-set and DACL-set are issued as two
+    separate calls**, NOT one combined call. Owner-set requires
+    SeRestorePrivilege / SeTakeOwnershipPrivilege; if those aren't held it
+    fails with ERROR_INVALID_OWNER (1307) or ERROR_PRIVILEGE_NOT_HELD (1314).
+    A combined call would take the DACL portion down with the owner failure
+    — splitting means a non-admin's DACL still gets applied even when
+    ownership preservation can't happen.
+
+    SACL (audit ACL) is intentionally skipped — requires SE_SECURITY_NAME,
+    rarely useful for backups.
+
+    Validated on Windows 10/11 + NTFS with pywin32: round-trips explicit
+    DACL entries (e.g. Everyone:Read ACE) and owner SID when the running
+    process has SeRestorePrivilege enabled. Without that privilege the
+    set call silently no-ops the OWNER portion — we re-read after setting
+    to detect that and count it as owner_skip_unprivileged."""
+    try:
+        import win32security
+        import pywintypes
+    except ImportError:
+        # pywin32 not installed — we can't touch NTFS security descriptors.
+        return None
+
+    if not (set_owner or set_dacl):
+        return None
+    if _preserve_dst_caps["acl"] is False:
+        if set_dacl:
+            _preserve_stats["acl_skip_unsupported"] += 1
+        return False
+
+    SE_FILE_OBJECT = 1  # win32security.SE_FILE_OBJECT
+    OWNER = win32security.OWNER_SECURITY_INFORMATION
+    GROUP = win32security.GROUP_SECURITY_INFORMATION
+    DACL = win32security.DACL_SECURITY_INFORMATION
+
+    # Read OWNER+GROUP+DACL from source in one call — reading is cheap and
+    # doesn't require privileges.
+    read_flags = 0
+    if set_owner:
+        read_flags |= OWNER | GROUP
+    if set_dacl:
+        read_flags |= DACL
+    try:
+        sd = win32security.GetNamedSecurityInfo(
+            src_path, SE_FILE_OBJECT, read_flags,
+        )
+    except pywintypes.error as e:
+        # Source SD read failed (file gone, access denied) — true error.
+        winerr = getattr(e, "winerror", 0)
+        msg = getattr(e, "strerror", str(e))
+        _preserve_stats["_last_acl_err"] = (
+            f"GetNamedSecurityInfo({src_path}): winerror={winerr} {msg}"
+        )
+        if set_dacl:
+            _preserve_stats["acl_err"] += 1
+        if set_owner:
+            _preserve_stats["owner_err"] += 1
+        return False
+
+    # ── Owner (+ group) — separate call, separate failure handling ─────
+    if set_owner:
+        owner_sid = sd.GetSecurityDescriptorOwner()
+        group_sid = sd.GetSecurityDescriptorGroup()
+        owner_set_threw = None
+        try:
+            win32security.SetNamedSecurityInfo(
+                dst_path, SE_FILE_OBJECT, OWNER | GROUP,
+                owner_sid, group_sid, None, None,
+            )
+        except pywintypes.error as e:
+            owner_set_threw = e
+        # SetNamedSecurityInfo can silently no-op the OWNER portion when
+        # SeRestorePrivilege is held by the process but not *enabled* —
+        # the call returns success without actually changing the owner.
+        # Verify by re-reading the destination owner and comparing SIDs.
+        # That catches the no-op case and reports honestly.
+        if owner_set_threw is None:
+            try:
+                verify_sd = win32security.GetNamedSecurityInfo(
+                    dst_path, SE_FILE_OBJECT, OWNER,
+                )
+                actual = verify_sd.GetSecurityDescriptorOwner()
+                if str(actual) == str(owner_sid):
+                    _preserve_stats["owner_ok"] += 1
+                else:
+                    # SetNamedSecurityInfo returned success but the owner
+                    # didn't actually change — the silent-no-op case.
+                    _preserve_stats["owner_skip_unprivileged"] += 1
+                    _preserve_stats["_last_acl_err"] = (
+                        f"owner unchanged on {dst_path}: "
+                        f"SeRestorePrivilege likely held but not enabled "
+                        f"(elevate the shell)"
+                    )
+            except pywintypes.error:
+                # Couldn't verify — be conservative and count as skip.
+                _preserve_stats["owner_skip_unprivileged"] += 1
+        else:
+            e = owner_set_threw
+            winerr = getattr(e, "winerror", 0)
+            msg = getattr(e, "strerror", str(e))
+            # All three of these are "non-admin trying to set owner" outcomes:
+            #   5    ERROR_ACCESS_DENIED        — token lacks Owner write right
+            #   1307 ERROR_INVALID_OWNER        — SID rejected without
+            #                                     SeRestorePrivilege
+            #   1314 ERROR_PRIVILEGE_NOT_HELD   — privilege explicitly required
+            # Treat the lot as "skipped, need privilege" rather than hard failures.
+            if winerr in (5, 1307, 1314):
+                _preserve_stats["owner_skip_unprivileged"] += 1
+            else:
+                _preserve_stats["owner_err"] += 1
+                _preserve_stats["_last_acl_err"] = (
+                    f"SetNamedSecurityInfo(owner, {dst_path}): "
+                    f"winerror={winerr} {msg}"
+                )
+
+    # ── DACL — separate call. Owner failure above doesn't block this. ──
+    if set_dacl:
+        dacl_obj = sd.GetSecurityDescriptorDacl()
+        try:
+            win32security.SetNamedSecurityInfo(
+                dst_path, SE_FILE_OBJECT, DACL,
+                None, None, dacl_obj, None,
+            )
+            _preserve_stats["acl_ok"] += 1
+        except pywintypes.error as e:
+            winerr = getattr(e, "winerror", 0)
+            msg = getattr(e, "strerror", str(e))
+            _preserve_stats["acl_err"] += 1
+            _preserve_stats["_last_acl_err"] = (
+                f"SetNamedSecurityInfo(DACL, {dst_path}): "
+                f"winerror={winerr} {msg}"
+            )
+
+    return True
+
+
+def _copy_acls_macos(src_path, dst_path):
+    """macOS extended (NFSv4-style) ACLs via ls -le + chmod +a.
+
+    EXPERIMENTAL — not yet validated against a real Darwin system from
+    this codebase's test harness. The mechanism:
+      1. `ls -lde <src>` shows the file's ACEs prefixed by index numbers
+         in the lines after the mode/owner header line.
+      2. Each ACE has the form `index: subject permset` — we strip the
+         index and feed the rest as `chmod +a "<spec>" <dst>`.
+
+    Known limitations:
+      • `chmod +a` accepts a subset of the `ls -le` syntax. Round-trip
+        is generally safe but some edge cases (fileinherit/directoryinherit
+        flags) may need tweaking.
+      • If you find a case that round-trips wrong, please open an issue
+        with `ls -lde` output from both source and destination so we can
+        fix the parser.
+      • Does NOT preserve POSIX 1e ACLs on Linux-mounted-on-macOS paths
+        — those would need a separate code path."""
+    try:
+        import subprocess
+        # Read source ACL.
+        ls = subprocess.run(["ls", "-lde", "--", src_path],
+                            capture_output=True, timeout=5)
+        if ls.returncode != 0 or not ls.stdout.strip():
+            return None
+        lines = ls.stdout.decode("utf-8", errors="replace").splitlines()
+        # Drop the first line (mode/owner/etc header). ACEs start with " N:".
+        ace_lines = []
+        for ln in lines[1:]:
+            ln = ln.strip()
+            # Expect "0: user:fred allow read,write" style.
+            if not ln or ":" not in ln:
+                continue
+            idx, _, spec = ln.partition(":")
+            if not idx.strip().isdigit():
+                continue
+            ace_lines.append(spec.strip())
+        if not ace_lines:
+            return None
+        # Clear any existing ACEs on the destination before applying source
+        # ACEs, so overwrite/incremental copies don't accumulate duplicates.
+        # `chmod -N` removes all ACEs without touching POSIX mode bits.
+        subprocess.run(["chmod", "-N", dst_path],
+                       capture_output=True, timeout=5)
+        applied_any = False
+        for ace in ace_lines:
+            r = subprocess.run(["chmod", "+a", ace, dst_path],
+                               capture_output=True, timeout=5)
+            if r.returncode == 0:
+                applied_any = True
+            else:
+                _preserve_stats["acl_err"] += 1
+        if applied_any:
+            _preserve_stats["acl_ok"] += 1
+            return True
+        return False
+    except (OSError, subprocess.SubprocessError, FileNotFoundError):
+        _preserve_stats["acl_err"] += 1
+        return False
+
+
+def _print_preserve_summary():
+    """One-line-per-kind summary of extended metadata preserve results.
+
+    Quiet when nothing extended was requested. Otherwise shows
+    'preserved on N files / dropped on M (reason)' so the user can see
+    when the destination FS silently couldn't carry some attribute."""
+    spec = _preserve_spec
+    if not spec.any_extended():
+        return
+    s = _preserve_stats
+    lines = []
+    if spec.owner:
+        ok = s["owner_ok"]; un = s["owner_skip_unprivileged"]; err = s["owner_err"]
+        if ok or un or err:
+            parts = [f"preserved on {C.BOLD}{ok}{C.RESET}"]
+            if un:
+                if _system == "Windows":
+                    need = "need Administrator + SeRestorePrivilege"
+                else:
+                    need = "need root"
+                parts.append(f"{C.YELLOW}skipped on {un}{C.RESET} ({need})")
+            if err:
+                parts.append(f"{C.RED}failed on {err}{C.RESET}")
+            lines.append(f"  Owner:   {', '.join(parts)}")
+    if spec.xattr:
+        ok = s["xattr_ok"]; un = s["xattr_skip_unsupported"]; err = s["xattr_err"]
+        if _preserve_dst_caps["xattr"] is False:
+            lines.append(f"  xattrs:  {C.YELLOW}dst FS does not support xattrs — all dropped{C.RESET}")
+        elif ok or un or err:
+            parts = [f"preserved on {C.BOLD}{ok}{C.RESET}"]
+            if un:
+                parts.append(f"{C.YELLOW}dropped on {un}{C.RESET} (FS not supported)")
+            if err:
+                parts.append(f"{C.RED}failed on {err}{C.RESET}")
+            lines.append(f"  xattrs:  {', '.join(parts)}")
+    if spec.acl:
+        ok = s["acl_ok"]; un = s["acl_skip_unsupported"]; err = s["acl_err"]
+        if _preserve_dst_caps["acl"] is False:
+            lines.append(f"  ACLs:    {C.YELLOW}dst FS does not support ACLs — all dropped{C.RESET}")
+        elif ok or un or err:
+            parts = [f"preserved on {C.BOLD}{ok}{C.RESET}"]
+            if un:
+                parts.append(f"{C.YELLOW}dropped on {un}{C.RESET}")
+            if err:
+                parts.append(f"{C.RED}failed on {err}{C.RESET}")
+            lines.append(f"  ACLs:    {', '.join(parts)}")
+    if lines:
+        for line in lines:
+            print(line)
+    # If any Windows SD operation captured a low-level error, surface it
+    # — gives users actionable diagnostics (winerror=NNN) instead of just
+    # an opaque "failed on 1" count.
+    last_err = _preserve_stats.get("_last_acl_err")
+    if last_err and (_preserve_stats["acl_err"] or _preserve_stats["owner_err"]):
+        print(f"  {C.DIM}└─ last error: {last_err}{C.RESET}")
+
+
+def _apply_owner_via_fd(fd, src_st):
+    """Apply src_st's uid/gid to the opened destination fd.
+
+    Requires real-root (euid==0). When not root, count as 'skipped' rather
+    than 'error' since this is the expected case for non-elevated copies
+    with --preserve owner."""
+    if not _is_elevated_for_preserve():
+        _preserve_stats["owner_skip_unprivileged"] += 1
+        return False
+    try:
+        os.fchown(fd, src_st.st_uid, src_st.st_gid)
+        _preserve_stats["owner_ok"] += 1
+        return True
+    except OSError:
+        _preserve_stats["owner_err"] += 1
+        return False
+
+
+def _apply_extended_meta(fd, src_path, dst_path, src_st):
+    """Apply spec.owner/xattr/acl with the right platform dispatch.
+
+    Mode and times are NOT touched here — both callers (large-file path
+    via _safe_apply_meta, small-file path via copy_block_stream's post-extract
+    loop) handle those separately or rely on tar headers.
+
+    Centralizing the Windows-vs-POSIX dispatch here means new copy paths
+    automatically pick up the right helpers — fixes a v3.3.0-introductory
+    bug where copy_block_stream's small-file post-extract loop kept calling
+    the POSIX helpers directly and bypassed _copy_acls_windows / _copy_ads_windows."""
+    spec = _preserve_spec
+    if _system == "Windows":
+        # On NTFS, owner + group + DACL all live in the Security Descriptor;
+        # one win32security call sets the requested parts. Avoids the
+        # POSIX-style two-step (fchown + setfacl) which doesn't map.
+        if (spec.owner or spec.acl) and src_path:
+            if _preserve_dst_caps["acl"] is not False or spec.owner:
+                _copy_acls_windows(
+                    src_path, dst_path,
+                    set_owner=spec.owner, set_dacl=spec.acl,
+                )
+        # ADS (alternate data streams) is the NTFS analog of POSIX xattrs.
+        if spec.xattr and src_path and _preserve_dst_caps["xattr"] is not False:
+            _copy_ads_windows(src_path, dst_path)
+    else:
+        if spec.owner:
+            _apply_owner_via_fd(fd, src_st)
+        if spec.xattr and src_path and _preserve_dst_caps["xattr"] is not False:
+            _copy_xattrs(src_path, dst_path)
+        if spec.acl and src_path and _preserve_dst_caps["acl"] is not False:
+            _copy_posix_acls(src_path, dst_path)
+
+
+def _safe_apply_meta(fd, dst_path, src_st, src_path=None):
+    """Apply requested metadata from src_st to dst (opened as fd).
+
+    Honors the module-wide _preserve_spec: mode/times are the v3.1.x
+    behavior; owner/xattr/acl run when explicitly requested via --preserve.
+    src_path is needed when xattr/acl are requested — the underlying syscalls
+    take paths, not fds, in their broadly-portable forms. Symlink-safe:
+    fchmod via fd, lstat before path-based calls."""
+    spec = _preserve_spec
+    if spec.mode:
+        try:
+            os.fchmod(fd, stat.S_IMODE(src_st.st_mode))
+        except OSError:
+            pass
+    if spec.times:
+        try:
+            lst = os.lstat(dst_path)
+            if not stat.S_ISLNK(lst.st_mode):
+                os.utime(dst_path, (src_st.st_atime, src_st.st_mtime))
+        except OSError:
+            pass
+    _apply_extended_meta(fd, src_path, dst_path, src_st)
 
 
 def _is_under_sudo():
@@ -308,6 +998,31 @@ def _set_immutable(path, immutable):
         return True
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return False
+
+
+# Flags whose VALUES are secrets (or point at one) and must never be written
+# verbatim to the audit log. Covers cloud keys and the hidden password-env flags.
+_REDACT_FLAGS = {"--az-key", "--az-connection-string",
+                 "--ssh-dst-password-env", "--ssh-src-password-env"}
+
+
+def _redact_argv(argv):
+    """Mask the values of known secret-bearing flags before logging the command
+    line. Handles both '--flag value' and '--flag=value' forms; everything else
+    passes through unchanged."""
+    out, redact_next = [], False
+    for tok in argv:
+        if redact_next:
+            out.append("***")
+            redact_next = False
+            continue
+        flag = tok.split("=", 1)[0]
+        if flag in _REDACT_FLAGS:
+            out.append(f"{flag}=***" if "=" in tok else tok)
+            redact_next = "=" not in tok
+        else:
+            out.append(tok)
+    return out
 
 
 def write_sudo_audit(src_display, dst_display, summary):
@@ -364,7 +1079,7 @@ def write_sudo_audit(src_display, dst_display, summary):
         "sudo_uid": os.environ.get("SUDO_UID"),
         "sudo_gid": os.environ.get("SUDO_GID"),
         "effective_uid": os.geteuid() if hasattr(os, "geteuid") else None,
-        "command": " ".join(sys.argv),
+        "command": " ".join(_redact_argv(sys.argv)),
         "cwd": os.environ.get("PWD") or os.getcwd(),
         "source": src_display,
         "destination": dst_display,
@@ -423,7 +1138,7 @@ def write_sudo_audit(src_display, dst_display, summary):
 # ════════════════════════════════════════════════════════════════════════════
 # TERMINAL OUTPUT
 # ════════════════════════════════════════════════════════════════════════════
-_is_tty = sys.stdout.isatty()
+_is_tty = sys.stdout is not None and sys.stdout.isatty()
 
 class C:
     GREEN  = "\033[92m" if _is_tty else ""
@@ -568,6 +1283,20 @@ def _validate_rel_path(rel):
     if '\0' in rel or '\n' in rel:
         return "null or newline in path"
     return True
+
+
+def _safe_local_dest(real_root, rel):
+    """Resolve `rel` under an already-realpath'd destination root and confirm it
+    cannot escape — via '..'/absolute strings OR a symlinked directory component.
+    Returns the joinable absolute path, or None if it would escape. Used for
+    untrusted object keys / fc_relpath metadata on cloud downloads."""
+    if _validate_rel_path(rel) is not True:
+        return None
+    full = os.path.join(real_root, rel.replace("/", os.sep))
+    real_full = os.path.realpath(full)
+    if real_full != real_root and not real_full.startswith(real_root + os.sep):
+        return None
+    return full
 def _validate_tar_member(member, dst_root):
     """Validate a tar member for safety. Returns True or error string."""
     # Reject absolute paths
@@ -606,19 +1335,46 @@ def _validate_tar_member(member, dst_root):
 
 
 def _safe_tar_extract(tar, member, dst_root):
-    """Extract a single tar member safely. Returns True on success, error string on failure."""
+    """Extract a single tar member safely. Returns True on success, error string on failure.
+
+    Filter selection:
+      • By default, use Python 3.12's 'data' filter and zero out uid/gid —
+        the safest extraction with no ownership preservation.
+      • When --preserve owner is requested, switch to 'tar' filter and keep
+        the member's uid/gid intact. _validate_tar_member has already
+        rejected absolute paths, symlinks, devices, hardlinks, and any
+        member whose realpath escapes dst_root, so the only thing 'tar'
+        permits beyond 'data' that we actually want is ownership.
+      • Non-root extraction silently fails to chown (tarfile swallows the
+        EPERM) — we count those as owner_skip_unprivileged at the start
+        of the R2L copy phase rather than per-member."""
     check = _validate_tar_member(member, dst_root)
     if check is not True:
         return check
-    # Safe to extract — sanitize member metadata
-    member.uid = member.gid = 0
-    member.uname = member.gname = ""
     extract_path = _long_path(dst_root) if _system == "Windows" else dst_root
+    if _system == "Windows":
+        # A destination file left read-only/hidden by a prior run (most often a
+        # locked credentials.json — Windows immutability is just the read-only
+        # attribute) can't be overwritten: open() fails with EACCES/Errno 13.
+        # Strip those attributes first so the extract can replace it, mirroring
+        # how _save_credentials_file overwrites our own locked creds file.
+        target = os.path.join(extract_path, member.name.replace("/", os.sep))
+        _windows_clear_attrs(target)
+    preserve_owner = _preserve_spec.owner
+    if not preserve_owner:
+        # Default safe behavior: drop ownership info from the member.
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
     try:
-        tar.extract(member, path=extract_path, filter='data')
+        tar.extract(member, path=extract_path,
+                    filter='tar' if preserve_owner else 'data')
     except TypeError:
-        # Python <3.12: filter not supported, but member is already sanitized
+        # Python <3.12: filter kwarg not supported. Without it, tarfile
+        # honors uid/gid by default — so if owner preservation was NOT
+        # requested, we already sanitized the member above.
         tar.extract(member, path=extract_path)
+    if preserve_owner and _is_elevated_for_preserve():
+        _preserve_stats["owner_ok"] += 1
     return True
 
 
@@ -672,6 +1428,15 @@ class DedupDB:
                 raise
         elif os.path.islink(db_path):
             raise OSError(f"Refusing to open dedup DB: {db_path} is a symlink")
+        # SQLite opens the WAL/SHM (and rollback-journal) side-files through its
+        # own C library, NOT through our O_NOFOLLOW-guarded fd — so a symlink
+        # planted at one of those paths would otherwise be followed and written
+        # through (e.g. -> ~/.ssh/authorized_keys). Refuse if any pre-exists as a
+        # symlink before SQLite touches them.
+        for _suffix in ("-wal", "-shm", "-journal"):
+            _side = db_path + _suffix
+            if os.path.islink(_side):
+                raise OSError(f"Refusing to open dedup DB: {_side} is a symlink")
         # Create DB with restrictive permissions (owner-only)
         old_umask = os.umask(0o077)
         try:
@@ -679,6 +1444,9 @@ class DedupDB:
         finally:
             os.umask(old_umask)
         try:
+            # secure_delete zeroes freed pages so deleted rows (file paths,
+            # sizes, hashes) aren't recoverable from the DB's free list.
+            self.conn.execute("PRAGMA secure_delete=ON")
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")  # WAL default, crash-safe
             self.conn.execute("PRAGMA user_version=4718")  # schema v2
@@ -778,6 +1546,32 @@ class DedupDB:
             )
             return c.fetchall()
 
+    def dest_sizes(self):
+        """Set of distinct file sizes recorded across the whole drive — used to
+        decide which source files are worth hashing for dedup-against-existing."""
+        with self.lock:
+            return set(r[0] for r in
+                       self.conn.execute("SELECT DISTINCT size FROM dest_files"))
+
+    def prune_dest(self, present_rels):
+        """Drop dest_files entries for files no longer present, SCOPED to this
+        destination's subtree (so other folders on the same drive are untouched).
+        present_rels = destination-relative paths currently on disk. Returns the
+        number of stale rows removed."""
+        with self.lock:
+            present = set(self._mount_rel(r) for r in present_rels)
+            prefix = self._mount_rel("")            # this dst's subtree in the DB
+            cached = [row[0] for row in
+                      self.conn.execute("SELECT mount_rel FROM dest_files")]
+            gone = [m for m in cached
+                    if m.startswith(prefix) and m not in present]
+            if gone:
+                self.conn.executemany(
+                    "DELETE FROM dest_files WHERE mount_rel = ?",
+                    [(m,) for m in gone])
+                self.conn.commit()
+            return len(gone)
+
     def close(self):
         with self.lock:
             self.conn.commit()
@@ -818,6 +1612,10 @@ def parse_remote_path(path_str):
 
 
 _ParamikoHostKeyBase = paramiko.MissingHostKeyPolicy if _has_paramiko else object
+
+# When True, unknown SSH host keys are rejected outright (no interactive TOFU
+# prompt). Set from --ssh-strict-host-key-checking for automated/CI use.
+_strict_host_keys = False
 
 
 def _user_known_hosts_path():
@@ -904,6 +1702,13 @@ class SSHConnection:
         self.sftp = None
         self.caps = {}
 
+    def __repr__(self):
+        # Explicit repr so the default one never serializes self.password into a
+        # traceback, log line, or debugger output.
+        return f"SSHConnection({self.spec.user}@{self.spec.host}:{self.spec.port})"
+
+    __str__ = __repr__
+
     def connect(self):
         self.client = paramiko.SSHClient()
         # Load system known_hosts for host key verification
@@ -917,7 +1722,13 @@ class SSHConnection:
                 self.client.load_host_keys(known_hosts)
             except IOError:
                 pass
-        self.client.set_missing_host_key_policy(_InteractiveHostKeyPolicy())
+        # Strict mode (for CI/automation): reject any host key not already in
+        # known_hosts instead of the interactive trust-on-first-use prompt, so
+        # a first-connection MITM can't be accepted by an unattended run.
+        if _strict_host_keys:
+            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            self.client.set_missing_host_key_policy(_InteractiveHostKeyPolicy())
 
         connect_kwargs = {
             "hostname": self.spec.host,
@@ -1114,6 +1925,21 @@ def _manifest_key():
     # Load or create a persistent random salt
     salt = b""
     try:
+        # All manifest HMACs hinge on this one salt. If it has been replaced by
+        # an attacker (different inode, loosened perms, hardlinked), forged
+        # manifests would verify — so check it's still a private regular file and
+        # warn (once) if not, rather than silently trusting it.
+        if _system != "Windows" and os.path.exists(_MANIFEST_SALT_FILE) \
+                and not getattr(_manifest_key, "_warned", False):
+            st = os.lstat(_MANIFEST_SALT_FILE)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) \
+                    or st.st_nlink > 1 or (st.st_mode & 0o077):
+                print(f"  {C.YELLOW}Warning: {_MANIFEST_SALT_FILE} is not a "
+                      f"private regular file (mode={oct(st.st_mode & 0o777)}, "
+                      f"links={st.st_nlink}); manifest integrity may be "
+                      f"compromised. Fix: verify and chmod 600.{C.RESET}",
+                      file=sys.stderr)
+                _manifest_key._warned = True
         with open(_MANIFEST_SALT_FILE, "rb") as f:
             salt = f.read(32)
     except (IOError, OSError):
@@ -1316,6 +2142,426 @@ def remote_hash_files(ssh, remote_root, rel_paths):
     if len(rel_paths) > BATCH_SIZE:
         print()  # newline after progress
     return result
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# REMOTE METADATA ENUMERATION (for R2L --preserve xattr / acl)
+# ════════════════════════════════════════════════════════════════════════════
+# When copying remote→local with --preserve xattr or --preserve acl, we
+# can't reach the source files through the local syscalls our usual
+# preserve helpers use. We run a small script on the remote that reads
+# rel paths from stdin and emits a parseable per-file record.
+#
+# Record format (one per file, tab-delimited):
+#   F <base64-of-rel-path>           start of record
+#   X <name> <base64-of-value>       repeated per xattr (user.* namespace only)
+#   A <single acl line>              repeated per ACL entry
+#   .                                end of record
+#
+# python3 on the remote is preferred (handles binary xattr values cleanly
+# via base64); we degrade silently if it's missing — xattr/ACL just won't
+# be collected, and the existing warning informs the user.
+def _remote_collect_metadata(ssh, remote_root, rel_paths,
+                             want_xattr, want_acl, want_owner=False):
+    """Collect xattrs, ACLs, and/or owner uid/gid for the given remote rel_paths.
+
+    Returns {rel_path: {"xattrs": {name: bytes}, "acl_lines": [str, ...],
+                        "owner": (uid, gid) or None}}.
+    Files with no requested metadata present are omitted. On any
+    infrastructure error (no python3 on remote, channel timeout) returns
+    an empty dict — the end-of-run summary will then report '0 preserved'.
+
+    want_owner is used by R2R: we collect uid/gid from the source so the
+    destination apply step can chown to the same numeric ids, regardless
+    of whether the tar relay's filter preserved them."""
+    if not rel_paths or (not want_xattr and not want_acl and not want_owner):
+        return {}
+    if not ssh.caps.get("python3"):
+        return {}
+
+    BATCH_SIZE = 5000
+    result = {}
+    want_xattr_int = 1 if want_xattr else 0
+    want_acl_int = 1 if want_acl else 0
+    want_owner_int = 1 if want_owner else 0
+
+    for batch_start in range(0, len(rel_paths), BATCH_SIZE):
+        batch = rel_paths[batch_start:batch_start + BATCH_SIZE]
+        full_paths = [posixpath.join(remote_root, rp) for rp in batch]
+        path_input = "\n".join(full_paths) + "\n"
+
+        # The remote script: read paths from stdin, emit one record per
+        # file. Uses os.listxattr/getxattr (Linux/macOS) for xattrs and a
+        # getfacl subprocess for ACLs. Errors per file are silenced — the
+        # local side just won't see a record for that file.
+        script = (
+            "import sys,os,base64,subprocess\n"
+            f"WX={want_xattr_int}\nWA={want_acl_int}\nWO={want_owner_int}\n"
+            "for line in sys.stdin:\n"
+            "  p=line.rstrip('\\n')\n"
+            "  if not p: continue\n"
+            "  try: st=os.stat(p)\n"
+            "  except OSError: continue\n"
+            "  print('F\\t'+base64.b64encode(p.encode()).decode())\n"
+            "  if WO:\n"
+            "    print('O\\t'+str(st.st_uid)+'\\t'+str(st.st_gid))\n"
+            "  if WX and hasattr(os,'listxattr'):\n"
+            "    try:\n"
+            "      for n in os.listxattr(p, follow_symlinks=False):\n"
+            "        if not n.startswith('user.'): continue\n"
+            "        v=os.getxattr(p,n,follow_symlinks=False)\n"
+            "        print('X\\t'+n+'\\t'+base64.b64encode(v).decode())\n"
+            "    except OSError: pass\n"
+            "  if WA:\n"
+            "    try:\n"
+            "      r=subprocess.run(['getfacl','-p','-E','--',p],\n"
+            "                       capture_output=True,timeout=5)\n"
+            "      if r.returncode==0:\n"
+            "        for ln in r.stdout.decode('utf-8','replace').splitlines():\n"
+            "          ln=ln.strip()\n"
+            "          if ln and not ln.startswith('#'):\n"
+            "            print('A\\t'+ln)\n"
+            "    except (OSError,FileNotFoundError): pass\n"
+            "  print('.')\n"
+        )
+
+        try:
+            out, _, _ = ssh.exec_cmd(
+                f"python3 -c {shlex.quote(script)}", input_data=path_input,
+                timeout=600,
+            )
+        except Exception:
+            return {}
+
+        # Parse records.
+        cur_full = None
+        cur = None
+        for line in out.split("\n"):
+            if not line:
+                continue
+            if line == ".":
+                if cur_full is not None and cur is not None and (
+                        cur["xattrs"] or cur["acl_lines"] or cur.get("owner")):
+                    rel = posixpath.relpath(cur_full, remote_root)
+                    result[rel] = cur
+                cur_full = None
+                cur = None
+                continue
+            tag, _, rest = line.partition("\t")
+            if tag == "F":
+                try:
+                    cur_full = base64.b64decode(rest).decode("utf-8", "replace")
+                except Exception:
+                    cur_full = None
+                cur = {"xattrs": {}, "acl_lines": [], "owner": None}
+            elif tag == "O" and cur is not None:
+                uid_s, _, gid_s = rest.partition("\t")
+                try:
+                    cur["owner"] = (int(uid_s), int(gid_s))
+                except ValueError:
+                    pass
+            elif tag == "X" and cur is not None:
+                name, _, val_b64 = rest.partition("\t")
+                if name:
+                    try:
+                        cur["xattrs"][name] = base64.b64decode(val_b64)
+                    except Exception:
+                        pass
+            elif tag == "A" and cur is not None:
+                cur["acl_lines"].append(rest)
+
+        if len(rel_paths) > BATCH_SIZE:
+            done = min(batch_start + BATCH_SIZE, len(rel_paths))
+            print(f"\r  {C.DIM}Collected remote metadata for "
+                  f"{done}/{len(rel_paths)} files...{C.RESET}",
+                  end="", flush=True)
+
+    if len(rel_paths) > BATCH_SIZE:
+        print()
+    return result
+
+
+def _push_metadata_to_remote(ssh, remote_root, entries, src_root,
+                             want_owner, want_xattr, want_acl):
+    """Symmetric to _remote_collect_metadata: reads metadata from the LOCAL
+    source tree, ships a serialized payload to the remote, and runs a
+    python3 script there that applies via os.chown/os.setxattr/setfacl.
+
+    Used for L2R copies under --preserve owner/xattr/acl. Requires python3
+    on the remote; gracefully no-ops if it's missing. Owner application
+    requires the SSH user on the remote to have CAP_CHOWN (typically root);
+    failed chowns are counted but don't abort.
+
+    Returns silently — counters update via _preserve_stats so the
+    end-of-run summary reflects what actually happened."""
+    if not entries or (not want_owner and not want_xattr and not want_acl):
+        return
+    if not ssh.caps.get("python3"):
+        if want_owner:
+            _preserve_stats["owner_skip_unprivileged"] += len(entries)
+        if want_xattr:
+            _preserve_stats["xattr_skip_unsupported"] += len(entries)
+        if want_acl:
+            _preserve_stats["acl_skip_unsupported"] += len(entries)
+        return
+
+    BATCH_SIZE = 5000
+    import subprocess as _sp
+
+    # Serialize a batch of entries into the wire format the remote script
+    # consumes. One record per file, '.' terminator, tab-delimited fields.
+    def _build_payload(batch):
+        parts = []
+        for entry in batch:
+            src_path = entry.src
+            rel = entry.rel
+            try:
+                lst = os.lstat(src_path)
+            except OSError:
+                continue
+            if stat.S_ISLNK(lst.st_mode):
+                continue
+            parts.append("F\t" + base64.b64encode(rel.encode()).decode())
+            if want_owner:
+                parts.append(f"O\t{lst.st_uid}\t{lst.st_gid}")
+            if want_xattr and hasattr(os, "listxattr"):
+                try:
+                    for n in os.listxattr(src_path, follow_symlinks=False):
+                        if not n.startswith("user."):
+                            continue
+                        v = os.getxattr(src_path, n, follow_symlinks=False)
+                        parts.append("X\t" + n + "\t" +
+                                     base64.b64encode(v).decode())
+                except OSError:
+                    pass
+            if want_acl and _system == "Linux":
+                try:
+                    r = _sp.run(["getfacl", "-p", "-E", "--", src_path],
+                                capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        for ln in r.stdout.decode("utf-8", "replace").splitlines():
+                            ln = ln.strip()
+                            if ln and not ln.startswith("#"):
+                                parts.append("A\t" + ln)
+                except (OSError, _sp.SubprocessError, FileNotFoundError):
+                    pass
+            parts.append(".")
+        return "\n".join(parts) + "\n" if parts else ""
+
+    cmd = (f"python3 -c {shlex.quote(_REMOTE_APPLY_SCRIPT)} "
+           f"{shlex.quote(remote_root)} {int(want_xattr)} "
+           f"{int(want_acl)} {int(want_owner)}")
+
+    for batch_start in range(0, len(entries), BATCH_SIZE):
+        batch = entries[batch_start:batch_start + BATCH_SIZE]
+        payload = _build_payload(batch)
+        if not payload:
+            continue
+        try:
+            out, _, _ = ssh.exec_cmd(cmd, input_data=payload, timeout=600)
+        except Exception:
+            return
+        _parse_remote_apply_stats(out)
+        if len(entries) > BATCH_SIZE:
+            done = min(batch_start + BATCH_SIZE, len(entries))
+            print(f"\r  {C.DIM}Applied remote metadata for "
+                  f"{done}/{len(entries)} files...{C.RESET}",
+                  end="", flush=True)
+    if len(entries) > BATCH_SIZE:
+        print()
+
+
+def _apply_collected_metadata_to_remote(dst_ssh, dst_root, meta,
+                                        want_owner, want_xattr, want_acl):
+    """Apply already-collected metadata records to a remote destination.
+
+    Used by R2R: we collect from the source remote via
+    _remote_collect_metadata, then call this to push the records onto the
+    destination remote. Mechanically symmetric to _push_metadata_to_remote
+    but the records are pre-collected rather than read from local files."""
+    if not meta or (not want_owner and not want_xattr and not want_acl):
+        return
+    if not dst_ssh.caps.get("python3"):
+        n = len(meta)
+        if want_owner:
+            _preserve_stats["owner_skip_unprivileged"] += n
+        if want_xattr:
+            _preserve_stats["xattr_skip_unsupported"] += n
+        if want_acl:
+            _preserve_stats["acl_skip_unsupported"] += n
+        return
+
+    BATCH_SIZE = 5000
+    items = list(meta.items())
+
+    def _build_payload(batch):
+        parts = []
+        for rel, rec in batch:
+            parts.append("F\t" + base64.b64encode(rel.encode()).decode())
+            if want_owner and rec.get("owner"):
+                uid, gid = rec["owner"]
+                parts.append(f"O\t{uid}\t{gid}")
+            if want_xattr:
+                for n, v in rec.get("xattrs", {}).items():
+                    parts.append("X\t" + n + "\t" +
+                                 base64.b64encode(v).decode())
+            if want_acl:
+                for ln in rec.get("acl_lines", []):
+                    parts.append("A\t" + ln)
+            parts.append(".")
+        return "\n".join(parts) + "\n" if parts else ""
+
+    cmd = (f"python3 -c {shlex.quote(_REMOTE_APPLY_SCRIPT)} "
+           f"{shlex.quote(dst_root)} {int(want_xattr)} "
+           f"{int(want_acl)} {int(want_owner)}")
+
+    for batch_start in range(0, len(items), BATCH_SIZE):
+        batch = items[batch_start:batch_start + BATCH_SIZE]
+        payload = _build_payload(batch)
+        if not payload:
+            continue
+        try:
+            out, _, _ = dst_ssh.exec_cmd(cmd, input_data=payload, timeout=600)
+        except Exception:
+            return
+        _parse_remote_apply_stats(out)
+
+
+# Shared apply script + STATS parser, extracted so both _push_metadata_to_remote
+# (L2R) and _apply_collected_metadata_to_remote (R2R) use the same mechanism.
+_REMOTE_APPLY_SCRIPT = (
+    "import sys,os,base64,subprocess\n"
+    "ROOT=sys.argv[1]\n"
+    "WX,WA,WO = int(sys.argv[2]),int(sys.argv[3]),int(sys.argv[4])\n"
+    "ok_o=err_o=ok_x=err_x=ok_a=err_a=skip_x=skip_a=0\n"
+    "cur=None\n"
+    "for raw in sys.stdin:\n"
+    "  line=raw.rstrip('\\n')\n"
+    "  if not line: continue\n"
+    "  if line=='.':\n"
+    "    if cur is not None and cur.get('rel'):\n"
+    "      full=os.path.join(ROOT, cur['rel'])\n"
+    "      if WO and 'owner' in cur:\n"
+    "        try:\n"
+    "          os.chown(full, cur['owner'][0], cur['owner'][1])\n"
+    "          ok_o+=1\n"
+    "        except OSError: err_o+=1\n"
+    "      if WX and cur['xattrs']:\n"
+    "        wrote=False\n"
+    "        for n,v in cur['xattrs'].items():\n"
+    "          try:\n"
+    "            os.setxattr(full, n, v, follow_symlinks=False); wrote=True\n"
+    "          except OSError as e:\n"
+    "            if e.errno in (95,):\n"
+    "              skip_x+=1; wrote=False; break\n"
+    "            err_x+=1\n"
+    "        if wrote: ok_x+=1\n"
+    "      if WA and cur['acl_lines']:\n"
+    "        payload='# file: '+full+'\\n'+'\\n'.join(cur['acl_lines'])+'\\n'\n"
+    "        try:\n"
+    "          r=subprocess.run(['setfacl','--restore=-'],\n"
+    "                           input=payload.encode(),capture_output=True,timeout=10)\n"
+    "          if r.returncode==0: ok_a+=1\n"
+    "          else: err_a+=1\n"
+    "        except (OSError,FileNotFoundError): skip_a+=1\n"
+    "    cur=None\n"
+    "    continue\n"
+    "  tag,_,rest=line.partition('\\t')\n"
+    "  if tag=='F':\n"
+    "    try: rel=base64.b64decode(rest).decode('utf-8','replace')\n"
+    "    except Exception: rel=None\n"
+    "    cur={'rel':rel,'xattrs':{},'acl_lines':[]}\n"
+    "  elif tag=='O' and cur is not None:\n"
+    "    a,_,b=rest.partition('\\t')\n"
+    "    try: cur['owner']=(int(a),int(b))\n"
+    "    except ValueError: pass\n"
+    "  elif tag=='X' and cur is not None:\n"
+    "    n,_,vb=rest.partition('\\t')\n"
+    "    try: cur['xattrs'][n]=base64.b64decode(vb)\n"
+    "    except Exception: pass\n"
+    "  elif tag=='A' and cur is not None:\n"
+    "    cur['acl_lines'].append(rest)\n"
+    "print(f'STATS\\towner_ok\\t{ok_o}\\towner_err\\t{err_o}')\n"
+    "print(f'STATS\\txattr_ok\\t{ok_x}\\txattr_err\\t{err_x}\\txattr_skip\\t{skip_x}')\n"
+    "print(f'STATS\\tacl_ok\\t{ok_a}\\tacl_err\\t{err_a}\\tacl_skip\\t{skip_a}')\n"
+)
+
+
+def _parse_remote_apply_stats(out):
+    """Parse STATS lines from the remote apply script and update counters."""
+    for line in out.split("\n"):
+        if not line.startswith("STATS\t"):
+            continue
+        fields = line.split("\t")
+        i = 1
+        while i + 1 < len(fields):
+            key = fields[i]
+            try:
+                val = int(fields[i + 1])
+            except ValueError:
+                val = 0
+            if key == "owner_ok":
+                _preserve_stats["owner_ok"] += val
+            elif key == "owner_err":
+                _preserve_stats["owner_err"] += val
+            elif key == "xattr_ok":
+                _preserve_stats["xattr_ok"] += val
+            elif key == "xattr_err":
+                _preserve_stats["xattr_err"] += val
+            elif key == "xattr_skip":
+                _preserve_stats["xattr_skip_unsupported"] += val
+            elif key == "acl_ok":
+                _preserve_stats["acl_ok"] += val
+            elif key == "acl_err":
+                _preserve_stats["acl_err"] += val
+            elif key == "acl_skip":
+                _preserve_stats["acl_skip_unsupported"] += val
+            i += 2
+
+
+def _apply_remote_metadata_local(meta, dst_root, want_xattr, want_acl):
+    """Apply collected remote metadata to the local destination tree.
+
+    Counters: this increments xattr_ok / acl_ok the same way the local
+    preserve path does, so the end-of-run summary stays consistent."""
+    import subprocess
+    for rel, rec in meta.items():
+        dst_path = os.path.join(dst_root, rel)
+        if not os.path.isfile(dst_path):
+            continue
+        # xattrs
+        if want_xattr and rec["xattrs"]:
+            if _preserve_dst_caps["xattr"] is False:
+                _preserve_stats["xattr_skip_unsupported"] += 1
+                continue
+            wrote_any = False
+            for name, value in rec["xattrs"].items():
+                try:
+                    os.setxattr(dst_path, name, value, follow_symlinks=False)
+                    wrote_any = True
+                except OSError as e:
+                    if e.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+                        _preserve_stats["xattr_skip_unsupported"] += 1
+                        break
+                    _preserve_stats["xattr_err"] += 1
+            if wrote_any:
+                _preserve_stats["xattr_ok"] += 1
+        # ACLs
+        if want_acl and rec["acl_lines"]:
+            if _preserve_dst_caps["acl"] is False:
+                _preserve_stats["acl_skip_unsupported"] += 1
+                continue
+            payload = f"# file: {dst_path}\n" + "\n".join(rec["acl_lines"]) + "\n"
+            try:
+                r = subprocess.run(["setfacl", "--restore=-"],
+                                   input=payload.encode("utf-8"),
+                                   capture_output=True, timeout=10)
+                if r.returncode == 0:
+                    _preserve_stats["acl_ok"] += 1
+                else:
+                    _preserve_stats["acl_err"] += 1
+            except (OSError, subprocess.SubprocessError, FileNotFoundError):
+                _preserve_stats["acl_err"] += 1
 
 
 def filter_unchanged_remote(entries, link_map, ssh, remote_root,
@@ -2975,6 +4221,12 @@ def resolve_case_conflicts(entries, link_map, dst):
 # ════════════════════════════════════════════════════════════════════════════
 # PROGRESS TRACKER
 # ════════════════════════════════════════════════════════════════════════════
+# When True (set by --progress-json), Progress emits one machine-readable JSON
+# line per update instead of the human progress bar. Strictly opt-in: the
+# default human output is unchanged when this stays False. Consumed by the GUI.
+PROGRESS_JSON = False
+
+
 class Progress:
     def __init__(self, total_bytes, total_files):
         self.total_bytes = total_bytes
@@ -3007,6 +4259,20 @@ class Progress:
         speed = bytes_done / elapsed
         eta = (self.total_bytes - bytes_done) / speed if speed > 0 else 0
 
+        if PROGRESS_JSON:
+            sys.stdout.write(json.dumps({
+                "t": "progress",
+                "pct": round(pct, 2),
+                "bytes_done": bytes_done,
+                "bytes_total": self.total_bytes,
+                "speed_bps": speed,
+                "files_done": files_done,
+                "files_total": self.total_files,
+                "eta_s": eta,
+            }) + "\n")
+            sys.stdout.flush()
+            return
+
         bar_w = 30
         filled = int(bar_w * min(pct, 100) / 100)
         bar = "█" * filled + "░" * (bar_w - filled)
@@ -3023,6 +4289,19 @@ class Progress:
     def finish(self):
         elapsed = time.time() - self.start
         speed = self.bytes_done / elapsed if elapsed > 0 else 0
+        if PROGRESS_JSON:
+            sys.stdout.write(json.dumps({
+                "t": "done",
+                "pct": 100.0,
+                "bytes_done": self.bytes_done,
+                "bytes_total": self.total_bytes,
+                "speed_bps": speed,
+                "files_done": self.files_done,
+                "files_total": self.total_files,
+                "elapsed_s": elapsed,
+            }) + "\n")
+            sys.stdout.flush()
+            return
         print(f"\r  {C.GREEN}{'█' * 30}{C.RESET} 100%  "
               f"{fmt_size(self.bytes_done)} in {fmt_time(elapsed)}  "
               f"avg {C.GREEN}{fmt_speed(speed)}{C.RESET}  "
@@ -3199,6 +4478,29 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
     else:
         print(f"\r  {C.GREEN}Streamed {extracted} files to destination{C.RESET}                    ")
 
+    # Apply extended metadata (owner/xattr/acl) post-extraction. Tar carries
+    # mode and mtime in its headers, but xattrs/ACLs/ownership are not part
+    # of the small-file tar stream — so we walk small_entries again here and
+    # re-open the destination file with O_NOFOLLOW to apply them safely.
+    # Dispatch via _apply_extended_meta so Windows (NTFS) goes through
+    # _copy_acls_windows / _copy_ads_windows and POSIX through the original
+    # fchown / setxattr / setfacl helpers.
+    if _preserve_spec.any_extended():
+        for entry in small_entries:
+            dst_path = os.path.join(dst_root, entry.rel)
+            try:
+                fd = _safe_open_write_fd(dst_path, truncate=False)
+            except OSError:
+                continue
+            try:
+                try:
+                    src_st = os.stat(entry.src)
+                except OSError:
+                    continue
+                _apply_extended_meta(fd, entry.src, dst_path, src_st)
+            finally:
+                os.close(fd)
+
 
 _HAS_SEEK_HOLE = hasattr(os, "SEEK_HOLE") and hasattr(os, "SEEK_DATA")
 
@@ -3287,7 +4589,7 @@ def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
             progress.update(src_size - offset)
         try:
             src_st = os.fstat(src_fd)
-            _safe_apply_meta(fout.fileno(), dst_path, src_st)
+            _safe_apply_meta(fout.fileno(), dst_path, src_st, src_path=src_path)
         except OSError:
             pass
     return True
@@ -3329,7 +4631,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     except OSError:
                         st = None
                     if st is not None and not stat.S_ISLNK(st.st_mode):
-                        _safe_apply_meta(fd, dst_path, st)
+                        _safe_apply_meta(fd, dst_path, st, src_path=entry.src)
                 finally:
                     os.close(fd)
                 _log("copied", entry.rel, entry.size, method="individual")
@@ -3403,7 +4705,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                         progress.display()
                     try:
                         st = os.fstat(fin.fileno())
-                        _safe_apply_meta(dst_fd_keep, dst_path, st)
+                        _safe_apply_meta(dst_fd_keep, dst_path, st, src_path=entry.src)
                     except OSError:
                         pass
 
@@ -5034,6 +6336,125 @@ def check_update_info():
     print()
 
 
+# ── dependency check ─────────────────────────────────────────────────────────
+# (distribution, import name, pip install spec, what it enables). The core
+# local↔local copy is stdlib-only; everything here is feature-gated and imported
+# lazily, so a plain copy never needs any of it.
+_DEPENDENCIES = [
+    ("paramiko", "paramiko", "paramiko",
+     "SSH / SFTP transfers — user@host:path, remote↔remote"),
+    ("cryptography", "cryptography", "cryptography>=41.0",
+     "Encrypted credentials file (creds encrypt)"),
+    ("boto3", "boto3", "boto3>=1.28",
+     "Amazon S3 and S3-compatible: MinIO / R2 / Wasabi / B2 (s3://)"),
+    ("azure-storage-blob", "azure.storage.blob", "azure-storage-blob>=12.0",
+     "Azure Blob Storage (az://)"),
+    ("google-cloud-storage", "google.cloud.storage", "google-cloud-storage>=2.0",
+     "Google Cloud Storage (gs://)"),
+    ("xxhash", "xxhash", "xxhash",
+     "Faster hashing (xxh128; falls back to SHA-256 if absent)"),
+]
+
+
+def _dep_status(dist, import_name):
+    """Return (installed, version_or_None) for one dependency. Prefers dist
+    metadata (gives a version); falls back to an import-spec check so a frozen
+    build — which bundles modules without dist-info — still reads as present."""
+    try:
+        import importlib.metadata as _md
+        return True, _md.version(dist)
+    except Exception:
+        pass
+    try:
+        import importlib.util
+        if importlib.util.find_spec(import_name) is not None:
+            return True, None
+    except Exception:
+        pass
+    return False, None
+
+
+def _pip_install_specs(specs):
+    """Install pip specs into the running interpreter's environment. Returns an
+    exit code (0 on success)."""
+    import subprocess
+    cmd = [sys.executable, "-m", "pip", "install", *specs]
+    print(f"  {C.DIM}Running: {' '.join(cmd)}{C.RESET}\n")
+    try:
+        rc = subprocess.run(cmd).returncode
+    except KeyboardInterrupt:
+        print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
+        return 130
+    except Exception as e:
+        print(f"  {C.RED}Error: could not run pip: {e}{C.RESET}")
+        return 1
+    print(f"\n  {C.GREEN}✓ Dependencies installed.{C.RESET}" if rc == 0
+          else f"\n  {C.RED}pip exited with code {rc}.{C.RESET}")
+    return rc
+
+
+def check_dependencies(install=False):
+    """`fast_copy.py deps [--install]` — report which optional packages are
+    installed and what each enables; with --install, pip-install the missing
+    ones. Returns an exit code."""
+    banner("DEPENDENCIES")
+    missing = []
+    for dist, import_name, spec, feature in _DEPENDENCIES:
+        ok, ver = _dep_status(dist, import_name)
+        if ok:
+            v = f" {ver}" if ver else ""
+            print(f"  {C.GREEN}✓{C.RESET} {C.BOLD}{dist}{C.RESET}"
+                  f"{C.DIM}{v}{C.RESET}  — {feature}")
+        else:
+            missing.append((dist, spec, feature))
+            print(f"  {C.YELLOW}✗ {dist}{C.RESET} {C.DIM}(missing){C.RESET}"
+                  f"  — {feature}")
+    print()
+    if not missing:
+        print(f"  {C.GREEN}All optional dependencies are installed.{C.RESET}")
+        return 0
+    print(f"  {C.YELLOW}{len(missing)} missing{C.RESET} "
+          f"{C.DIM}(each is only needed for the feature shown above).{C.RESET}")
+    if _is_frozen():
+        print(f"  {C.DIM}This is a frozen build — dependencies are bundled into "
+              f"the executable, so pip install does not apply.{C.RESET}")
+        return 0
+    specs = [s for _, s, _ in missing]
+    if not install:
+        print(f"\n  Install the missing ones with:")
+        print(f"    {C.BOLD}{os.path.basename(sys.executable)} -m pip install "
+              f"{' '.join(specs)}{C.RESET}")
+        print(f"  {C.DIM}or: fast_copy.py deps --install{C.RESET}")
+        return 0
+    print()
+    return _pip_install_specs(specs)
+
+
+def _post_update_dep_check():
+    """After a successful self-update, surface any missing optional deps and, on
+    an interactive terminal, offer to install them. Silent when nothing is
+    missing or on a frozen build (deps are bundled)."""
+    if _is_frozen():
+        return
+    missing = [(d, s, f) for d, imp, s, f in _DEPENDENCIES
+               if not _dep_status(d, imp)[0]]
+    if not missing:
+        return
+    print(f"\n  {C.YELLOW}{len(missing)} optional dependency(ies) not "
+          f"installed:{C.RESET}")
+    for d, s, f in missing:
+        print(f"    {C.DIM}• {d} — {f}{C.RESET}")
+    if sys.stdin.isatty():
+        try:
+            ans = input("  Install them now with pip? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans in ("y", "yes"):
+            _pip_install_specs([s for _, s, _ in missing])
+            return
+    print(f"  {C.DIM}Install later with: fast_copy.py deps --install{C.RESET}")
+
+
 def self_update(target_version=None, expected_sha256=None):
     """Download and install a release. If target_version is None, install latest.
 
@@ -5209,35 +6630,3314 @@ def self_update(target_version=None, expected_sha256=None):
     sys.exit(0)
 
 
-def _keep_parents_rel(s):
-    # --keep-parents (rsync -R): preserve the source path verbatim under the
-    # destination — strip the leading separator / drive letter so the result
-    # is a relative path. /var/log → var/log, ./foo/bar → foo/bar.
-    if os.name == "nt" and len(s) >= 2 and s[1] == ":":
-        s = s[2:]
-    while s.startswith("./") or s.startswith(".\\"):
-        s = s[2:]
-    s = s.lstrip(os.sep).lstrip("/")
-    s = s.replace(os.sep, "/").rstrip("/")
-    return s or "."
+# ════════════════════════════════════════════════════════════════════════════
+# OBJECT STORAGE BACKENDS (v4.0.0) — S3, Azure Blob, Google Cloud Storage
+#
+# Cloud endpoints (s3://, az://, gs://) become first-class sources and
+# destinations. Each provider implements the same small CloudBackend interface;
+# one orchestrator (run_cloud_transfer) drives upload / download / cloud-to-cloud
+# and reuses the existing scan, hash, Progress, and verify machinery. SDKs
+# (boto3 / azure-storage-blob / google-cloud-storage) are imported lazily so a
+# plain local copy never pays for them.
+# ════════════════════════════════════════════════════════════════════════════
+CLOUD_MANIFEST_NAME = ".fast_copy_manifest.json"
+CloudSpec = namedtuple("CloudSpec", ["scheme", "container", "prefix", "connection"],
+                       defaults=[None])
+
+
+def parse_cloud_url(path_str):
+    """Parse s3://bucket/key, az://container/blob, gs://bucket/object — with an
+    optional named connection: s3://conn@bucket/key (bucket names can't contain
+    '@', so this is unambiguous). Returns CloudSpec or None for non-cloud paths."""
+    if not path_str:
+        return None
+    for scheme in ("s3", "az", "gs"):
+        marker = scheme + "://"
+        if path_str.startswith(marker):
+            rest = path_str[len(marker):]
+            container, _, prefix = rest.partition("/")
+            connection = None
+            if "@" in container:
+                connection, container = container.split("@", 1)
+            if not container:
+                raise SystemExit(f"Error: malformed {scheme}:// URL "
+                                 f"(missing bucket/container): {path_str!r}")
+            return CloudSpec(scheme, container, prefix, connection)
+    return None
+
+
+def is_cloud_path(path_str):
+    return parse_cloud_url(path_str) is not None
+
+
+def _looks_like_profile_ref(token):
+    """Cheap test (no credentials access) for whether a token could name a saved
+    connection: a bare name like `aws-dev` / `aws-dev/`, or `name:subpath`.
+    Cloud URLs and SSH user@host:path are never candidates. A bare name still
+    qualifies even if a same-named *directory* exists (an explicit connection
+    name wins over a coincidental — or auto-created — folder); an existing
+    *file* does not. Used to decide whether to open/unlock the creds file."""
+    if not token or parse_cloud_url(token):
+        return False
+    t = token.rstrip("/").rstrip(os.sep)
+    if not t or t in (".", ".."):
+        return False
+    if ":" in t:
+        head = t.split(":", 1)[0]
+        return bool(head) and "@" not in head and len(head) > 1 \
+            and "/" not in head and "\\" not in head
+    if "/" in t or "\\" in t:
+        return False
+    return not os.path.isfile(token)  # a real file is local; a dir may be a conn
+
+
+def _conns_for_named_endpoints(args=None):
+    """Load saved connections for endpoint-name resolution. Honors an explicit
+    --credentials-file, else the default path. Only the caller (after a
+    _looks_like_profile_ref check) decides to call this, so prompting to unlock
+    an encrypted file in a terminal is justified. Unattended + locked → {}, so a
+    scripted plain copy never hangs."""
+    path = (getattr(args, "credentials_file", None) if args else None) \
+        or default_credentials_path()
+    if not os.path.isfile(path):
+        return {}
+    if _file_is_encrypted(path) and not _have_creds_passphrase() \
+            and not sys.stdin.isatty():
+        return {}
+    # In a terminal this prompts for the passphrase; a wrong one surfaces a clean
+    # single-line error rather than silently copying to the wrong place.
+    return load_credentials_file(path)
+
+
+def resolve_named_endpoint(token, conns):
+    """Expand an endpoint that names a saved connection. Accepts a bare name
+    (`azure-prod`) or `name:subpath` (`ssh1:/tmp`, `aws-dev:bucket/key`).
+
+    Returns (new_token, ssh_overrides):
+      • cloud connection → ("s3://name@bucket/key", None)
+      • ssh connection   → ("user@host:/path", {port, key, password})
+      • not a profile    → (None, None)  (leave the token untouched)
+    """
+    if not token or parse_cloud_url(token):
+        return None, None
+    name, sub = token, None
+    if ":" in token:
+        head, _, tail = token.partition(":")
+        # Leave SSH user@host:path, Windows drives (C:\) and ./rel:foo alone.
+        if "@" in head or len(head) <= 1 or "/" in head or "\\" in head:
+            return None, None
+        name, sub = head, tail
+    else:
+        # An existing *file* shadows a same-named profile (clearly a local
+        # target). A *directory* does not — an explicit connection name wins
+        # over a coincidental or auto-created folder; use ./name for a local
+        # dir. Strip any trailing slash so `aws-dev/` matches the connection key.
+        if os.path.isfile(token):
+            return None, None
+        name = token.rstrip("/").rstrip(os.sep)
+    conn = conns.get(name)
+    if not conn:
+        return None, None
+    ctype = conn.get("type")
+    if ctype in ("s3", "az", "gs"):
+        container = conn.get("container")
+        if container:
+            # Default bucket is set → `name:subfolder` is a folder/prefix INSIDE
+            # that bucket (on top of any default prefix). So with bucket=fastcopy:
+            #   gcs            -> gs://gcs@fastcopy
+            #   gcs:backup     -> gs://gcs@fastcopy/backup
+            #   gcs:prod/2024  -> gs://gcs@fastcopy/prod/2024
+            parts = [container]
+            if conn.get("prefix"):
+                parts.append(conn["prefix"].strip("/"))
+            if sub:
+                parts.append(sub.strip("/"))
+            loc = "/".join(p for p in parts if p)
+        elif sub:
+            # No default bucket → the subpath names the bucket[/key] itself.
+            loc = sub
+        else:
+            raise SystemExit(
+                f"Error: connection {name!r} has no default bucket/container. "
+                f"Use {ctype}://{name}@<bucket>/<key>, the {name}:<bucket>/<key> "
+                f"shorthand, or set a default bucket with: "
+                f"fast_copy.py creds edit {name}")
+        return f"{ctype}://{name}@{loc}", None
+    if ctype == "ssh":
+        path = sub if sub is not None else conn.get("path")
+        if not path:
+            raise SystemExit(f"Error: SSH connection {name!r} needs a path, "
+                             f"e.g. {name}:/remote/dir")
+        if not conn.get("host"):
+            raise SystemExit(f"Error: SSH connection {name!r} has no host.")
+        user = conn.get("user") or getpass.getuser()
+        new = f"{user}@{conn['host']}:{path}"
+        overrides = {"port": int(conn.get("port", 22)), "key": conn.get("key"),
+                     "password": conn.get("password")}
+        return new, overrides
+    return None, None
+
+
+def apply_named_endpoints(args):
+    """Rewrite args.source/args.destination when they name a saved connection,
+    routing any SSH credentials from the profile into the existing arg fields."""
+    # Only touch the credentials file when an endpoint actually looks like a
+    # profile name — keeps plain local/SSH copies prompt-free.
+    if not (_looks_like_profile_ref(args.source)
+            or _looks_like_profile_ref(args.destination)):
+        return
+    conns = _conns_for_named_endpoints(args)
+    if not conns:
+        return
+    new_src, src_over = resolve_named_endpoint(args.source, conns)
+    if new_src:
+        args.source = new_src
+        if src_over:
+            if args.src_port == 22 and src_over["port"]:
+                args.src_port = src_over["port"]
+            if not args.src_key and src_over["key"]:
+                args.src_key = src_over["key"]
+            if src_over["password"]:
+                args._resolved_src_password = src_over["password"]
+    new_dst, dst_over = resolve_named_endpoint(args.destination, conns)
+    if new_dst:
+        args.destination = new_dst
+        if dst_over:
+            if args.ssh_port == 22 and dst_over["port"]:
+                args.ssh_port = dst_over["port"]
+            if not args.ssh_key and dst_over["key"]:
+                args.ssh_key = dst_over["key"]
+            if dst_over["password"]:
+                args._resolved_dst_password = dst_over["password"]
+
+
+# ── Credentials file (named connections) ─────────────────────────────────────
+def default_credentials_path():
+    """Where the named-connection credentials file lives.
+
+    Resolution order:
+      1. $FAST_COPY_CREDENTIALS — explicit override (or --credentials-file).
+      2. An EXISTING credentials.json beside fast_copy.py — back-compat: older
+         versions always stored it there, so keep using it and never "lose"
+         creds on upgrade.
+      3. Otherwise, a NEW file goes to a per-user private location.
+
+    Why (3) differs by OS: on POSIX the script may sit in a shared, world-
+    readable dir (/usr/local/bin, an NFS mount, a repo checkout), which would
+    leave credentials.json world-readable unless manually chmod'd — so new files
+    default to ~/.config/fast_copy/ (honoring $XDG_CONFIG_HOME). On Windows we
+    stay beside the script on purpose: %APPDATA% is silently virtualized by the
+    Microsoft-Store Python sandbox, which hides where the file actually went."""
+    override = os.environ.get("FAST_COPY_CREDENTIALS")
+    if override:
+        return override
+    try:
+        script_dir = os.path.dirname(_get_self_path())
+    except Exception:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    legacy = os.path.join(script_dir, "credentials.json")
+    if os.path.isfile(legacy) or _system == "Windows":
+        return legacy
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "fast_copy", "credentials.json")
+
+
+def _perms_note(path):
+    """How the file is protected, phrased per-platform (the old '0600' message
+    was misleading on Windows, where POSIX modes don't apply)."""
+    if _system == "Windows":
+        return "hidden — view with: type \"%s\"  (attrib -h to unhide)" % path
+    return "0600"
+
+
+# ── Encryption-at-rest for the credentials file ──────────────────────────────
+# Confidentiality comes from a PASSPHRASE (env FAST_COPY_CREDS_PASSPHRASE or a
+# hidden prompt) → AES-256-GCM with an scrypt-derived key. The SHA-256 of this
+# fast_copy.py is bound in as the AEAD's associated data: a swapped/edited binary
+# is *detected* (tamper-evidence), but because the key is the passphrase — not
+# the hash — a legitimate update never locks you out; `creds rekey` re-binds.
+CREDS_MAGIC = "FC-CREDS-ENC-v1"
+# scrypt cost for the at-rest credentials key. N=2^17 follows OWASP guidance for
+# protecting *stored* secrets (the old 2^14 is only the interactive-login floor).
+# The chosen N/r/p are persisted in each envelope, so files written with any
+# prior cost still decrypt with their own parameters — only newly written files
+# use the stronger setting.
+_SCRYPT = {"n": 1 << 17, "r": 8, "p": 1}
+
+
+def _scrypt_maxmem(n, r):
+    # OpenSSL's default cap is 32 MB; scrypt needs ~128*n*r bytes. Give headroom.
+    return 128 * n * r * 2 + (1 << 20)
+
+
+def _self_hash():
+    """SHA-256 of the running fast_copy.py (best-effort; '' if unreadable)."""
+    try:
+        path = _get_self_path() if "_get_self_path" in globals() else os.path.abspath(__file__)
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+# Remembers the passphrase entered during a single run so one command that both
+# decrypts (to load) and re-encrypts (to save) only prompts once. Process-scoped
+# and in-memory only — never persisted. Held as a bytearray (not bytes) so it can
+# be overwritten on exit; see _zero_passphrase_cache.
+_creds_passphrase_cache = None
+
+
+def _zero_passphrase_cache():
+    """Best-effort wipe of the cached passphrase. CPython can't guarantee no
+    other copy lingers (str interning, allocator reuse), but overwriting the one
+    long-lived buffer we hold removes the obvious recoverable copy from a later
+    core dump or heap inspection."""
+    global _creds_passphrase_cache
+    buf = _creds_passphrase_cache
+    if isinstance(buf, bytearray):
+        for i in range(len(buf)):
+            buf[i] = 0
+    _creds_passphrase_cache = None
+
+
+atexit.register(_zero_passphrase_cache)
+
+
+def _scrub_passphrase_env():
+    """Move FAST_COPY_CREDS_PASSPHRASE out of os.environ into the in-process
+    cache, once, early. Every subprocess we spawn (chattr/setfacl/getfacl and
+    the inline ACL helpers) inherits os.environ, and none of them need the
+    passphrase — so removing it here stops the secret from fanning out into
+    their environments, where any same-UID process could read it via
+    /proc/<pid>/environ. Idempotent; safe to call more than once.
+
+    Caveat: this stops *inheritance* by children. It does not erase the value
+    from THIS process's /proc/self/environ — the kernel snapshots that at exec
+    and unsetenv() does not rewrite it. Closing that requires the caller not to
+    export the secret in the first place (use the interactive prompt)."""
+    global _creds_passphrase_cache
+    pw = os.environ.pop("FAST_COPY_CREDS_PASSPHRASE", None)
+    if pw and _creds_passphrase_cache is None:
+        _creds_passphrase_cache = bytearray(pw.encode("utf-8"))
+
+
+def _have_creds_passphrase():
+    """True when a passphrase is available without prompting — from the env var
+    (captured into the cache by _scrub_passphrase_env) or a prior prompt this
+    run. Use this instead of reading FAST_COPY_CREDS_PASSPHRASE directly, since
+    that env var is scrubbed at startup. Also tolerates the env var still being
+    present, in case scrubbing hasn't run yet (e.g. imported as a module)."""
+    return _creds_passphrase_cache is not None or \
+        bool(os.environ.get("FAST_COPY_CREDS_PASSPHRASE"))
+
+
+def _creds_passphrase(confirm=False):
+    global _creds_passphrase_cache
+    if _creds_passphrase_cache is None:
+        # Normally captured at startup; handle paths where that hasn't run.
+        _scrub_passphrase_env()
+    if _creds_passphrase_cache is not None:
+        return _creds_passphrase_cache  # from env, or already entered — don't re-ask
+    if not sys.stdin.isatty():
+        raise SystemExit("Error: encrypted credentials need a passphrase. Set "
+                         "FAST_COPY_CREDS_PASSPHRASE or run in a terminal.")
+    pw = getpass.getpass("  Credentials passphrase: ")
+    if confirm and pw != getpass.getpass("  Confirm passphrase: "):
+        raise SystemExit("Error: passphrases did not match.")
+    if not pw:
+        raise SystemExit("Error: empty passphrase.")
+    _creds_passphrase_cache = bytearray(pw.encode("utf-8"))
+    return _creds_passphrase_cache
+
+
+def _derive_key(passphrase, salt, n=None, r=None, p=None):
+    n = n or _SCRYPT["n"]
+    r = r or _SCRYPT["r"]
+    p = p or _SCRYPT["p"]
+    return hashlib.scrypt(passphrase, salt=salt, dklen=32, n=n, r=r, p=p,
+                          maxmem=_scrypt_maxmem(n, r))
+
+
+def encrypt_conns(conns, passphrase):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, nonce = os.urandom(16), os.urandom(12)
+    key = _derive_key(passphrase, salt)
+    binhash = _self_hash()
+    pt = json.dumps({"connections": conns}).encode("utf-8")
+    ct = AESGCM(key).encrypt(nonce, pt, binhash.encode("utf-8"))
+    env = {"magic": CREDS_MAGIC, "kdf": "scrypt", **_SCRYPT,
+           "salt": base64.b64encode(salt).decode(),
+           "nonce": base64.b64encode(nonce).decode(),
+           "binhash": binhash,
+           "ct": base64.b64encode(ct).decode()}
+    return json.dumps(env, indent=2).encode("utf-8")
+
+
+def _is_encrypted(raw):
+    try:
+        return json.loads(raw).get("magic") == CREDS_MAGIC
+    except (ValueError, AttributeError):
+        return False
+
+
+def _stored_binhash(raw):
+    """The bound-binary hash recorded in the envelope (plaintext AEAD AAD), or
+    '' if unreadable. Lets us check the binary binding without the passphrase."""
+    try:
+        return json.loads(raw).get("binhash", "") or ""
+    except (ValueError, AttributeError):
+        return ""
+
+
+def decrypt_conns(raw, passphrase):
+    """Returns (conns, stored_binhash). Raises SystemExit on bad passphrase."""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.exceptions import InvalidTag
+    except ImportError:
+        raise SystemExit("Error: encrypted credentials need the 'cryptography' "
+                         "package. Install: python -m pip install cryptography")
+    env = json.loads(raw)
+    salt = base64.b64decode(env["salt"])
+    key = _derive_key(passphrase, salt, n=env.get("n"), r=env.get("r"),
+                      p=env.get("p"))
+    try:
+        pt = AESGCM(key).decrypt(base64.b64decode(env["nonce"]),
+                                 base64.b64decode(env["ct"]),
+                                 env.get("binhash", "").encode("utf-8"))
+    except InvalidTag:
+        raise SystemExit("Error: wrong passphrase, or the credentials file was "
+                         "tampered with.")
+    return json.loads(pt)["connections"], env.get("binhash", "")
+
+
+def _set_hidden(path):
+    """Windows: set the HIDDEN attribute. Unix: file already lives in ~/.config
+    (a hidden dir); nothing extra needed."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            FILE_ATTRIBUTE_HIDDEN = 0x2
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+            if attrs != -1:
+                ctypes.windll.kernel32.SetFileAttributesW(
+                    path, attrs | FILE_ATTRIBUTE_HIDDEN)
+        except Exception:
+            pass
+
+
+def set_immutable(path, on):
+    """Toggle OS-level immutability. Returns (ok, message). NOTE: this is
+    tamper-resistance, not confidentiality, and is not absolute against root —
+    root can always reverse it. Setting it generally requires root/admin."""
+    sysname = platform.system()
+    try:
+        if sysname == "Linux":
+            import subprocess
+            r = subprocess.run(["chattr", "+i" if on else "-i", path],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                msg = (r.stderr.strip() or "chattr failed") + \
+                    " (needs root: try sudo, and an ext4/xfs/btrfs filesystem)"
+                return False, msg
+            return True, None
+        if sysname == "Darwin":
+            import subprocess
+            r = subprocess.run(["chflags", "uchg" if on else "nouchg", path],
+                               capture_output=True, text=True)
+            return (r.returncode == 0, r.stderr.strip() or None)
+        if sysname == "Windows":
+            import ctypes
+            RO = 0x1
+            a = ctypes.windll.kernel32.GetFileAttributesW(path)
+            if a == -1:
+                return False, "GetFileAttributes failed"
+            a = (a | RO) if on else (a & ~RO)
+            ok = ctypes.windll.kernel32.SetFileAttributesW(path, a)
+            return (bool(ok), None if ok else "SetFileAttributes failed "
+                    "(note: read-only is weak; admins override it)")
+        return False, f"immutability not supported on {sysname}"
+    except FileNotFoundError:
+        return False, "the immutability tool (chattr/chflags) is not installed"
+    except Exception as e:
+        return False, str(e)
+
+
+def _is_immutable(path):
+    """Best-effort check of the OS immutable attribute. Returns True only if we
+    can positively confirm it is set; False on any uncertainty (unsupported FS,
+    platform without a flag we can read, or error). Unlike the return value of
+    `set_immutable(on=False)`, this reflects the file's actual state — clearing
+    an already-clear flag 'succeeds' for any owner, so the unlock result can't
+    be used to tell whether the file was really protected."""
+    try:
+        if _system == "Linux":
+            import fcntl
+            import array
+            FS_IOC_GETFLAGS = 0x80086601
+            FS_IMMUTABLE_FL = 0x00000010
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            try:
+                buf = array.array("B", b"\x00" * 8)
+                fcntl.ioctl(fd, FS_IOC_GETFLAGS, buf, True)
+                return bool(int.from_bytes(buf, "little") & FS_IMMUTABLE_FL)
+            finally:
+                os.close(fd)
+        if _system == "Windows":
+            # No true immutability on Windows — set_immutable() approximates it
+            # with the read-only attribute, so mirror that here.
+            import ctypes
+            FILE_ATTRIBUTE_READONLY = 0x1
+            a = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+            return a != -1 and bool(a & FILE_ATTRIBUTE_READONLY)
+        # macOS/BSD surface immutability through stat flags.
+        st = os.lstat(path)
+        UF_IMMUTABLE, SF_IMMUTABLE = 0x00000002, 0x00020000
+        return bool(getattr(st, "st_flags", 0) & (UF_IMMUTABLE | SF_IMMUTABLE))
+    except Exception:
+        return False
+
+
+_tamper_warned = False  # one tamper-check Note per process (file is read twice)
+_creds_cache = {}       # realpath -> decrypted conns, this process only
+
+
+def load_credentials_file(path=None):
+    """Load {name: {type, ...}} connections. Returns {} if no file. Decrypts
+    transparently when the file is encrypted. Warns if perms are loose, or if
+    the bound binary hash no longer matches (tamper-evidence).
+
+    The result is memoized per resolved path for the life of the process: a
+    single run reads/decrypts the file at most once even though it's loaded
+    from several call sites (endpoint-name resolution, then the backend). Any
+    write through _save_credentials_file invalidates the cache."""
+    explicit = path is not None
+    path = path or default_credentials_path()
+    if not os.path.isfile(path):
+        if explicit:
+            print(f"  {C.YELLOW}Warning: credentials file not found: {path}{C.RESET}")
+        return {}
+    ckey = os.path.realpath(path)
+    if ckey in _creds_cache:
+        return _creds_cache[ckey]
+    if hasattr(os, "geteuid"):
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            if mode & (stat.S_IRWXG | stat.S_IRWXO):
+                print(f"  {C.YELLOW}Warning: {path} is group/world-accessible "
+                      f"(mode {oct(mode)}). Fix: chmod 600 {path}{C.RESET}")
+        except OSError:
+            pass
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        raise SystemExit(f"Error: cannot read credentials file {path}: {e}")
+    if _is_encrypted(raw):
+        # The bound-binary hash is stored in the envelope as plaintext (it's the
+        # AEAD associated data), so we can warn about a mismatch *before* asking
+        # for the passphrase — the prompt then has context, and the user can
+        # rekey instead of typing into an unexpectedly-rebound file.
+        cur = _self_hash()
+        stored = _stored_binhash(raw)
+        # The file is legitimately read more than once per run (endpoint-name
+        # resolution, then the backend), so warn at most once per process.
+        global _tamper_warned
+        if stored and cur and stored != cur and not _tamper_warned:
+            _tamper_warned = True
+            print(f"  {C.YELLOW}Note: this credentials file was bound to a "
+                  f"different fast_copy.py (tamper check). If you just updated, "
+                  f"run 'creds rekey' to re-bind.{C.RESET}")
+        conns, _ = decrypt_conns(raw, _creds_passphrase())
+        result = conns if isinstance(conns, dict) else {}
+        _creds_cache[ckey] = result
+        return result
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise SystemExit(f"Error: cannot parse credentials file {path}: {e}")
+    conns = data.get("connections", data) if isinstance(data, dict) else {}
+    if not isinstance(conns, dict):
+        raise SystemExit(f"Error: credentials file {path} has no 'connections' map.")
+    _creds_cache[ckey] = conns
+    return conns
+
+
+def resolve_connection(spec, args):
+    """Merge credentials for one cloud endpoint. Priority: a named connection
+    from the file (when 'name@' is used, or a connection literally named
+    'default' whose type matches) → overlaid by any explicit CLI flags. Returns
+    a dict the backend reads; empty dict means 'use flags/env as before'."""
+    name = spec.connection
+    explicit_file = getattr(args, "credentials_file", None)
+    # Only touch the credentials file when it's actually wanted. A named
+    # connection or an explicit --credentials-file → load it (decrypt/prompt as
+    # needed). Otherwise we only *peek* at a default-path file for a "default"
+    # connection — and if that file is encrypted with no passphrase available,
+    # skip it silently rather than forcing a prompt on an unrelated transfer.
+    conns = {}
+    if name or explicit_file:
+        conns = load_credentials_file(explicit_file)
+    elif os.path.isfile(default_credentials_path()):
+        if _file_is_encrypted(default_credentials_path()) and \
+                not _have_creds_passphrase():
+            conns = {}
+        else:
+            try:
+                conns = load_credentials_file(None)
+            except SystemExit:
+                conns = {}
+    creds = {}
+    if not name and "default" in conns and \
+            isinstance(conns["default"], dict) and \
+            conns["default"].get("type") == spec.scheme:
+        name = "default"
+    if name:
+        if name not in conns:
+            raise SystemExit(f"Error: no connection named {name!r} in the "
+                             f"credentials file.")
+        conn = conns[name]
+        ctype = conn.get("type")
+        if ctype and ctype != spec.scheme:
+            raise SystemExit(f"Error: connection {name!r} is type {ctype!r} but "
+                             f"the URL is {spec.scheme}://.")
+        creds = {k: v for k, v in conn.items() if k != "type"}
+    # Explicit flags override file values for this invocation.
+    flag_overlay = {
+        "s3": {"endpoint_url": getattr(args, "endpoint_url", None),
+               "region": getattr(args, "s3_region", None),
+               "profile": getattr(args, "s3_profile", None)},
+        "az": {"connection_string": getattr(args, "az_connection_string", None),
+               "account": getattr(args, "az_account", None),
+               "key": getattr(args, "az_key", None)},
+        "gs": {"project": getattr(args, "gcs_project", None),
+               "credentials": getattr(args, "gcs_credentials", None)},
+    }.get(spec.scheme, {})
+    for k, v in flag_overlay.items():
+        if v:
+            creds[k] = v
+    return creds
+
+
+CLOUD_SCHEME_NAMES = {"s3": "S3", "az": "Azure Blob", "gs": "Google Cloud Storage"}
+
+
+def _quote_rel(rel):
+    import urllib.parse
+    return urllib.parse.quote(rel, safe="")
+
+
+def _unquote_rel(val):
+    import urllib.parse
+    return urllib.parse.unquote(val)
+
+
+def build_object_meta(entry, hash_hex, preserve=None):
+    """fast-copy object metadata so a download restores the file faithfully and
+    cross-run dedup works without re-reading bytes. All keys lowercase (S3
+    lowercases user metadata regardless)."""
+    preserve = preserve or set()
+    meta = {
+        "fc_relpath": _quote_rel(entry.rel),
+        "fc_hash": hash_hex or "",
+        "fc_hash_algo": _hash_name,
+    }
+    try:
+        st = os.stat(entry.src)
+        meta["fc_mtime"] = repr(st.st_mtime)
+        meta["fc_mode"] = oct(stat.S_IMODE(st.st_mode))
+        if "owner" in preserve:
+            meta["fc_uid"] = str(getattr(st, "st_uid", 0))
+            meta["fc_gid"] = str(getattr(st, "st_gid", 0))
+    except OSError:
+        pass
+    return meta
+
+
+def apply_object_meta_local(local_path, meta):
+    """Restore mtime/mode (and owner when present + permitted) from object
+    metadata onto a freshly downloaded local file. Best-effort, single-line
+    warnings only."""
+    if not meta:
+        return
+    mode = meta.get("fc_mode")
+    if mode:
+        try:
+            os.chmod(local_path, int(mode, 8))
+        except (OSError, ValueError):
+            pass
+    mtime = meta.get("fc_mtime")
+    if mtime:
+        try:
+            t = float(mtime)
+            os.utime(local_path, (t, t))
+        except (OSError, ValueError):
+            pass
+    uid, gid = meta.get("fc_uid"), meta.get("fc_gid")
+    if uid and gid and hasattr(os, "chown"):
+        try:
+            os.chown(local_path, int(uid), int(gid))
+        except (OSError, ValueError, PermissionError):
+            pass
+
+
+# ── Backend base + provider implementations ─────────────────────────────────
+class CloudBackend:
+    """Common interface. Subclasses implement the primitives; the orchestrator
+    is provider-agnostic."""
+    scheme = ""
+
+    def __init__(self, spec, args, creds=None):
+        self.spec = spec
+        self.container = spec.container
+        self.prefix = spec.prefix
+        self.args = args
+        # Resolved credentials for this endpoint (from the credentials file /
+        # name@bucket / flags). Empty → backend falls back to env, as before.
+        self.creds = creds or {}
+
+    # discovery
+    def list_objects(self, prefix):
+        """Return {full_key: {'size': int}} for every object under prefix."""
+        raise NotImplementedError
+
+    def head(self, key):
+        """Return metadata dict for key, or None if it does not exist."""
+        raise NotImplementedError
+
+    # transfer
+    def upload(self, local_path, key, metadata):
+        raise NotImplementedError
+
+    def download(self, key, local_path):
+        """Download key to local_path; return its metadata dict."""
+        raise NotImplementedError
+
+    def server_side_copy(self, src_key, dst_key, metadata):
+        """Copy within the same container/account without round-tripping bytes."""
+        raise NotImplementedError
+
+    def join_key(self, prefix, rel):
+        rel = rel.replace(os.sep, "/")
+        if not prefix:
+            return rel
+        return prefix.rstrip("/") + "/" + rel
+
+
+class S3Backend(CloudBackend):
+    scheme = "s3"
+
+    def __init__(self, spec, args, creds=None):
+        super().__init__(spec, args, creds)
+        try:
+            import boto3
+            from botocore.config import Config
+        except ImportError:
+            raise SystemExit("Error: S3 transfers require boto3. "
+                             "Install with: python -m pip install boto3")
+        c = self.creds
+        session_kwargs = {}
+        if c.get("profile"):
+            session_kwargs["profile_name"] = c["profile"]
+        session = boto3.Session(**session_kwargs)
+        cfg = Config(signature_version="s3v4",
+                     retries={"max_attempts": 5, "mode": "standard"})
+        client_kwargs = {
+            "endpoint_url": c.get("endpoint_url"),
+            "region_name": c.get("region") or "us-east-1",
+            "config": cfg,
+        }
+        # Explicit keys from the credentials file (else boto3's default chain:
+        # env / ~/.aws / instance profile).
+        if c.get("access_key_id") and c.get("secret_access_key"):
+            client_kwargs["aws_access_key_id"] = c["access_key_id"]
+            client_kwargs["aws_secret_access_key"] = c["secret_access_key"]
+            if c.get("session_token"):
+                client_kwargs["aws_session_token"] = c["session_token"]
+        self.client = session.client("s3", **client_kwargs)
+
+    def list_objects(self, prefix):
+        out = {}
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.container, Prefix=prefix or ""):
+            for obj in page.get("Contents", []):
+                out[obj["Key"]] = {"size": obj["Size"]}
+        return out
+
+    def head(self, key):
+        try:
+            r = self.client.head_object(Bucket=self.container, Key=key)
+            return dict(r.get("Metadata", {}))
+        except Exception:
+            return None
+
+    def upload(self, local_path, key, metadata):
+        self.client.upload_file(
+            local_path, self.container, key,
+            ExtraArgs={"Metadata": metadata,
+                       "ChecksumAlgorithm": "SHA256"})
+
+    def download(self, key, local_path):
+        r = self.client.get_object(Bucket=self.container, Key=key)
+        body = r["Body"]
+        with open(local_path, "wb") as f:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                f.write(chunk)
+        return dict(r.get("Metadata", {}))
+
+    def server_side_copy(self, src_key, dst_key, metadata):
+        self.client.copy_object(
+            Bucket=self.container, Key=dst_key,
+            CopySource={"Bucket": self.container, "Key": src_key},
+            Metadata=metadata, MetadataDirective="REPLACE")
+
+
+class AzureBackend(CloudBackend):
+    scheme = "az"
+
+    def __init__(self, spec, args, creds=None):
+        super().__init__(spec, args, creds)
+        try:
+            from azure.storage.blob import BlobServiceClient
+        except ImportError:
+            raise SystemExit("Error: Azure transfers require azure-storage-blob. "
+                             "Install with: python -m pip install azure-storage-blob")
+        c = self.creds
+        conn = c.get("connection_string") \
+            or os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+        if conn:
+            self.service = BlobServiceClient.from_connection_string(conn)
+        else:
+            account = c.get("account") \
+                or os.environ.get("AZURE_STORAGE_ACCOUNT")
+            key = c.get("key") \
+                or os.environ.get("AZURE_STORAGE_KEY")
+            if not account:
+                raise SystemExit("Error: Azure needs --az-connection-string, or "
+                                 "--az-account (+ --az-key), or the "
+                                 "AZURE_STORAGE_* environment variables.")
+            url = f"https://{account}.blob.core.windows.net"
+            self.service = BlobServiceClient(account_url=url, credential=key)
+        self.cc = self.service.get_container_client(self.container)
+
+    def list_objects(self, prefix):
+        out = {}
+        for b in self.cc.list_blobs(name_starts_with=prefix or ""):
+            out[b.name] = {"size": b.size}
+        return out
+
+    def head(self, key):
+        try:
+            props = self.cc.get_blob_client(key).get_blob_properties()
+            return dict(props.metadata or {})
+        except Exception:
+            return None
+
+    def upload(self, local_path, key, metadata):
+        bc = self.cc.get_blob_client(key)
+        with open(local_path, "rb") as f:
+            bc.upload_blob(f, overwrite=True, metadata=metadata)
+
+    def download(self, key, local_path):
+        bc = self.cc.get_blob_client(key)
+        stream = bc.download_blob()
+        with open(local_path, "wb") as f:
+            stream.readinto(f)
+        try:
+            meta = dict(bc.get_blob_properties().metadata or {})
+        except Exception:
+            meta = {}
+        return meta
+
+    def server_side_copy(self, src_key, dst_key, metadata):
+        src = self.cc.get_blob_client(src_key)
+        dst = self.cc.get_blob_client(dst_key)
+        dst.start_copy_from_url(src.url, metadata=metadata)
+
+
+class GCSBackend(CloudBackend):
+    scheme = "gs"
+
+    def __init__(self, spec, args, creds=None):
+        super().__init__(spec, args, creds)
+        try:
+            from google.cloud import storage
+        except ImportError:
+            raise SystemExit("Error: GCS transfers require google-cloud-storage. "
+                             "Install with: python -m pip install google-cloud-storage")
+        c = self.creds
+        client_kwargs = {}
+        if c.get("project"):
+            client_kwargs["project"] = c["project"]
+        creds_path = c.get("credentials")
+        emulator = os.environ.get("STORAGE_EMULATOR_HOST")
+        if creds_path:
+            self.client = storage.Client.from_service_account_json(
+                creds_path, **client_kwargs)
+        elif emulator:
+            from google.auth.credentials import AnonymousCredentials
+            self.client = storage.Client(
+                credentials=AnonymousCredentials(),
+                client_options={"api_endpoint": emulator},
+                project=client_kwargs.get("project", "fast-copy"))
+        else:
+            self.client = storage.Client(**client_kwargs)
+        self.bucket = self.client.bucket(self.container)
+
+    def list_objects(self, prefix):
+        out = {}
+        for b in self.client.list_blobs(self.container, prefix=prefix or ""):
+            out[b.name] = {"size": b.size or 0}
+        return out
+
+    def head(self, key):
+        b = self.bucket.get_blob(key)
+        if b is None:
+            return None
+        return dict(b.metadata or {})
+
+    def upload(self, local_path, key, metadata):
+        blob = self.bucket.blob(key)
+        blob.metadata = metadata
+        blob.upload_from_filename(local_path)
+
+    def download(self, key, local_path):
+        blob = self.bucket.get_blob(key)
+        if blob is None:
+            raise FileNotFoundError(f"gs://{self.container}/{key}")
+        blob.download_to_filename(local_path)
+        return dict(blob.metadata or {})
+
+    def server_side_copy(self, src_key, dst_key, metadata):
+        src = self.bucket.blob(src_key)
+        new = self.bucket.copy_blob(src, self.bucket, dst_key)
+        if metadata:
+            new.metadata = metadata
+            new.patch()
+
+
+def make_backend(spec, args):
+    creds = resolve_connection(spec, args)
+    cls = {"s3": S3Backend, "az": AzureBackend, "gs": GCSBackend}[spec.scheme]
+    return cls(spec, args, creds)
+
+
+# ── creds manager:  fast_copy.py creds add|list|remove|test ──────────────────
+def _windows_clear_attrs(path):
+    """Clear HIDDEN/READONLY/SYSTEM on an existing file so a rewrite can open it.
+    On Windows, open(path,'wb') (CREATE_ALWAYS) FAILS with access-denied when the
+    target is hidden — so we must strip the attribute before overwriting."""
+    if _system != "Windows" or not os.path.exists(path):
+        return
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        a = ctypes.windll.kernel32.GetFileAttributesW(path)
+        if a != -1:
+            cleared = a & ~0x1 & ~0x2 & ~0x4  # READONLY, HIDDEN, SYSTEM
+            ctypes.windll.kernel32.SetFileAttributesW(
+                path, cleared or FILE_ATTRIBUTE_NORMAL)
+    except Exception:
+        pass
+
+
+def _entry_has_secret(c):
+    """True if a connection entry holds a secret VALUE in cleartext (not a mere
+    file-path reference). Used to warn before an unencrypted write. Note: an SSH
+    'key' is a private-key file *path* (not a secret here), unlike an Azure
+    'key' which is the account key itself."""
+    t = c.get("type")
+    if t == "s3":
+        return bool(c.get("secret_access_key"))
+    if t == "az":
+        return bool(c.get("connection_string") or c.get("key"))
+    if t == "ssh":
+        return bool(c.get("password"))
+    return False
+
+
+def _save_credentials_file(path, conns, encrypt=False):
+    """Write the connections file. encrypt=True → AES-256-GCM (prompts for the
+    passphrase). Always 0600 + hidden.
+
+    Auto-manages the immutable lock so a protected creds file stays protected
+    without a manual unlock/lock dance: every mutating op (add/edit/remove/
+    encrypt/decrypt/rekey) routes through here, so it transparently unlocks the
+    file, rewrites it, then re-locks it — and a freshly created file is locked
+    on first write. Best-effort, mirroring the audit log: where chattr/chflags
+    is unavailable, the FS can't do it, or we lack root, it degrades silently —
+    only warning if it had to remove protection it then couldn't restore.
+    Read-only ops (list/test) don't come through here — an immutable file is
+    still readable, so they need no unlock."""
+    # The on-disk file is changing; drop any memoized decryption so a later read
+    # in this same process sees the new contents (e.g. add → save → list).
+    _creds_cache.clear()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if encrypt:
+        blob = encrypt_conns(conns, _creds_passphrase(confirm=True))
+    else:
+        blob = json.dumps({"connections": conns}, indent=2).encode("utf-8")
+        if any(isinstance(c, dict) and _entry_has_secret(c)
+               for c in conns.values()):
+            print(f"  {C.YELLOW}Warning: writing credentials UNENCRYPTED to "
+                  f"{path} — passwords/keys are stored in cleartext, readable by "
+                  f"anyone who can read the file. Encrypt with: "
+                  f"fast_copy.py creds encrypt{C.RESET}", file=sys.stderr)
+
+    # Guard against a symlink before any chattr — set_immutable() follows
+    # symlinks, so a planted link could otherwise redirect the lock elsewhere.
+    try:
+        _lst = os.lstat(path)
+    except FileNotFoundError:
+        _lst = None
+    if _lst is not None and stat.S_ISLNK(_lst.st_mode):
+        raise SystemExit(f"Error: refusing to write {path}: it is a symlink.")
+    existed = _lst is not None
+    # Was the file actually protected before we touched it? Check the real flag
+    # (not the unlock return value — clearing an already-clear flag 'succeeds'
+    # for any owner). This is the only case where failing to re-lock below is a
+    # genuine regression worth warning about.
+    was_immutable = _is_immutable(path) if existed else False
+    if existed:
+        unlocked, _ = set_immutable(path, on=False)  # unlock so the rewrite proceeds
+        if was_immutable and not unlocked:
+            # A non-root user can't clear the immutable flag, so the rewrite
+            # below would fail with a cryptic EPERM and we'd point at
+            # 'creds unlock' — which also needs root, looping the user. Fail
+            # now with a command that actually works. The explicit path matters:
+            # under sudo the default-path lookup resolves to root's home, not
+            # this file.
+            raise SystemExit(
+                f"Error: {path} is immutable; clearing the lock needs root. "
+                f"Run: sudo fast_copy.py creds unlock {path}")
+
+    _windows_clear_attrs(path)  # else overwriting a hidden file fails on Windows
+    old = os.umask(0o077)  # owner-only from creation — no world-readable window
+    _imm = (f"Error: cannot write {path} — it may be immutable or read-only. "
+            f"Run: sudo fast_copy.py creds unlock {path}")
+    try:
+        if hasattr(os, "O_NOFOLLOW"):
+            # Refuse to write through a symlink (parity with the dedup DB), so a
+            # planted symlink at the creds path can't redirect the write.
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+                             | os.O_NOFOLLOW, 0o600)
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.EMLINK):
+                    raise SystemExit(f"Error: refusing to write {path}: it is a "
+                                     f"symlink.")
+                if isinstance(e, PermissionError):
+                    raise SystemExit(_imm)
+                raise
+            with os.fdopen(fd, "wb") as f:
+                f.write(blob)
+        else:
+            with open(path, "wb") as f:
+                f.write(blob)
+    except PermissionError:
+        raise SystemExit(_imm)
+    finally:
+        os.umask(old)
+
+    # Re-lock (or lock-on-first-write) so the file is immutable at rest. Quiet by
+    # design: confirm on success, warn ONLY if we removed protection and then
+    # couldn't restore it, and stay silent in the benign "can't lock here" case
+    # (non-root or a FS without immutability, where nothing was protected).
+    ok, msg = set_immutable(path, on=True)
+    if ok:
+        print(f"  {C.DIM}creds: {'locked' if not existed else 're-locked'} "
+              f"(immutable){C.RESET}")
+    elif was_immutable:
+        print(f"  {C.YELLOW}creds: WARNING — {path} was immutable but could not "
+              f"be re-locked ({msg or 'unknown error'}). Run 'sudo fast_copy.py "
+              f"creds lock' to restore protection.{C.RESET}", file=sys.stderr)
+    if hasattr(os, "chmod"):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    _set_hidden(path)
+
+
+def _file_is_encrypted(path):
+    try:
+        with open(path, "rb") as f:
+            return _is_encrypted(f.read())
+    except OSError:
+        return False
+
+
+def _mask(v):
+    if not v:
+        return ""
+    return (v[:3] + "…") if len(v) > 6 else "***"
+
+
+def _prompt_secret(prompt):
+    """Read a secret from the terminal, echoing '*' per character so you get
+    length feedback while typing without exposing the value (getpass shows
+    nothing at all). Backspace erases the last character. Falls back to getpass
+    (no echo) when stdin isn't a real TTY or the terminal can't be put into raw
+    mode — so pipes, CI, and odd terminals keep working unchanged."""
+    if not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    try:
+        if _system == "Windows":
+            import msvcrt
+            sys.stdout.write(prompt); sys.stdout.flush()
+            buf = []
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    break
+                if ch == "\x03":               # Ctrl-C
+                    raise KeyboardInterrupt
+                if ch in ("\x00", "\xe0"):     # function/arrow key: drop 2nd byte
+                    msvcrt.getwch()
+                elif ch == "\b":               # backspace
+                    if buf:
+                        buf.pop(); sys.stdout.write("\b \b")
+                else:
+                    buf.append(ch); sys.stdout.write("*")
+                sys.stdout.flush()
+            sys.stdout.write("\n"); sys.stdout.flush()
+            return "".join(buf)
+        import termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        sys.stdout.write(prompt); sys.stdout.flush()
+        buf = []
+        try:
+            tty.setraw(fd)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch in ("\r", "\n", ""):     # Enter or EOF ends input
+                    break
+                if ch == "\x03":               # raw mode delivers Ctrl-C as a byte
+                    raise KeyboardInterrupt
+                if ch in ("\x7f", "\b"):       # backspace / delete
+                    if buf:
+                        buf.pop(); sys.stdout.write("\b \b"); sys.stdout.flush()
+                    continue
+                buf.append(ch); sys.stdout.write("*"); sys.stdout.flush()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            sys.stdout.write("\n"); sys.stdout.flush()
+        return "".join(buf)
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        # Any terminal-control hiccup → degrade to a plain no-echo prompt.
+        return getpass.getpass(prompt)
+
+
+def creds_manager(argv):
+    """Handle `fast_copy.py creds <sub> [name] [path]`. Returns an exit code."""
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print("Usage: fast_copy.py creds <sub> [NAME] [FILE]\n"
+              "  list                       show connections (secrets masked)\n"
+              "  add NAME [-y]              add a connection (s3/azure/gcs/ssh,\n"
+              "                             interactive; prompts before overwrite,\n"
+              "                             -y/--force to skip)\n"
+              "  edit NAME                  edit a connection (Enter keeps current,\n"
+              "                             '-' clears an optional field)\n"
+              "  remove NAME                delete a connection\n"
+              "  test NAME                  live connection check (cloud or ssh)\n"
+              "  encrypt | decrypt          toggle AES-256-GCM encryption at rest\n"
+              "  rekey                      re-bind an encrypted file to this binary\n"
+              "  lock | unlock              set/clear OS immutability (needs root)\n"
+              "  --use-sudo                 re-exec under sudo (e.g. for lock/\n"
+              "                             unlock, which need root for chattr)\n"
+              f"  Default file: {default_credentials_path()}\n"
+              "  Passphrase: env FAST_COPY_CREDS_PASSPHRASE or a hidden prompt.\n"
+              "  Note: on Linux, FAST_COPY_CREDS_PASSPHRASE is readable from\n"
+              "  /proc/<pid>/environ by same-UID processes; prefer the hidden\n"
+              "  prompt on shared/multi-user hosts.")
+        return 0
+    sub = argv[0]
+    # Separate options from positionals so a flag (e.g. --use-sudo) is never
+    # mistaken for the NAME or FILE positional. Only a small set of flags is
+    # valid here; reject anything else instead of silently treating it as a path.
+    opts = argv[1:]
+    force = any(a in ("-y", "--yes", "--force") for a in opts)
+    known = ("-y", "--yes", "--force", "--use-sudo")
+    unknown = [a for a in opts if a.startswith("-") and a not in known]
+    if unknown:
+        print(f"{C.RED}Error: unknown option for 'creds {sub}': "
+              f"{' '.join(unknown)}. Valid flags: -y/--force, --use-sudo. "
+              f"NAME and FILE are positional.{C.RESET}", file=sys.stderr)
+        return 2
+    positionals = [a for a in opts if not a.startswith("-")]
+    # list/encrypt/decrypt/rekey/lock/unlock take only an optional FILE;
+    # add/remove/test take NAME [FILE].
+    if sub in ("list", "encrypt", "decrypt", "rekey", "lock", "unlock"):
+        name = None
+        path = positionals[0] if positionals else default_credentials_path()
+    else:
+        name = positionals[0] if positionals else None
+        path = positionals[1] if len(positionals) > 1 else default_credentials_path()
+    encrypted = _file_is_encrypted(path) if os.path.isfile(path) else False
+    conns = load_credentials_file(path) if os.path.isfile(path) else {}
+
+    if sub == "list":
+        if not conns:
+            print(f"  No connections in {path}")
+            return 0
+        print(f"  Connections in {path}:")
+        for n, c in sorted(conns.items()):
+            t = c.get("type", "?")
+            if t == "s3":
+                extra = f"endpoint={c.get('endpoint_url') or 'AWS'} key={_mask(c.get('access_key_id'))}"
+            elif t == "az":
+                extra = (f"conn={_mask(c.get('connection_string'))}"
+                         if c.get("connection_string")
+                         else f"account={c.get('account')} key={_mask(c.get('key'))}")
+            elif t == "gs":
+                extra = f"project={c.get('project')} creds={c.get('credentials') or 'ADC'}"
+            elif t == "ssh":
+                auth = (f"key={c.get('key')}" if c.get("key")
+                        else "password=***" if c.get("password") else "agent")
+                extra = f"{c.get('user')}@{c.get('host')}:{c.get('port', 22)} {auth}"
+                if c.get("path"):
+                    extra += f" path={c.get('path')}"
+            else:
+                extra = ""
+            if t in ("s3", "az", "gs") and c.get("container"):
+                extra += f" default={c.get('container')}"
+                if c.get("prefix"):
+                    extra += "/" + c.get("prefix").strip("/")
+            print(f"    {C.BOLD}{n}{C.RESET}  [{t}]  {extra}")
+        return 0
+
+    if sub == "remove":
+        if not name or name not in conns:
+            print(f"{C.RED}Error: no connection named {name!r} in {path}{C.RESET}")
+            return 1
+        del conns[name]
+        _save_credentials_file(path, conns, encrypt=encrypted)
+        print(f"  Removed connection {name!r}.")
+        return 0
+
+    if sub == "add":
+        if not name:
+            print(f"{C.RED}Error: 'creds add' needs a connection name.{C.RESET}")
+            return 1
+        t = (input("  Type [s3/azure/gcs/ssh]: ").strip() or "s3").lower()
+        t = {"azure": "az", "gcs": "gs", "s3": "s3", "az": "az", "gs": "gs",
+             "ssh": "ssh", "sftp": "ssh"}.get(t)
+        if t not in ("s3", "az", "gs", "ssh"):
+            print(f"{C.RED}Error: type must be s3, azure, gcs, or ssh.{C.RESET}")
+            return 1
+        entry = {"type": t}
+        if t == "s3":
+            ep = input("  Endpoint URL (blank = AWS): ").strip()
+            if ep:
+                entry["endpoint_url"] = ep
+            entry["access_key_id"] = input("  Access key ID: ").strip()
+            entry["secret_access_key"] = _prompt_secret("  Secret access key: ")
+            region = input("  Region [us-east-1]: ").strip()
+            if region:
+                entry["region"] = region
+        elif t == "az":
+            cs = _prompt_secret("  Connection string (blank to use account+key): ")
+            if cs:
+                entry["connection_string"] = cs
+            else:
+                entry["account"] = input("  Account name: ").strip()
+                entry["key"] = _prompt_secret("  Account key: ")
+        elif t == "gs":
+            entry["project"] = input("  GCP project id: ").strip()
+            cp = input("  Service-account JSON path (blank = ADC): ").strip()
+            if cp:
+                entry["credentials"] = cp
+        elif t == "ssh":
+            entry["host"] = input("  Host (name or IP): ").strip()
+            if not entry["host"]:
+                print(f"{C.RED}Error: SSH connection needs a host.{C.RESET}")
+                return 1
+            u = input(f"  User [{getpass.getuser()}]: ").strip()
+            entry["user"] = u or getpass.getuser()
+            p = input("  Port [22]: ").strip()
+            if p:
+                try:
+                    entry["port"] = int(p)
+                except ValueError:
+                    print(f"{C.RED}Error: port must be a number.{C.RESET}")
+                    return 1
+            key = input("  Private key path (blank for password/agent): ").strip()
+            if key:
+                entry["key"] = key
+            else:
+                pw = _prompt_secret("  Password (blank = use SSH agent/keys): ")
+                if pw:
+                    entry["password"] = pw
+            dp = input("  Default remote path (blank = none): ").strip()
+            if dp:
+                entry["path"] = dp
+        if t in ("s3", "az", "gs"):
+            # A default bucket/container lets you copy to just `name` (no URL).
+            cword = "container" if t == "az" else "bucket"
+            dc = input(f"  Default {cword} (blank = none): ").strip()
+            if dc:
+                entry["container"] = dc
+                pf = input("  Default prefix inside it (blank = none): ").strip()
+                if pf:
+                    entry["prefix"] = pf
+        # Guard against silently clobbering an existing connection of the same
+        # name (the classic "second profile overwrote my first" surprise).
+        if name in conns and not force:
+            if not sys.stdin.isatty():
+                print(f"{C.RED}Error: connection {name!r} already exists. "
+                      f"Pass --force to overwrite.{C.RESET}")
+                return 1
+            ex = conns[name].get("type", "?")
+            ans = input(f"  {C.YELLOW}Connection {name!r} already exists "
+                        f"(type={ex}). Overwrite? [y/N]: {C.RESET}").strip().lower()
+            if ans not in ("y", "yes"):
+                print("  Aborted — existing connection kept.")
+                return 0
+        # First time this file is created → offer encryption up front, so
+        # secrets aren't written in plaintext by default. Existing files keep
+        # whatever state they already have.
+        if not os.path.isfile(path):
+            if _have_creds_passphrase():
+                encrypted = True  # a passphrase is already provided → encrypt
+            else:
+                ans = input("  Encrypt this new credentials file with a "
+                            "passphrase? [Y/n]: ").strip().lower()
+                encrypted = ans in ("", "y", "yes")
+        conns[name] = entry
+        _save_credentials_file(path, conns, encrypt=encrypted)  # prompts if encrypting
+        enc_note = ", encrypted" if encrypted else ""
+        print(f"  {C.GREEN}✓ Saved connection {name!r} to {path} "
+              f"({_perms_note(path)}{enc_note}){C.RESET}")
+        return 0
+
+    if sub == "edit":
+        if not name or name not in conns:
+            print(f"{C.RED}Error: no connection named {name!r} in {path}{C.RESET}")
+            return 1
+        if not sys.stdin.isatty():
+            print(f"{C.RED}Error: 'creds edit' is interactive; run it in a "
+                  f"terminal (or use 'creds add {name} --force').{C.RESET}")
+            return 1
+        cur = conns[name]
+        t = cur.get("type")
+        print(f"  Editing {name!r} (type={t}). Enter = keep current; type a new "
+              f"value to change; '-' to clear an optional field.")
+
+        def ask(label, current, secret=False):
+            if secret:
+                shown = "set" if current else "unset"
+                v = getpass.getpass(f"  {label} [{shown}]: ")
+            else:
+                v = input(f"  {label} [{current if current not in (None, '') else '—'}]: ").strip()
+            if v == "":
+                return current      # keep
+            if v == "-":
+                return None         # clear
+            return v
+
+        entry = {"type": t}
+
+        def setif(k, v):
+            if v not in (None, ""):
+                entry[k] = v
+
+        if t == "s3":
+            setif("endpoint_url", ask("Endpoint URL (blank=AWS)", cur.get("endpoint_url")))
+            setif("access_key_id", ask("Access key ID", cur.get("access_key_id")))
+            setif("secret_access_key", ask("Secret access key", cur.get("secret_access_key"), secret=True))
+            setif("region", ask("Region", cur.get("region")))
+        elif t == "az":
+            cs = ask("Connection string", cur.get("connection_string"), secret=True)
+            if cs:
+                setif("connection_string", cs)
+            else:
+                setif("account", ask("Account name", cur.get("account")))
+                setif("key", ask("Account key", cur.get("key"), secret=True))
+        elif t == "gs":
+            setif("project", ask("GCP project id", cur.get("project")))
+            setif("credentials", ask("Service-account JSON path (blank=ADC)", cur.get("credentials")))
+        elif t == "ssh":
+            setif("host", ask("Host", cur.get("host")))
+            setif("user", ask("User", cur.get("user")))
+            port = ask("Port", cur.get("port", 22))
+            if port not in (None, ""):
+                try:
+                    entry["port"] = int(port)
+                except (ValueError, TypeError):
+                    print(f"{C.RED}Error: port must be a number.{C.RESET}")
+                    return 1
+            setif("key", ask("Private key path", cur.get("key")))
+            setif("password", ask("Password", cur.get("password"), secret=True))
+            setif("path", ask("Default remote path", cur.get("path")))
+        else:
+            print(f"{C.RED}Error: connection {name!r} has an unknown type {t!r}.{C.RESET}")
+            return 1
+
+        if t in ("s3", "az", "gs"):
+            cword = "container" if t == "az" else "bucket"
+            setif("container", ask(f"Default {cword}", cur.get("container")))
+            if entry.get("container"):
+                setif("prefix", ask("Default prefix inside it", cur.get("prefix")))
+
+        conns[name] = entry
+        _save_credentials_file(path, conns, encrypt=encrypted)
+        enc_note = ", encrypted" if encrypted else ""
+        print(f"  {C.GREEN}✓ Updated connection {name!r} in {path} "
+              f"({_perms_note(path)}{enc_note}){C.RESET}")
+        return 0
+
+    if sub == "test":
+        if not name or name not in conns:
+            print(f"{C.RED}Error: no connection named {name!r} in {path}{C.RESET}")
+            return 1
+        scheme = conns[name].get("type")
+        if scheme == "ssh":
+            c = conns[name]
+            spec = RemoteSpec(user=c.get("user") or getpass.getuser(),
+                              host=c.get("host"), port=int(c.get("port", 22)),
+                              path=c.get("path", ""))
+            ssh = None
+            try:
+                ssh = SSHConnection(spec, port=spec.port, key_path=c.get("key"),
+                                    password=c.get("password")).connect()
+                ssh.exec_cmd("true")
+            except Exception as e:
+                print(f"  {C.RED}✗ {name}: connection failed — {e}{C.RESET}")
+                return 1
+            finally:
+                if ssh:
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+            print(f"  {C.GREEN}✓ {name}: SSH connection OK "
+                  f"({spec.user}@{spec.host}:{spec.port}){C.RESET}")
+            return 0
+        if scheme not in ("s3", "az", "gs"):
+            print(f"{C.RED}Error: connection {name!r} has no valid type.{C.RESET}")
+            return 1
+        probe_args = argparse.Namespace(credentials_file=path)
+        spec = CloudSpec(scheme=scheme, container="_fc_probe_", prefix="",
+                         connection=name)
+        try:
+            b = make_backend(spec, probe_args)
+            if scheme == "s3":
+                b.client.list_buckets()
+            elif scheme == "az":
+                b.service.get_service_properties()
+            elif scheme == "gs":
+                next(iter(b.client.list_buckets(page_size=1)), None)
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"  {C.RED}✗ {name}: connection failed — {e}{C.RESET}")
+            return 1
+        print(f"  {C.GREEN}✓ {name}: connection OK{C.RESET}")
+        return 0
+
+    if sub == "encrypt":
+        if not os.path.isfile(path):
+            print(f"{C.RED}Error: no credentials file at {path}{C.RESET}")
+            return 1
+        if encrypted:
+            print(f"  {path} is already encrypted.")
+            return 0
+        _save_credentials_file(path, conns, encrypt=True)  # prompts (confirm)
+        print(f"  {C.GREEN}✓ Encrypted {path} (AES-256-GCM, bound to this "
+              f"fast_copy.py).{C.RESET}")
+        return 0
+
+    if sub == "decrypt":
+        if not encrypted:
+            print(f"  {path} is not encrypted.")
+            return 0
+        _save_credentials_file(path, conns, encrypt=False)  # conns already decrypted
+        print(f"  {C.GREEN}✓ Decrypted {path} (now plaintext, 0600).{C.RESET}")
+        return 0
+
+    if sub == "rekey":
+        if not encrypted:
+            print(f"{C.RED}Error: {path} is not encrypted; nothing to rekey.{C.RESET}")
+            return 1
+        _save_credentials_file(path, conns, encrypt=True)  # re-binds to current hash
+        print(f"  {C.GREEN}✓ Re-bound {path} to this fast_copy.py.{C.RESET}")
+        return 0
+
+    if sub in ("lock", "unlock"):
+        if not os.path.isfile(path):
+            print(f"{C.RED}Error: no credentials file at {path}{C.RESET}")
+            return 1
+        want = (sub == "lock")
+        state = "immutable" if want else "writable"
+        # Short-circuit if it's already in the requested state — avoids a
+        # misleading "✓ now writable" on a file that was never locked, and a
+        # needless (possibly failing) chattr on an already-locked one.
+        if _is_immutable(path) == want:
+            print(f"  {C.DIM}{path} is already {state}; nothing to do.{C.RESET}")
+            return 0
+        ok, msg = set_immutable(path, on=want)
+        if ok:
+            print(f"  {C.GREEN}✓ {path} is now {state}.{C.RESET}")
+            if want:
+                print(f"  {C.DIM}Note: tamper-resistance only — root can reverse "
+                      f"it. Run 'creds unlock' before editing.{C.RESET}")
+            return 0
+        print(f"  {C.RED}✗ could not {sub}: {msg}{C.RESET}")
+        return 1
+
+    print(f"{C.RED}Error: unknown creds subcommand {sub!r}{C.RESET}")
+    return 1
+
+
+def _cloud_hash_entries(entries, threads):
+    """Hash a list of FileEntry locally (parallel). Returns {rel: hash}."""
+    import concurrent.futures
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+        futs = {ex.submit(hash_file, e.src): e for e in entries}
+        for fut in concurrent.futures.as_completed(futs):
+            e = futs[fut]
+            try:
+                results[e.rel] = fut.result()
+            except Exception:
+                results[e.rel] = None
+    return results
+
+
+def run_cloud_transfer(args):
+    """Top-level driver for any transfer where the source or destination is an
+    object-storage URL. Handles upload, download, and cloud-to-cloud."""
+    if getattr(args, "extra_sources", None):
+        print(f"{C.RED}Error: object-storage transfers take a single source "
+              f"(got {len(args.extra_sources) + 1}). Point one source at a "
+              f"common parent, or run separate copies.{C.RESET}")
+        sys.exit(1)
+    src_spec = parse_cloud_url(args.source)
+    dst_spec = parse_cloud_url(args.destination)
+    if src_spec and dst_spec:
+        return _cloud_to_cloud(args, src_spec, dst_spec)
+    if dst_spec:
+        return _upload_to_cloud(args, dst_spec)
+    return _download_from_cloud(args, src_spec)
+
+
+def _preserve_set(args):
+    val = (args.preserve or "")
+    if val == "all":
+        return {"mode", "times", "owner", "xattr", "acl"}
+    if val == "none":
+        return set()
+    return set(t.strip() for t in val.split(",") if t.strip())
+
+
+def _upload_to_cloud(args, dst_spec):
+    backend = make_backend(dst_spec, args)
+    pretty = CLOUD_SCHEME_NAMES[dst_spec.scheme]
+    banner(f"UPLOAD → {pretty}")
+    print(f"  Source:  {C.BOLD}{args.source}{C.RESET}")
+    print(f"  Dest:    {C.BOLD}{dst_spec.scheme}://{dst_spec.container}/"
+          f"{dst_spec.prefix}{C.RESET}")
+
+    src = os.path.abspath(args.source)
+    if not os.path.exists(src):
+        print(f"\n{C.RED}Error: source not found: {args.source}{C.RESET}")
+        sys.exit(1)
+    # A single file uploads under <prefix>/<basename>; a directory mirrors the
+    # tree (cp/SSH-backend semantics).
+    if os.path.isfile(src):
+        entries = [FileEntry(src=src, rel=os.path.basename(src),
+                             size=os.path.getsize(src), physical_offset=0,
+                             content_hash=None)]
+    else:
+        entries, scan_errors = scan_source(src, None, args.exclude)
+        print()
+        if scan_errors:
+            print(f"  {C.YELLOW}{len(scan_errors)} file(s) could not be read "
+                  f"and were skipped.{C.RESET}")
+    if not entries:
+        print(f"  {C.YELLOW}Nothing to upload.{C.RESET}")
+        return
+
+    preserve = _preserve_set(args)
+    total_bytes = sum(e.size for e in entries)
+    print(f"  Files:   {C.BOLD}{len(entries)}{C.RESET}  "
+          f"({fmt_size(total_bytes)})")
+
+    # Hash for verification + dedup (skip when dedup and verify both off).
+    hashes = {}
+    if not args.no_dedup or not args.no_verify:
+        print(f"  {C.DIM}Hashing {len(entries)} files...{C.RESET}")
+        hashes = _cloud_hash_entries(entries, args.threads)
+
+    # Classify every entry BEFORE any network I/O so the parallel phases below
+    # run without races. A duplicate is server-side-copied FROM its primary's
+    # object, so all primaries must land first (Phase A) before any copy runs
+    # (Phase B). first_key_for_hash is built here, single-threaded, so the
+    # primary/duplicate decision is deterministic and lock-free.
+    first_key_for_hash = {}
+    uploaded = copied = skipped = errors = 0
+    bytes_uploaded = bytes_deduped = 0
+
+    # Cross-run dedup: read fc-hash from a manifest if present.
+    manifest = {}
+    if not args.no_cache:
+        manifest = _load_cloud_manifest(backend, dst_spec.prefix)
+
+    new_manifest = {}
+    primaries = []          # (entry, key, meta) — upload the bytes
+    dups = []               # (entry, src_key, key, meta) — server-side copy
+    skip_bytes = 0
+    for e in entries:
+        key = backend.join_key(dst_spec.prefix, e.rel)
+        h = hashes.get(e.rel)
+        new_manifest[e.rel] = {"size": e.size, "hash": h}
+
+        # Cross-run skip: same relpath + same hash already in the bucket.
+        prev = manifest.get(e.rel)
+        if (not args.overwrite and prev and h and prev.get("hash") == h):
+            skipped += 1
+            skip_bytes += e.size
+            continue
+
+        meta = build_object_meta(e, h, preserve)
+        if h and not args.no_dedup and h in first_key_for_hash:
+            dups.append((e, first_key_for_hash[h], key, meta))
+        else:
+            primaries.append((e, key, meta))
+            if h and not args.no_dedup:
+                first_key_for_hash[h] = key
+
+    prog = Progress(total_bytes, len(entries))
+    if skipped:
+        prog.update(skip_bytes, skipped)
+        prog.display()
+
+    lock = threading.Lock()
+
+    def _do_upload(item):
+        nonlocal uploaded, bytes_uploaded, errors
+        e, key, meta = item
+        try:
+            if not args.dry_run:
+                backend.upload(e.src, key, meta)
+            with lock:
+                uploaded += 1
+                bytes_uploaded += e.size
+                prog.update(e.size, 1)
+                prog.display()
+        except Exception as ex:
+            with lock:
+                errors += 1
+                print(f"\n  {C.RED}Error uploading {e.rel}: {ex}{C.RESET}")
+                prog.update(e.size, 1)
+                prog.display()
+
+    def _do_copy(item):
+        nonlocal copied, bytes_deduped, errors
+        e, src_key, key, meta = item
+        try:
+            if not args.dry_run:
+                backend.server_side_copy(src_key, key, meta)
+            with lock:
+                copied += 1
+                bytes_deduped += e.size
+                prog.update(e.size, 1)
+                prog.display()
+        except Exception as ex:
+            with lock:
+                errors += 1
+                print(f"\n  {C.RED}Error copying {e.rel}: {ex}{C.RESET}")
+                prog.update(e.size, 1)
+                prog.display()
+
+    workers = max(1, args.cloud_concurrency)
+    # Phase A — upload primaries in parallel (moves the bytes).
+    if primaries:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(as_completed([pool.submit(_do_upload, it) for it in primaries]))
+    # Phase B — server-side-copy duplicates in parallel; primaries now exist.
+    if dups:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(as_completed([pool.submit(_do_copy, it) for it in dups]))
+    prog.finish()
+
+    if not args.dry_run and not args.no_cache:
+        _save_cloud_manifest(backend, dst_spec.prefix, new_manifest)
+
+    # Verify: HEAD a sample and confirm fc-hash matches what we computed.
+    if not args.dry_run and not args.no_verify and uploaded:
+        _verify_uploads(backend, dst_spec.prefix, entries, hashes)
+
+    banner("DONE")
+    print(f"  Uploaded: {C.BOLD}{uploaded}{C.RESET} new  "
+          f"({fmt_size(bytes_uploaded)})")
+    if copied:
+        print(f"  Deduped:  {C.BOLD}{copied}{C.RESET} via server-side copy  "
+              f"({C.GREEN}{fmt_size(bytes_deduped)} bandwidth saved{C.RESET})")
+    if skipped:
+        print(f"  Skipped:  {C.BOLD}{skipped}{C.RESET} unchanged (cross-run)")
+    if errors:
+        print(f"  {C.RED}Errors:   {errors}{C.RESET}")
+    if args.dry_run:
+        print(f"  {C.YELLOW}(dry run — nothing uploaded){C.RESET}")
+    if args.log_file:
+        write_log_file(args.log_file, {
+            "source": args.source, "destination": args.destination,
+            "mode": f"upload_{dst_spec.scheme}", "total_files": len(entries),
+            "copied": uploaded, "linked": copied, "skipped": skipped,
+            "errors": errors, "total_bytes": total_bytes,
+            "bytes_written": bytes_uploaded, "dedup_saved": bytes_deduped,
+            "hash_algo": _hash_name,
+        })
+    if errors:
+        sys.exit(1)
+
+
+def _download_from_cloud(args, src_spec):
+    backend = make_backend(src_spec, args)
+    pretty = CLOUD_SCHEME_NAMES[src_spec.scheme]
+    banner(f"DOWNLOAD ← {pretty}")
+    print(f"  Source:  {C.BOLD}{src_spec.scheme}://{src_spec.container}/"
+          f"{src_spec.prefix}{C.RESET}")
+    print(f"  Dest:    {C.BOLD}{args.destination}{C.RESET}")
+
+    objects = backend.list_objects(src_spec.prefix)
+    # Never download our own manifest.
+    objects = {k: v for k, v in objects.items()
+               if not k.endswith(CLOUD_MANIFEST_NAME)}
+    if not objects:
+        print(f"  {C.YELLOW}No objects found under that prefix.{C.RESET}")
+        return
+
+    dst_root = os.path.abspath(args.destination)
+    prefix = src_spec.prefix.rstrip("/")
+    total_bytes = sum(v["size"] for v in objects.values())
+    print(f"  Objects: {C.BOLD}{len(objects)}{C.RESET}  ({fmt_size(total_bytes)})")
+
+    downloaded = skipped = errors = verified_fail = 0
+    real_root = os.path.realpath(dst_root)
+    prog = Progress(total_bytes, len(objects))
+    lock = threading.Lock()
+
+    # No dedup ordering on the way down, so every object is independent — one
+    # flat parallel pool. os.makedirs(exist_ok=True) is safe under concurrency.
+    def _do_download(item):
+        nonlocal downloaded, errors, verified_fail
+        key, info = item
+        # Map key → local relative path. Prefer fc-relpath metadata when present.
+        rel = key[len(prefix):].lstrip("/") if prefix and key.startswith(prefix) else key
+        rel = rel.lstrip("/")
+        if not rel:
+            rel = key.rsplit("/", 1)[-1]
+        # A remote bucket is untrusted: its keys/metadata can attempt traversal.
+        # _safe_local_dest returns None for '..'/absolute/symlink-escape paths.
+        local_path = _safe_local_dest(real_root, rel)
+        if local_path is None:
+            with lock:
+                errors += 1
+                print(f"\n  {C.RED}Skipping unsafe key: {key}{C.RESET}")
+                prog.update(info["size"], 1); prog.display()
+            return
+        try:
+            os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+            if args.dry_run:
+                with lock:
+                    prog.update(info["size"], 1); prog.display()
+                return
+            meta = backend.download(key, local_path)
+            # If the object recorded its original relpath, honor it (rename) —
+            # but only if it, too, stays safely inside the destination.
+            recorded = meta.get("fc_relpath")
+            if recorded:
+                want = _unquote_rel(recorded)
+                want_path = _safe_local_dest(real_root, want)
+                if want_path is not None \
+                        and os.path.abspath(want_path) != os.path.abspath(local_path):
+                    os.makedirs(os.path.dirname(want_path) or ".", exist_ok=True)
+                    os.replace(local_path, want_path)
+                    local_path = want_path
+            apply_object_meta_local(local_path, meta)
+            # Verify: re-hash and compare to stored fc-hash (same algo only).
+            vfail = False
+            if not args.no_verify:
+                want_hash = meta.get("fc_hash")
+                if want_hash and meta.get("fc_hash_algo") == _hash_name:
+                    vfail = hash_file(local_path) != want_hash
+            with lock:
+                if vfail:
+                    verified_fail += 1
+                    print(f"\n  {C.RED}VERIFY FAILED: {rel}{C.RESET}")
+                downloaded += 1
+                prog.update(info["size"], 1); prog.display()
+        except Exception as ex:
+            with lock:
+                errors += 1
+                print(f"\n  {C.RED}Error downloading {key}: {ex}{C.RESET}")
+                prog.update(info["size"], 1); prog.display()
+
+    workers = max(1, args.cloud_concurrency)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(as_completed([pool.submit(_do_download, it)
+                           for it in sorted(objects.items())]))
+    prog.finish()
+
+    banner("DONE")
+    print(f"  Downloaded: {C.BOLD}{downloaded}{C.RESET} ({fmt_size(total_bytes)})")
+    if verified_fail:
+        print(f"  {C.RED}Verification failures: {verified_fail}{C.RESET}")
+    if errors:
+        print(f"  {C.RED}Errors: {errors}{C.RESET}")
+    if args.dry_run:
+        print(f"  {C.YELLOW}(dry run — nothing downloaded){C.RESET}")
+    if args.log_file:
+        write_log_file(args.log_file, {
+            "source": args.source, "destination": args.destination,
+            "mode": f"download_{src_spec.scheme}", "total_files": len(objects),
+            "copied": downloaded, "linked": 0, "skipped": skipped,
+            "errors": errors + verified_fail, "total_bytes": total_bytes,
+            "bytes_written": total_bytes, "dedup_saved": 0,
+            "hash_algo": _hash_name,
+        })
+    if errors or verified_fail:
+        sys.exit(1)
+
+
+def _cloud_to_cloud(args, src_spec, dst_spec):
+    """Cloud→cloud. Same provider + same container → server-side copy; otherwise
+    relay through a local temp directory (download then upload)."""
+    if (src_spec.scheme == dst_spec.scheme
+            and src_spec.container == dst_spec.container):
+        backend = make_backend(src_spec, args)
+        banner(f"COPY (server-side) — {CLOUD_SCHEME_NAMES[src_spec.scheme]}")
+        objects = {k: v for k, v in backend.list_objects(src_spec.prefix).items()
+                   if not k.endswith(CLOUD_MANIFEST_NAME)}
+        if not objects:
+            print(f"  {C.YELLOW}No objects found under that prefix.{C.RESET}")
+            return
+        sp = src_spec.prefix.rstrip("/")
+        dp = dst_spec.prefix.rstrip("/")
+        copied = errors = 0
+        prog = Progress(sum(v["size"] for v in objects.values()), len(objects))
+        lock = threading.Lock()
+
+        def _do_c2c(item):
+            nonlocal copied, errors
+            key, info = item
+            rel = key[len(sp):].lstrip("/") if sp and key.startswith(sp) else key
+            dst_key = (dp + "/" + rel).lstrip("/") if dp else rel
+            try:
+                if not args.dry_run:
+                    meta = backend.head(key) or {}
+                    backend.server_side_copy(key, dst_key, meta)
+                with lock:
+                    copied += 1
+                    prog.update(info["size"], 1); prog.display()
+            except Exception as ex:
+                with lock:
+                    errors += 1
+                    print(f"\n  {C.RED}Error copying {key}: {ex}{C.RESET}")
+                    prog.update(info["size"], 1); prog.display()
+
+        workers = max(1, getattr(args, "cloud_concurrency",
+                                 DEFAULT_CLOUD_CONCURRENCY))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(as_completed([pool.submit(_do_c2c, it)
+                               for it in sorted(objects.items())]))
+        prog.finish()
+        banner("DONE")
+        print(f"  Server-side copied: {C.BOLD}{copied}{C.RESET}")
+        if errors:
+            print(f"  {C.RED}Errors: {errors}{C.RESET}")
+            sys.exit(1)
+        return
+
+    # Cross-provider / cross-container → relay through a temp dir.
+    import tempfile
+    relay = tempfile.mkdtemp(prefix="fast_copy_relay_")
+    try:
+        print(f"  {C.DIM}Relaying through local temp (cross-provider)...{C.RESET}")
+        dl = argparse.Namespace(**vars(args))
+        dl.destination = relay
+        _download_from_cloud(dl, src_spec)
+        up = argparse.Namespace(**vars(args))
+        up.source = relay
+        _upload_to_cloud(up, dst_spec)
+    finally:
+        shutil.rmtree(relay, ignore_errors=True)
+
+
+def _load_cloud_manifest(backend, prefix):
+    key = (prefix.rstrip("/") + "/" + CLOUD_MANIFEST_NAME).lstrip("/")
+    import tempfile
+    # mkstemp (not mktemp) creates the file atomically with an O_EXCL fd, closing
+    # the TOCTOU window where an attacker could pre-plant a symlink at the path.
+    fd, tmp = tempfile.mkstemp(prefix="fc_manifest_")
+    os.close(fd)
+    try:
+        backend.download(key, tmp)
+        with open(tmp, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        # Verify HMAC: an unsigned or tampered manifest is ignored, so a party
+        # with write access to the bucket can't forge "already copied" entries
+        # to make fast_copy silently skip uploading those files.
+        stored_mac = data.pop("__hmac__", None)
+        if stored_mac is None:
+            return {}
+        payload = json.dumps(data, sort_keys=True).encode()
+        expected = _hmac_mod.new(_manifest_key(), payload, hashlib.sha256).hexdigest()
+        if not _hmac_mod.compare_digest(stored_mac, expected):
+            return {}
+        return data
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _save_cloud_manifest(backend, prefix, manifest):
+    key = (prefix.rstrip("/") + "/" + CLOUD_MANIFEST_NAME).lstrip("/")
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix="fc_manifest_")
+    os.close(fd)
+    try:
+        # Sign with the same per-user HMAC key the SSH manifest uses.
+        signed = dict(manifest)
+        payload = json.dumps(signed, sort_keys=True).encode()
+        signed["__hmac__"] = _hmac_mod.new(
+            _manifest_key(), payload, hashlib.sha256).hexdigest()
+        with open(tmp, "w") as f:
+            json.dump(signed, f)
+        backend.upload(tmp, key, {"fc_relpath": _quote_rel(CLOUD_MANIFEST_NAME)})
+    except Exception as ex:
+        print(f"  {C.YELLOW}Warning: could not write manifest: {ex}{C.RESET}")
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _verify_uploads(backend, prefix, entries, hashes, sample=20):
+    import random
+    candidates = [e for e in entries if hashes.get(e.rel)]
+    if not candidates:
+        return
+    sample_entries = random.sample(candidates, min(sample, len(candidates)))
+    print(f"  {C.DIM}Verifying {len(sample_entries)} uploaded objects...{C.RESET}")
+    bad = 0
+    for e in sample_entries:
+        key = backend.join_key(prefix, e.rel)
+        meta = backend.head(key)
+        if not meta or meta.get("fc_hash") != hashes.get(e.rel):
+            bad += 1
+            print(f"  {C.RED}VERIFY MISMATCH: {e.rel}{C.RESET}")
+    if bad == 0:
+        print(f"  {C.GREEN}✓ Verified {len(sample_entries)} objects OK{C.RESET}")
+
+
+def _ssh_ls(target, overrides=None, cli_port=22, cli_key=None, cli_password=False):
+    """List a remote directory over SFTP. `target` is a user@host:/path string.
+    `overrides` (from a saved SSH profile) supplies port/key/password and takes
+    precedence over the CLI fallbacks. Returns an exit code."""
+    if not _has_paramiko:
+        print(f"{C.RED}Error: SSH listing requires paramiko. "
+              f"Install: python -m pip install paramiko{C.RESET}")
+        return 1
+    remote = parse_remote_path(target)
+    if not remote:
+        print(f"{C.RED}Error: {target!r} is not a valid user@host:/path.{C.RESET}")
+        return 1
+    ov = overrides or {}
+    port = ov.get("port") or cli_port or 22
+    key = ov.get("key") or cli_key
+    password = ov.get("password")
+    if not password and cli_password:
+        password = getpass.getpass(
+            f"  SSH password for {remote.user}@{remote.host}: ")
+    ssh = SSHConnection(remote, port=port, key_path=key, password=password)
+    where = f"{remote.user}@{remote.host}:{remote.path}"
+    try:
+        ssh.connect()
+        sftp = ssh.open_sftp()
+        # Stat first so we give an accurate message: a regular file is listed
+        # like `ls file`, a missing path says so, only directories are walked.
+        try:
+            st = sftp.stat(remote.path)
+        except IOError:
+            print(f"{C.RED}Error: no such path: {where}{C.RESET}")
+            ssh.close()
+            return 1
+        if not stat.S_ISDIR(st.st_mode):
+            print(f"    {fmt_size(st.st_size or 0):>10}  {remote.path}")
+            ssh.close()
+            return 0
+        entries = sftp.listdir_attr(remote.path)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"{C.RED}Error listing {where}: {e}{C.RESET}")
+        ssh.close()
+        return 1
+    try:
+        if not entries:
+            print(f"  Empty directory: {where}")
+            return 0
+        # Directories first, then files, each sorted by name (like `ls`).
+        entries.sort(key=lambda a: (0 if stat.S_ISDIR(a.st_mode) else 1, a.filename))
+        files = sum(1 for a in entries if not stat.S_ISDIR(a.st_mode))
+        total = sum(a.st_size or 0 for a in entries if not stat.S_ISDIR(a.st_mode))
+        print(f"  Entries in {where}:")
+        for a in entries:
+            is_dir = stat.S_ISDIR(a.st_mode)
+            shown = "<DIR>" if is_dir else fmt_size(a.st_size or 0)
+            name = a.filename + ("/" if is_dir else "")
+            print(f"    {shown:>10}  {name}")
+        plural = "entry" if len(entries) == 1 else "entries"
+        print(f"  {C.BOLD}{len(entries)} {plural}, {fmt_size(total)} "
+              f"in {files} file(s){C.RESET}")
+        return 0
+    finally:
+        ssh.close()
+
+
+def cloud_ls(argv):
+    """`fast_copy.py ls <connection[:folder] | scheme://bucket/prefix | user@host:/path>`
+    — list objects in a cloud location, or files in a remote SSH directory, from
+    the terminal. Returns an exit code."""
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print("Usage: fast_copy.py ls <connection[:folder] | s3://bucket/prefix | user@host:/path>\n"
+              "  List objects under a cloud location, or files in a remote SSH directory.\n"
+              "  Cloud: a saved cloud connection name, or an s3:// / az:// / gs:// URL.\n"
+              "  SSH:   a saved ssh connection name, or a user@host:/path (listed via SFTP).\n"
+              "  Examples:\n"
+              "    fast_copy.py ls aws_fastcopies\n"
+              "    fast_copy.py ls gcs_fastcopies:backup\n"
+              "    fast_copy.py ls s3://bucket/prefix --credentials-file FILE\n"
+              "    fast_copy.py ls user@host:/var/log --ssh-key ~/.ssh/id_ed25519\n"
+              "  Encrypted creds: set FAST_COPY_CREDS_PASSPHRASE or run in a terminal.")
+        return 0
+    target, cred_file = None, None
+    ssh_port, ssh_key, ssh_password = 22, None, False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--credentials-file", "--credentials"):
+            cred_file = argv[i + 1] if i + 1 < len(argv) else None
+            i += 2
+            continue
+        if a in ("--ssh-port", "--port"):
+            val = argv[i + 1] if i + 1 < len(argv) else ""
+            if not val.isdigit():
+                print(f"{C.RED}Error: --ssh-port needs a number.{C.RESET}")
+                return 1
+            ssh_port = int(val)
+            i += 2
+            continue
+        if a in ("--ssh-key", "--key"):
+            ssh_key = argv[i + 1] if i + 1 < len(argv) else None
+            i += 2
+            continue
+        if a in ("--ssh-password", "--password"):
+            ssh_password = True
+            i += 1
+            continue
+        if a == "--ssh-strict-host-key-checking":
+            global _strict_host_keys
+            _strict_host_keys = True
+            i += 1
+            continue
+        if target is None and not a.startswith("-"):
+            target = a
+        i += 1
+    if not target:
+        print(f"{C.RED}Error: 'ls' needs a connection name, cloud URL, "
+              f"or user@host:/path.{C.RESET}")
+        return 1
+    ns = argparse.Namespace(credentials_file=cred_file)
+    spec = parse_cloud_url(target)
+    if spec is None:
+        # Only open/unlock the credentials file when the target actually looks
+        # like a saved-profile name. A bare user@host:/path is listed directly
+        # over SSH and must never trigger a creds-file passphrase prompt.
+        if _looks_like_profile_ref(target):
+            conns = _conns_for_named_endpoints(ns)
+            new, overrides = resolve_named_endpoint(target, conns) if conns else (None, None)
+            if new:
+                cloud_spec = parse_cloud_url(new)
+                if cloud_spec is not None:
+                    spec = cloud_spec
+                else:  # resolved to an SSH endpoint
+                    return _ssh_ls(new, overrides, ssh_port, ssh_key, ssh_password)
+        elif parse_remote_path(target):
+            # A bare user@host:/path SSH target — no creds file involved.
+            return _ssh_ls(target, None, ssh_port, ssh_key, ssh_password)
+    if spec is None or spec.scheme not in ("s3", "az", "gs"):
+        print(f"{C.RED}Error: {target!r} is not a cloud connection/URL "
+              f"(s3://, az://, gs://) or an SSH path (user@host:/path).{C.RESET}")
+        return 1
+    try:
+        backend = make_backend(spec, ns)
+        objs = backend.list_objects(spec.prefix or "")
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"{C.RED}Error listing {spec.scheme}://{spec.container}/"
+              f"{spec.prefix or ''}: {e}{C.RESET}")
+        return 1
+    # Hide fast_copy's own manifest sidecar from the listing.
+    keys = sorted(k for k in objs if not k.endswith(REMOTE_MANIFEST_NAME))
+    where = f"{spec.scheme}://{spec.container}/{spec.prefix or ''}"
+    if not keys:
+        print(f"  No objects in {where}")
+        return 0
+    total = 0
+    print(f"  Objects in {where}:")
+    for k in keys:
+        sz = objs[k].get("size", 0) or 0
+        total += sz
+        print(f"    {fmt_size(sz):>10}  {k}")
+    print(f"  {C.BOLD}{len(keys)} object(s), {fmt_size(total)}{C.RESET}")
+    return 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SSH-ONLY TRANSPORT (tar over the SSH exec channel — no SFTP subsystem)
+# ════════════════════════════════════════════════════════════════════════════
+# For servers that have SSH enabled but SFTP disabled (common on NAS appliances
+# like Synology). This is a plain recursive copy — no dedup / incremental /
+# verify — but it works wherever a shell + tar exist on the remote.
+
+def _tar_ssh_connect(spec, key_path, password, compress):
+    cli = paramiko.SSHClient()
+    try:
+        cli.load_system_host_keys()
+    except Exception:
+        pass
+    kh = _user_known_hosts_path()
+    if os.path.isfile(kh):
+        try:
+            cli.load_host_keys(kh)
+        except Exception:
+            pass
+    cli.set_missing_host_key_policy(
+        paramiko.RejectPolicy() if _strict_host_keys else _InteractiveHostKeyPolicy())
+    kw = dict(hostname=spec.host, port=spec.port, username=spec.user,
+              timeout=15, compress=compress)
+    if key_path:
+        kw["key_filename"] = os.path.expanduser(key_path)
+    if password:
+        kw["password"] = password
+    cli.connect(**kw)
+    tr = cli.get_transport()
+    if tr:
+        tr.set_keepalive(15)
+    return cli
+
+
+def _tar_emit(done, total, files_done, files_total, start, final=False):
+    """Emit a progress event compatible with the --progress-json consumer."""
+    el = time.time() - start
+    sp = done / el if el > 0 else 0
+    if PROGRESS_JSON:
+        evt = {"t": "done" if final else "progress",
+               "pct": round(min(100.0, done / total * 100) if total
+                            else (100.0 if final else 0.0), 2),
+               "bytes_done": done, "bytes_total": total or done, "speed_bps": sp,
+               "files_done": files_done, "files_total": files_total}
+        if final:
+            evt["elapsed_s"] = el
+        else:
+            evt["eta_s"] = max(0.0, (total - done) / sp) if (total and sp > 0) else 0
+        sys.stdout.write(json.dumps(evt) + "\n")
+        sys.stdout.flush()
+    elif total:
+        pct = min(100.0, done / total * 100)
+        sys.stdout.write(f"\r  {fmt_size(done)}/{fmt_size(total)}  {pct:5.1f}%  "
+                         f"{fmt_speed(sp)}   ")
+        sys.stdout.flush()
+
+
+def _verify_emit(done, total):
+    """Progress event for the verify phase — the GUI switches the bar/label to
+    'Verifying…' and shows how many files have been verified."""
+    if PROGRESS_JSON:
+        sys.stdout.write(json.dumps({
+            "t": "verify", "files_done": done, "files_total": total,
+            "pct": round(min(100.0, done / total * 100) if total else 100.0, 2),
+        }) + "\n")
+        sys.stdout.flush()
+
+
+def _remote_count_size(cli, rpath):
+    files, size = 0, 0
+    try:
+        _i, o, _e = cli.exec_command(
+            "find " + shlex.quote(rpath) + " -type f 2>/dev/null | wc -l")
+        files = int((o.read().decode("utf-8", "replace").strip() or "0"))
+    except Exception:
+        pass
+    try:
+        _i, o, _e = cli.exec_command("du -sb " + shlex.quote(rpath) + " 2>/dev/null")
+        if o.channel.recv_exit_status() == 0:
+            size = int(o.read().split()[0])
+        else:
+            _i, o, _e = cli.exec_command("du -sk " + shlex.quote(rpath))
+            size = int(o.read().split()[0]) * 1024
+    except Exception:
+        pass
+    return files, size
+
+
+def _local_tree_size(p):
+    if os.path.isfile(p):
+        try:
+            return os.path.getsize(p)
+        except OSError:
+            return 0
+    t = 0
+    for r, _d, fs in os.walk(p):
+        for f in fs:
+            try:
+                t += os.path.getsize(os.path.join(r, f))
+            except OSError:
+                pass
+    return t
+
+
+def _local_tree_files(p):
+    if os.path.isfile(p):
+        return 1
+    return sum(len(fs) for _r, _d, fs in os.walk(p))
+
+
+class _TarReadCounter:
+    """Wraps a paramiko stdout stream, counting bytes + emitting progress."""
+
+    def __init__(self, f, total, files_total, start):
+        self.f, self.total, self.files_total, self.start = f, total, files_total, start
+        self.n, self._last = 0, 0
+        self.files_done = 0          # updated by _tar_extract_stream as files land
+
+    def read(self, size):
+        b = self.f.read(size)
+        self.n += len(b)
+        if self.n - self._last >= 2 * 1024 * 1024:
+            self._last = self.n
+            _tar_emit(self.n, self.total, self.files_done, self.files_total, self.start)
+        return b
+
+
+class _TarWriteCounter:
+    def __init__(self, f, total, files_total, start):
+        self.f, self.total, self.files_total, self.start = f, total, files_total, start
+        self.n, self._last = 0, 0
+        self.files_done = 0          # updated by the push loop as files are added
+
+    def write(self, data):
+        self.f.write(data)
+        self.n += len(data)
+        if self.n - self._last >= 2 * 1024 * 1024:
+            self._last = self.n
+            _tar_emit(self.n, self.total, self.files_done, self.files_total, self.start)
+        return len(data)
+
+    def flush(self):
+        try:
+            self.f.flush()
+        except Exception:
+            pass
+
+
+def _tar_extract_stream(reader, dst):
+    done = 0
+    with tarfile.open(fileobj=reader, mode="r|") as tf:
+        for m in tf:
+            try:
+                tf.extract(m, dst, filter="data")
+            except TypeError:
+                tf.extract(m, dst)
+            if not m.isdir():
+                done += 1
+                # let the byte-progress emitter report the running file count
+                if hasattr(reader, "files_done"):
+                    reader.files_done = done
+    return done
+
+
+def _ssh_run(cli, cmd, timeout=1800):
+    _i, o, e = cli.exec_command(cmd, timeout=timeout)
+    out = o.read().decode("utf-8", "replace")
+    err = e.read().decode("utf-8", "replace")
+    return out, err, o.channel.recv_exit_status()
+
+
+def _resolved_dst_pw(args):
+    if args.ssh_password_env:
+        return os.environ.get(args.ssh_password_env)
+    return getattr(args, "_resolved_dst_password", None)
+
+
+def _resolved_src_pw(args):
+    if args.src_password_env:
+        return os.environ.get(args.src_password_env)
+    return getattr(args, "_resolved_src_password", None)
+
+
+def _hash_local_file(path, algo, buf=4 * 1024 * 1024):
+    # xxh128 isn't in hashlib — use the engine's xxhash hasher so local digests
+    # match both the remote xxh128sum and the L2L block-order copy.
+    h = new_hasher() if algo == "xxh128" else hashlib.new(algo)
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(buf)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def _ssh_exec_caps(cli, dest_dir):
+    """Detect what the remote can do over plain SSH: a hash tool, GNU find
+    -printf, and (in dest_dir) hardlink/symlink support."""
+    caps = {"hash": None, "halgo": None, "hardlink": False, "symlink": False,
+            "find_printf": False}
+    # Prefer the remote tool whose digest matches the LOCAL hash, so the dedup DB
+    # is shared with L2L. xxh128sum is byte-identical to Python's xxhash; fall
+    # back to sha256/md5 when the remote doesn't have it.
+    candidates = [("sha256sum", "sha256"), ("md5sum", "md5")]
+    if _hash_name == "xxh128":
+        candidates = [("xxh128sum", "xxh128"), ("xxhsum -H2", "xxh128")] + candidates
+    for tool, algo in candidates:
+        o, _e, rc = _ssh_run(cli, "command -v " + shlex.quote(tool.split()[0]))
+        if rc == 0 and o.strip():
+            caps["hash"], caps["halgo"] = tool, algo
+            break
+    o, _e, rc = _ssh_run(cli, "cd / && find . -maxdepth 0 -printf x 2>/dev/null")
+    caps["find_printf"] = (rc == 0 and "x" in o)
+    q = shlex.quote(dest_dir)
+    test = ("mkdir -p %s && cd %s && : > .fc_a 2>/dev/null && "
+            "{ ln .fc_a .fc_h 2>/dev/null && echo HL; }; "
+            "{ ln -s .fc_a .fc_s 2>/dev/null && echo SL; }; "
+            "rm -f .fc_a .fc_h .fc_s") % (q, q)
+    o, _e, _rc = _ssh_run(cli, test)
+    toks = o.split()
+    caps["hardlink"], caps["symlink"] = ("HL" in toks), ("SL" in toks)
+    return caps
+
+
+def _ssh_remote_listing(cli, root, caps):
+    """{relpath: (size, mtime)} for every file under root (relpath has no ./)."""
+    res = {}
+    q = shlex.quote(root)
+    if caps["find_printf"]:
+        o, _e, rc = _ssh_run(
+            cli, "cd %s 2>/dev/null && find . -type f -printf '%%s\\t%%T@\\t%%P\\n'" % q)
+        if rc == 0:
+            for line in o.splitlines():
+                p = line.split("\t", 2)
+                if len(p) == 3:
+                    try:
+                        res[p[2]] = (int(p[0]), float(p[1]))
+                    except ValueError:
+                        pass
+            return res
+    # portable fallback (busybox): find + wc -c (slower, no mtime)
+    o, _e, rc = _ssh_run(
+        cli, "cd %s 2>/dev/null && find . -type f | while IFS= read -r f; do "
+             "printf '%%s\\t%%s\\n' \"$(wc -c < \"$f\")\" \"${f#./}\"; done" % q)
+    if rc == 0:
+        for line in o.splitlines():
+            p = line.split("\t", 1)
+            if len(p) == 2:
+                try:
+                    res[p[1]] = (int(p[0]), 0.0)
+                except ValueError:
+                    pass
+    return res
+
+
+def _ssh_remote_hashes(cli, root, rels, caps):
+    """{relpath: hexdigest} computed on the remote via its hash tool."""
+    res = {}
+    if not caps["hash"] or not rels:
+        return res
+    q = shlex.quote(root)
+    rels = list(rels)
+    for i in range(0, len(rels), 100):
+        files = " ".join(shlex.quote(r) for r in rels[i:i + 100])
+        o, _e, _rc = _ssh_run(cli, "cd %s && %s %s 2>/dev/null" % (q, caps["hash"], files))
+        for line in o.splitlines():
+            m = re.match(r"([0-9a-fA-F]{8,})\s+\*?(.*)", line)
+            if m:
+                res[m.group(2)] = m.group(1).lower()
+    return res
+
+
+def _ssh_remote_free(cli, path):
+    """(total, free) bytes for the filesystem holding `path` on the remote, via
+    df. Walks up to an existing parent. Returns (None, None) if df is unusable."""
+    check = path or "/"
+    for _ in range(12):
+        o, _e, rc = _ssh_run(
+            cli, "df -kP %s 2>/dev/null || df -k %s 2>/dev/null"
+            % (shlex.quote(check), shlex.quote(check)))
+        lines = [l for l in o.strip().splitlines() if l.strip()]
+        if rc == 0 and len(lines) >= 2:
+            parts = lines[-1].split()
+            try:
+                return int(parts[1]) * 1024, int(parts[3]) * 1024
+            except (IndexError, ValueError):
+                return None, None
+        parent = posixpath.dirname(check.rstrip("/"))
+        if not parent or parent == check:
+            break
+        check = parent
+    return None, None
+
+
+def _print_space_block(total, free, required, force):
+    """Shared Total/Free/Required/Headroom block (matches the SFTP/local modes)."""
+    if total:
+        print(f"  Destination disk:")
+        print(f"    Total:     {C.BOLD}{fmt_size(total)}{C.RESET}")
+        print(f"    Free:      {C.BOLD}{fmt_size(free)}{C.RESET} "
+              f"({free / total * 100:.1f}% free)")
+    else:
+        print(f"  Destination free: {C.BOLD}{fmt_size(free)}{C.RESET}")
+    print(f"    Required:  {C.BOLD}{fmt_size(required)}{C.RESET}")
+    if required > free:
+        print(f"\n  {C.RED}✗ NOT ENOUGH SPACE — need {fmt_size(required - free)} "
+              f"more{C.RESET}")
+        if force:
+            print(f"  {C.YELLOW}Proceeding anyway (--force){C.RESET}")
+            return True
+        return False
+    print(f"    Headroom:  {fmt_size(free - required)}")
+    print(f"\n  {C.GREEN}✓ Enough space{C.RESET}")
+    return True
+
+
+def _check_space_remote(cli, path, required, force):
+    total, free = _ssh_remote_free(cli, path)
+    if free is None:
+        print(f"  {C.YELLOW}Could not check destination free space — continuing{C.RESET}")
+        return True
+    return _print_space_block(total, free, required, force)
+
+
+def _check_space_local(dst, required, force):
+    try:
+        target = dst if os.path.isdir(dst) else (os.path.dirname(dst) or ".")
+        usage = shutil.disk_usage(target)
+    except OSError:
+        return True
+    return _print_space_block(usage.total, usage.free, required, force)
+
+
+def _ssh_tar_send(cli, cwd, rels):
+    """Run `tar c` of an explicit file list on the remote, feeding the list via
+    stdin (`-T -`) so it isn't limited by the SSH exec command-line length
+    (thousands of files). Returns (stdout, stderr) streams for the archive."""
+    stdin, out, err = cli.exec_command("cd %s && tar cf - -T -" % shlex.quote(cwd))
+    data = ("\n".join(rels) + "\n").encode("utf-8")
+
+    def _feed():
+        try:
+            stdin.write(data)
+            stdin.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                stdin.channel.shutdown_write()
+            except Exception:
+                pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+    return out, err
+
+
+def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
+                      copied=None, linked=0, skipped=0, saved=0, verified=None):
+    """Standardized completion block (matches the SFTP/local modes), printed on
+    every SSH-only transfer so the GUI and CLI show a consistent summary."""
+    speed = nbytes / elapsed if elapsed > 0 else 0
+    print()
+    print(f"  Source:  {C.BOLD}{source}{C.RESET}")
+    print(f"  Dest:    {C.BOLD}{dest}{C.RESET}")
+    parts = []
+    if copied is not None:
+        parts.append(f"{copied} copied")
+    if linked:
+        parts.append(f"{linked} linked")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    detail = f"  ({', '.join(parts)})" if parts else ""
+    print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total{detail}")
+    sv = f"  ({fmt_size(saved)} saved by dedup)" if saved else ""
+    print(f"  Data:    {C.BOLD}{fmt_size(nbytes)}{C.RESET} {verb}{sv}")
+    print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
+    print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    if verified is not None:
+        print(f"  Verify:  {C.GREEN}✓ passed{C.RESET}" if verified
+              else f"  Verify:  {C.RED}✗ FAILED{C.RESET}")
+
+
+def _local_dedup_db_path(dst):
+    """Where a LOCAL destination's dedup DB lives — same place as the block-order
+    copy: `.fast_copy_dedup.db` at the destination drive/mount root (fallback:
+    inside the destination dir if the root isn't writable). So pull (R2L) shares
+    the on-disk location convention with L2L, and the DB travels with the drive."""
+    try:
+        dst_root = os.path.realpath(dst)
+        mount = _find_mount_point(dst_root)
+        if mount == os.sep or not os.access(mount, os.W_OK):
+            return os.path.join(dst_root, DEDUP_DB_NAME)
+        return os.path.join(mount, DEDUP_DB_NAME)
+    except Exception:
+        return os.path.join(os.path.realpath(dst), DEDUP_DB_NAME)
+
+
+def _local_listing(dst):
+    """{relpath: (size, mtime)} for every file under a local directory."""
+    res = {}
+    for r, _d, fs in os.walk(dst):
+        for f in fs:
+            ap = os.path.join(r, f)
+            rel = os.path.relpath(ap, dst).replace(os.sep, "/")
+            try:
+                st = os.stat(ap)
+                res[rel] = (st.st_size, st.st_mtime)
+            except OSError:
+                pass
+    return res
+
+
+def _local_link_caps(dest):
+    caps = {"hardlink": False, "symlink": False}
+    try:
+        os.makedirs(dest, exist_ok=True)
+    except OSError:
+        return caps
+    a = os.path.join(dest, ".fc_a")
+    b = os.path.join(dest, ".fc_h")
+    s = os.path.join(dest, ".fc_s")
+    try:
+        open(a, "w").close()
+        try:
+            os.link(a, b)
+            caps["hardlink"] = True
+        except OSError:
+            pass
+        try:
+            os.symlink(a, s)
+            caps["symlink"] = True
+        except OSError:
+            pass
+    except OSError:
+        pass
+    finally:
+        for p in (a, b, s):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return caps
+
+
+def _dedup_groups(rels, size_of, hash_of):
+    """Group by content. Only hashes files whose size collides (cheap).
+    Returns (keep_rels, links) where links=[(dup_rel, target_rel)]."""
+    bysize = {}
+    for rel in rels:
+        bysize.setdefault(size_of(rel), []).append(rel)
+    keep, links, byhash = [], [], {}
+    for rel in rels:
+        sz = size_of(rel)
+        if len(bysize[sz]) == 1 or sz == 0:
+            keep.append(rel)
+            continue
+        h = hash_of(rel)
+        if not h:
+            keep.append(rel)
+            continue
+        if h in byhash:
+            links.append((rel, byhash[h]))
+        else:
+            byhash[h] = rel
+            keep.append(rel)
+    return keep, links
+
+
+SMALL_FILE_THRESHOLD = 1024 * 1024     # < 1 MB → bundled together
+
+
+def _batch_rels(rels, size_of, max_bytes=TAR_CHUNK_SIZE, max_files=10000):
+    """Split relpaths into ~max_bytes (default 100 MB) tar batches for the SSH
+    transport. Small files (< 1 MB) are bundled together FIRST (so thousands of
+    tiny files travel as one big tar instead of one-at-a-time), then the large
+    files follow (a file ≥ max_bytes is its own batch). Per-batch streaming lets
+    the file counter advance and a re-run resume at batch granularity."""
+    smalls = [r for r in rels if size_of(r) < SMALL_FILE_THRESHOLD]
+    larges = [r for r in rels if size_of(r) >= SMALL_FILE_THRESHOLD]
+
+    def _pack(items):
+        out, cur, cur_size = [], [], 0
+        for r in items:
+            sz = size_of(r)
+            if cur and (cur_size + sz > max_bytes or len(cur) >= max_files):
+                out.append(cur)
+                cur, cur_size = [], 0
+            cur.append(r)
+            cur_size += sz
+        if cur:
+            out.append(cur)
+        return out
+
+    return _pack(smalls) + _pack(larges)
+
+
+def _fc_config_dir():
+    if _system == "Windows":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "fast_copy")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "fast_copy")
+
+
+class SshDedupCache:
+    """Persistent, per-destination hash cache for SSH transfers, kept LOCALLY
+    (no DB needed on the remote). Maps a destination file's content hash → its
+    path, so a new file matching one ALREADY on the destination is linked
+    instead of re-copied. Cached hashes are reused while a file's size+mtime are
+    unchanged, so repeat runs only hash genuinely new remote files."""
+
+    def __init__(self, host, dest_path, db_path=None):
+        if db_path is None:
+            # remote destinations → keep the DB locally (no SQLite needed on the NAS)
+            d = os.path.join(_fc_config_dir(), "dedup")
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
+            key = hashlib.sha1(("%s\x00%s" % (host, dest_path)).encode("utf-8")).hexdigest()[:16]
+            db_path = os.path.join(d, "ssh-%s.db" % key)
+        self.path = db_path
+        self.conn = sqlite3.connect(self.path)
+        self.conn.execute("CREATE TABLE IF NOT EXISTS dest "
+                          "(rel TEXT PRIMARY KEY, size INTEGER, mtime REAL, hash TEXT)")
+        self.conn.commit()
+
+    def build_index(self, listing, cand_sizes, hash_fn):
+        """Return {hash: rel} for destination files whose size is a dedup
+        candidate. Reuses cached hashes for unchanged files; hashes only new
+        ones via hash_fn(rels)->{rel:hash}. Prunes vanished files."""
+        cached = {r[0]: (r[1], r[2], r[3])
+                  for r in self.conn.execute("SELECT rel,size,mtime,hash FROM dest")}
+        index, need = {}, []
+        for rel, (sz, mt) in listing.items():
+            if sz not in cand_sizes:
+                continue
+            c = cached.get(rel)         # (size, mtime, hash)
+            if c and c[0] == sz and c[2] and (mt == 0.0 or c[1] == 0.0 or abs(c[1] - mt) <= 2):
+                index.setdefault(c[2], rel)
+            else:
+                need.append(rel)
+        if need:
+            for rel, h in (hash_fn(need) or {}).items():
+                if h:
+                    index.setdefault(h, rel)
+                    sz, mt = listing[rel]
+                    self.conn.execute("INSERT OR REPLACE INTO dest VALUES (?,?,?,?)",
+                                      (rel, sz, mt, h))
+            self.conn.commit()
+        gone = [r for r in cached if r not in listing]
+        if gone:
+            self.conn.executemany("DELETE FROM dest WHERE rel=?", [(r,) for r in gone])
+            self.conn.commit()
+            print(f"  Cleaned {C.BOLD}{len(gone)}{C.RESET} stale dedup-DB "
+                  f"entr{'y' if len(gone) == 1 else 'ies'} (deleted from destination)")
+        return index
+
+    def record(self, rel, size, mtime, h):
+        self.conn.execute("INSERT OR REPLACE INTO dest VALUES (?,?,?,?)",
+                          (rel, size, mtime, h))
+
+    def close(self):
+        try:
+            self.conn.commit()
+            self.conn.close()
+        except Exception:
+            pass
+
+
+def _ssh_dedup_plan(rels, size_of, hash_many, rmap, can_link, algo,
+                    cache_factory, dest_hash_fn):
+    """Shared dedup planner for push/r2r. Returns (copy_rels, links, saved,
+    cache, copy_hashes). Dedups within the transfer AND against files already on
+    the destination (via a local hash cache). hash_many(rels)->{rel:hash} hashes
+    the SOURCE candidates in one batch."""
+    links, saved, cache, copy_hashes = [], 0, None, {}
+    if not algo:
+        return rels, links, saved, cache, copy_hashes
+    # Always open the cache so the DB is created and PRUNED every run (build_index
+    # drops entries for files no longer on the destination → self-cleanup).
+    cache = cache_factory()
+    ssize = {}
+    for r in rels:
+        ssize[size_of(r)] = ssize.get(size_of(r), 0) + 1
+    dest_sizes = set(sz for sz, _m in rmap.values())
+    cand = (set(s for s in ssize if (ssize[s] > 1 or s in dest_sizes) and s > 0)
+            if (can_link and rels) else set())
+    dest_index = cache.build_index(rmap, cand, dest_hash_fn)   # also prunes
+    if not cand:
+        return rels, links, saved, cache, copy_hashes
+    cand_rels = [r for r in rels if size_of(r) in cand]
+    shashes = hash_many(cand_rels) or {}
+    seen = dict(dest_index)
+    copy_rels = []
+    for r in rels:
+        if size_of(r) in cand:
+            h = shashes.get(r)
+            if h and h in seen:
+                links.append((r, seen[h]))
+                saved += size_of(r)
+            else:
+                if h:
+                    seen[h] = r
+                    copy_hashes[r] = h
+                copy_rels.append(r)
+        else:
+            copy_rels.append(r)
+    return copy_rels, links, saved, cache, copy_hashes
+
+
+def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
+    """local → remote with incremental skip, dedup (links honor the remote FS,
+    incl. files already on the destination via a cached hash DB), and post-copy
+    verify — all over plain SSH (no SFTP)."""
+    dcli = _tar_ssh_connect(dst_remote, args.ssh_key, _resolved_dst_pw(args), args.compress)
+    caps = _ssh_exec_caps(dcli, dst)
+    algo = caps["halgo"] or "sha256"
+    link_kind = "hardlink" if caps["hardlink"] else ("symlink" if caps["symlink"] else "none")
+    banner("SSH (no SFTP) — local → remote  [dedup · incremental · verify]")
+    print(f"  dest FS links: {link_kind} · hash: {caps['hash'] or 'none'}")
+
+    banner("Phase 1 — Scanning source")
+    # 1) enumerate local files: arcrel = <basename>/<relpath>
+    files, ap_by_rel, size_by_rel = [], {}, {}
+    for s in (local_srcs or []):
+        s = os.path.abspath(s)
+        if not os.path.exists(s):
+            print(f"{C.RED}Error: source not found: {s}{C.RESET}")
+            dcli.close()
+            return 1
+        base = os.path.basename(s.rstrip("/\\")) or s
+        if os.path.isfile(s):
+            st = os.stat(s)
+            files.append((base, st.st_size, st.st_mtime))
+            ap_by_rel[base], size_by_rel[base] = s, st.st_size
+        else:
+            for r, _d, fs in os.walk(s):
+                for f in fs:
+                    ap = os.path.join(r, f)
+                    rel = base + "/" + os.path.relpath(ap, s).replace(os.sep, "/")
+                    try:
+                        st = os.stat(ap)
+                    except OSError:
+                        continue
+                    files.append((rel, st.st_size, st.st_mtime))
+                    ap_by_rel[rel], size_by_rel[rel] = ap, st.st_size
+
+    mt_by_rel = {rel: mt for rel, sz, mt in files}
+    print(f"  Found {C.BOLD}{len(files)}{C.RESET} local files  "
+          f"({fmt_size(sum(size_by_rel.values()))})")
+
+    # destination listing (used for both incremental and dedup-against-existing)
+    rmap = _ssh_remote_listing(dcli, dst, caps)
+
+    # incremental: skip files already present with matching size (+mtime)
+    skipped = []
+    rels = [f[0] for f in files]
+    if not args.overwrite:
+        keep = []
+        for rel in rels:
+            r = rmap.get(rel)
+            if r and r[0] == size_by_rel[rel] and (r[1] == 0.0 or abs(r[1] - mt_by_rel[rel]) <= 2):
+                skipped.append(rel)
+            else:
+                keep.append(rel)
+        rels = keep
+
+    # ── Phase 2 — Deduplication (within transfer + against files on the dest) ──
+    banner("Phase 2 — Deduplication")
+    can_link = caps["hardlink"] or caps["symlink"]
+    cache = copy_hashes = None
+    links, saved = [], 0
+    if not args.no_dedup:
+        rels, links, saved, cache, copy_hashes = _ssh_dedup_plan(
+            rels, lambda r: size_by_rel[r],
+            lambda rl: {r: _hash_local_file(ap_by_rel[r], algo) for r in rl},
+            rmap, can_link, algo if caps["hash"] else None,
+            lambda: SshDedupCache(dst_remote.host, dst),
+            lambda rl: _ssh_remote_hashes(dcli, dst, rl, caps))
+    print(f"  Unique files:    {C.BOLD}{len(rels)}{C.RESET}")
+    print(f"  Duplicates:      {C.BOLD}{len(links)}{C.RESET}  (dest FS: {link_kind})")
+    print(f"  Space saved:     {C.BOLD}{fmt_size(saved)}{C.RESET}")
+    if skipped:
+        print(f"  Already present: {C.BOLD}{len(skipped)}{C.RESET} (skipped)")
+
+    if args.dry_run:
+        if cache:
+            cache.close()
+        print(f"\n  {C.YELLOW}(dry run — would copy {len(rels)}, link {len(links)}, "
+              f"skip {len(skipped)}){C.RESET}")
+        dcli.close()
+        return 0
+
+    total = sum(size_by_rel[r] for r in rels) or 1
+
+    # ── Phase 3 — Space check (default; override with --force) ──
+    banner("Phase 3 — Space check")
+    if rels and not _check_space_remote(dcli, dst, sum(size_by_rel[r] for r in rels), args.force):
+        if cache:
+            cache.close()
+        dcli.close()
+        return 1
+
+    # ── Phase 4 — Local-to-remote copy ──
+    banner("Phase 4 — Local-to-remote copy")
+    print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)})\n")
+    if rels:
+        q = shlex.quote(dst)
+        di, do, de = dcli.exec_command("mkdir -p %s && cd %s && tar xpf -" % (q, q))
+        writer = _TarWriteCounter(di, total, len(rels), start)
+        with tarfile.open(fileobj=writer, mode="w|") as tf:
+            for i, rel in enumerate(rels):
+                try:
+                    tf.add(ap_by_rel[rel], arcname=rel, recursive=False)
+                except OSError:
+                    pass
+                writer.files_done = i + 1
+        di.channel.shutdown_write()
+        rc = do.channel.recv_exit_status()
+        if rc:
+            print(f"{C.RED}Error: "
+                  f"{de.read().decode('utf-8','replace').strip() or 'remote tar failed'}{C.RESET}")
+            dcli.close()
+            return 1
+
+    # 5) create dedup links on the remote, honoring its FS capability
+    if links:
+        cmds = []
+        for dup, target in links:
+            dd = posixpath.dirname(dup)
+            if dd:
+                cmds.append("mkdir -p " + shlex.quote(dd))
+            if caps["hardlink"]:
+                cmds.append("ln -f %s %s" % (shlex.quote(target), shlex.quote(dup)))
+            else:
+                rt = posixpath.relpath(target, dd or ".")
+                cmds.append("ln -sf %s %s" % (shlex.quote(rt), shlex.quote(dup)))
+        _o, _e, rc = _ssh_run(dcli, "cd %s && " % shlex.quote(dst) + " && ".join(cmds))
+        if rc:
+            print(f"  {C.YELLOW}Warning: some dedup links could not be created{C.RESET}")
+
+    # 6) verify copied + linked files by hashing both sides
+    verified = True
+    vhashes = {}
+    if not args.no_verify and caps["hash"]:
+        check = list(rels) + [d for d, _t in links]
+        banner("Verifying")
+        rh = _ssh_remote_hashes(dcli, dst, check, caps)
+        bad = 0
+        for k, rel in enumerate(check):
+            lh = _hash_local_file(ap_by_rel[rel], algo) if rel in ap_by_rel else None
+            if lh:
+                vhashes[rel] = lh                     # reuse for the dedup DB
+            if lh and rh.get(rel) and lh != rh[rel]:
+                bad += 1
+                print(f"  {C.RED}✗ verify mismatch: {rel}{C.RESET}")
+            if (k + 1) % 16 == 0 or k + 1 == len(check):
+                _verify_emit(k + 1, len(check))
+        verified = (bad == 0)
+        if verified:
+            print(f"  {C.GREEN}✓ Verified {len(check)} file(s){C.RESET}")
+
+    # 7) record EVERY copied file in the dedup DB (complete index of the dest),
+    #    reusing the verify hashes; the next run dedups against all of it.
+    if cache is None and not args.no_dedup and caps["hash"]:
+        cache = SshDedupCache(dst_remote.host, dst)
+    if cache is not None:
+        all_h = dict(copy_hashes or {})
+        all_h.update(vhashes)
+        for rel in rels:
+            h = all_h.get(rel) or (_hash_local_file(ap_by_rel[rel], algo)
+                                   if rel in ap_by_rel else None)
+            if h:
+                cache.record(rel, size_by_rel[rel], mt_by_rel[rel], h)
+        cache.close()
+
+    _tar_emit(total, total, len(rels) + len(links), len(files), start, final=True)
+    src_disp = (os.path.abspath(local_srcs[0]) if local_srcs and len(local_srcs) == 1
+                else f"{len(local_srcs or [])} sources")
+    _ssh_done_summary(
+        src_disp, f"{dst_remote.user}@{dst_remote.host}:{dst}", len(files),
+        sum(size_by_rel[r] for r in rels), time.time() - start, "uploaded",
+        copied=len(rels), linked=len(links), skipped=len(skipped), saved=saved,
+        verified=(verified if (not args.no_verify and caps["hash"]) else None))
+    dcli.close()
+    return 0 if verified else 1
+
+
+def _ssh_pull_smart(src_remote, dst, args, start):
+    """remote → local with incremental skip, dedup (links honor the LOCAL dest
+    FS), and verify — all over plain SSH (no SFTP)."""
+    scli = _tar_ssh_connect(src_remote, args.src_key, _resolved_src_pw(args), args.compress)
+    rpath = src_remote.path.rstrip("/") or "/"
+    parent = posixpath.dirname(rpath) or "/"
+    base = posixpath.basename(rpath) or rpath
+    caps = _ssh_exec_caps(scli, "/tmp")          # source-side hash/find caps
+    lcaps = _local_link_caps(dst)                 # dest FS = local
+    algo = caps["halgo"] or "sha256"
+    link_kind = "hardlink" if lcaps["hardlink"] else ("symlink" if lcaps["symlink"] else "none")
+    banner("SSH (no SFTP) — remote → local  [dedup · incremental · verify]")
+    print(f"  dest FS links: {link_kind} · hash: {caps['hash'] or 'none'}")
+
+    banner("Phase 1 — Scanning source")
+    rmap = _ssh_remote_listing(scli, parent, caps)
+    src_files = {rel: v for rel, v in rmap.items()
+                 if rel == base or rel.startswith(base + "/")}
+    if not src_files:
+        print(f"{C.RED}Error: nothing to copy at {src_remote.host}:{rpath} "
+              f"(empty, missing, or not a directory).{C.RESET}")
+        scli.close()
+        return 1
+    _scan_bytes = sum(v[0] for v in src_files.values())
+    print(f"  Found {C.BOLD}{len(src_files)}{C.RESET} files on remote  "
+          f"({fmt_size(_scan_bytes)})")
+
+    # incremental: skip files already present locally with matching size (+mtime)
+    skipped = set()
+    if not args.overwrite:
+        for rel, (sz, mt) in src_files.items():
+            lp = os.path.join(dst, rel.replace("/", os.sep))
+            if os.path.isfile(lp):
+                try:
+                    lst = os.stat(lp)
+                    if lst.st_size == sz and (mt == 0.0 or abs(lst.st_mtime - mt) <= 2):
+                        skipped.add(rel)
+                except OSError:
+                    pass
+    rels = [r for r in src_files if r not in skipped]
+
+    # ── Phase 2 — Deduplication (within transfer + against existing LOCAL dest,
+    #    via the cached hash DB). Hash on the remote source; link on the local FS.
+    banner("Phase 2 — Deduplication")
+    can_link = lcaps["hardlink"] or lcaps["symlink"]
+    cache = ddb = None
+    copy_hashes = {}
+    links, saved = [], 0          # links: (dup_rel, ABSOLUTE target path)
+    # When the remote hash equals the local hash algo (xxh128 via xxh128sum), share
+    # the exact same DedupDB/dest_files index as L2L; otherwise fall back to the
+    # local sha256 cache (separate state).
+    shared = bool(caps["hash"]) and caps["halgo"] == _hash_name
+    if not args.no_dedup and caps["hash"]:
+        local_dest = _local_listing(dst)
+        if shared and can_link:
+            try:
+                ddb = DedupDB(os.path.abspath(dst))
+            except Exception:
+                ddb = None
+        if ddb is not None:
+            ncleaned = ddb.prune_dest(local_dest.keys())     # self-cleanup
+            if ncleaned:
+                print(f"  Cleaned {C.BOLD}{ncleaned}{C.RESET} stale dedup-DB "
+                      f"entr{'y' if ncleaned == 1 else 'ies'} (deleted from destination)")
+            # candidate if its size collides within the source OR matches ANY file
+            # already recorded on the drive (the shared DB spans all folders)
+            known_sizes = set(sz for sz, _m in local_dest.values()) | ddb.dest_sizes()
+            bysize = {}
+            for r in rels:
+                bysize.setdefault(src_files[r][0], []).append(r)
+            cand = [r for r in rels if src_files[r][0] > 0
+                    and (len(bysize[src_files[r][0]]) > 1 or src_files[r][0] in known_sizes)]
+            shashes = _ssh_remote_hashes(scli, parent, cand, caps)
+            seen, drop = {}, set()
+            for r in cand:
+                h = shashes.get(r)
+                if not h:
+                    continue
+                ex = ddb.lookup_by_hash(h)            # already on this drive (any folder)?
+                abs_t = (os.path.join(ddb.mount, ex[0][0].replace("/", os.sep))
+                         if ex else None)
+                if abs_t and os.path.isfile(abs_t):
+                    links.append((r, abs_t)); drop.add(r); saved += src_files[r][0]
+                elif h in seen:
+                    links.append((r, os.path.join(dst, seen[h].replace("/", os.sep))))
+                    drop.add(r); saved += src_files[r][0]
+                else:
+                    seen[h] = r; copy_hashes[r] = h
+            rels = [r for r in rels if r not in drop]
+        else:
+            rels, links2, saved, cache, copy_hashes = _ssh_dedup_plan(
+                rels, lambda r: src_files[r][0],
+                lambda rl: _ssh_remote_hashes(scli, parent, rl, caps),
+                local_dest, can_link, algo,
+                lambda: SshDedupCache("local", dst, db_path=_local_dedup_db_path(dst)),
+                lambda rl: {r: _hash_local_file(os.path.join(dst, r.replace("/", os.sep)), algo)
+                            for r in rl})
+            links = [(d, os.path.join(dst, t.replace("/", os.sep))) for d, t in links2]
+    print(f"  Unique files:    {C.BOLD}{len(rels)}{C.RESET}")
+    print(f"  Duplicates:      {C.BOLD}{len(links)}{C.RESET}  "
+          f"(dest FS: {link_kind})")
+    print(f"  Space saved:     {C.BOLD}{fmt_size(saved)}{C.RESET}")
+    if skipped:
+        print(f"  Already present: {C.BOLD}{len(skipped)}{C.RESET} (skipped)")
+
+    if args.dry_run:
+        print(f"\n  {C.YELLOW}(dry run — would copy {len(rels)}, link {len(links)}, "
+              f"skip {len(skipped)}){C.RESET}")
+        scli.close()
+        return 0
+
+    os.makedirs(dst, exist_ok=True)
+    total = sum(src_files[r][0] for r in rels) or 1
+
+    # ── Phase 3 — Space check (default; override with --force) ──
+    banner("Phase 3 — Space check")
+    if rels and not _check_space_local(dst, sum(src_files[r][0] for r in rels), args.force):
+        scli.close()
+        return 1
+
+    # ── Phase 4 — Remote-to-local copy ──
+    banner("Phase 4 — Remote-to-local copy")
+    print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)})\n")
+    if rels:
+        so, se = _ssh_tar_send(scli, parent, rels)
+        reader = _TarReadCounter(so, total, len(rels), start)
+        _tar_extract_stream(reader, dst)
+        rc = so.channel.recv_exit_status()
+        if rc:
+            print(f"{C.RED}Error: "
+                  f"{se.read().decode('utf-8','replace').strip() or 'remote tar failed'}{C.RESET}")
+            scli.close()
+            return 1
+
+    # local dedup links honoring the local FS (target is an ABSOLUTE path)
+    for dup, tp in links:
+        dp = os.path.join(dst, dup.replace("/", os.sep))
+        try:
+            os.makedirs(os.path.dirname(dp), exist_ok=True)
+            if os.path.lexists(dp):
+                os.remove(dp)
+            if lcaps["hardlink"]:
+                os.link(tp, dp)
+            else:
+                os.symlink(os.path.relpath(tp, os.path.dirname(dp)), dp)
+        except OSError:
+            pass
+
+    # verify: hash local copies against remote hashes
+    verified = True
+    vhashes = {}
+    if not args.no_verify and caps["hash"]:
+        check = list(rels) + [d for d, _t in links]
+        banner("Verifying")
+        rh = _ssh_remote_hashes(scli, parent, check, caps)
+        bad = 0
+        for k, rel in enumerate(check):
+            lp = os.path.join(dst, rel.replace("/", os.sep))
+            try:
+                lh = _hash_local_file(lp, algo)
+            except OSError:
+                lh = None
+            if lh:
+                vhashes[rel] = lh
+            if lh and rh.get(rel) and lh != rh[rel]:
+                bad += 1
+                print(f"  {C.RED}✗ verify mismatch: {rel}{C.RESET}")
+            if (k + 1) % 16 == 0 or k + 1 == len(check):
+                _verify_emit(k + 1, len(check))
+        verified = (bad == 0)
+        if verified:
+            print(f"  {C.GREEN}✓ Verified {len(check)} file(s){C.RESET}")
+
+    # record EVERY copied file in the dedup DB (complete dest index, xxh128)
+    all_h = dict(copy_hashes or {})
+    all_h.update(vhashes)
+
+    def _rel_hash(rel):
+        lp = os.path.join(dst, rel.replace("/", os.sep))
+        return all_h.get(rel) or (_hash_local_file(lp, algo)
+                                  if os.path.isfile(lp) else None)
+
+    if ddb is not None:
+        rows = [(rel, src_files[rel][0], h) for rel in rels
+                for h in (_rel_hash(rel),) if h]
+        if rows:
+            ddb.store_dest_batch(rows)         # shared dest_files index with L2L
+        ddb.close()
+    else:
+        if cache is None and not args.no_dedup and caps["hash"]:
+            cache = SshDedupCache("local", dst, db_path=_local_dedup_db_path(dst))
+        if cache is not None:
+            for rel in rels:
+                h = _rel_hash(rel)
+                if h:
+                    cache.record(rel, src_files[rel][0], src_files[rel][1], h)
+            cache.close()
+
+    _tar_emit(total, total, len(rels) + len(links), len(src_files), start, final=True)
+    _ssh_done_summary(
+        f"{src_remote.user}@{src_remote.host}:{rpath}", os.path.abspath(dst),
+        len(src_files), sum(src_files[r][0] for r in rels), time.time() - start,
+        "downloaded", copied=len(rels), linked=len(links), skipped=len(skipped),
+        saved=saved, verified=(verified if (not args.no_verify and caps["hash"]) else None))
+    scli.close()
+    return 0 if verified else 1
+
+
+def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
+    """remote → remote with incremental skip, dedup (links honor the DESTINATION
+    remote's FS) and verify (both remotes hashed) — all over plain SSH."""
+    scli = _tar_ssh_connect(src_remote, args.src_key, _resolved_src_pw(args), args.compress)
+    dcli = _tar_ssh_connect(dst_remote, args.ssh_key, _resolved_dst_pw(args), args.compress)
+    rpath = src_remote.path.rstrip("/") or "/"
+    parent = posixpath.dirname(rpath) or "/"
+    base = posixpath.basename(rpath) or rpath
+    scaps = _ssh_exec_caps(scli, "/tmp")        # source: hash/find
+    dcaps = _ssh_exec_caps(dcli, dst)            # dest: link support (+hash/find)
+    # a hash algorithm both ends share (needed for dedup + verify)
+    algo = scaps["halgo"] if (scaps["halgo"] and scaps["halgo"] == dcaps["halgo"]) else None
+    link_kind = "hardlink" if dcaps["hardlink"] else ("symlink" if dcaps["symlink"] else "none")
+    banner("SSH (no SFTP) — remote → remote  [dedup · incremental · verify]")
+    print(f"  dest FS links: {link_kind} · hash: {algo or 'none (no common tool)'}")
+
+    banner("Phase 1 — Scanning source")
+    smap = _ssh_remote_listing(scli, parent, scaps)
+    src_files = {rel: v for rel, v in smap.items()
+                 if rel == base or rel.startswith(base + "/")}
+    if not src_files:
+        print(f"{C.RED}Error: nothing to copy at {src_remote.host}:{rpath}.{C.RESET}")
+        scli.close()
+        dcli.close()
+        return 1
+    print(f"  Found {C.BOLD}{len(src_files)}{C.RESET} files on source  "
+          f"({fmt_size(sum(v[0] for v in src_files.values()))})")
+
+    # destination listing (incremental + dedup-against-existing)
+    dmap = _ssh_remote_listing(dcli, dst, dcaps)
+
+    # incremental against the destination
+    skipped = set()
+    if not args.overwrite:
+        for rel, (sz, mt) in src_files.items():
+            d = dmap.get(rel)
+            if d and d[0] == sz and (mt == 0.0 or d[1] == 0.0 or abs(d[1] - mt) <= 2):
+                skipped.add(rel)
+    rels = [r for r in src_files if r not in skipped]
+
+    # ── Phase 2 — Deduplication (hash on source; link on dest per its FS) ──
+    banner("Phase 2 — Deduplication")
+    can_link = dcaps["hardlink"] or dcaps["symlink"]
+    cache = copy_hashes = None
+    links, saved = [], 0
+    if not args.no_dedup:
+        rels, links, saved, cache, copy_hashes = _ssh_dedup_plan(
+            rels, lambda r: src_files[r][0],
+            lambda rl: _ssh_remote_hashes(scli, parent, rl, scaps),
+            dmap, can_link, algo,
+            lambda: SshDedupCache(dst_remote.host, dst),
+            lambda rl: _ssh_remote_hashes(dcli, dst, rl, dcaps))
+    print(f"  Unique files:    {C.BOLD}{len(rels)}{C.RESET}")
+    print(f"  Duplicates:      {C.BOLD}{len(links)}{C.RESET}  (dest FS: {link_kind})")
+    print(f"  Space saved:     {C.BOLD}{fmt_size(saved)}{C.RESET}")
+    if skipped:
+        print(f"  Already present: {C.BOLD}{len(skipped)}{C.RESET} (skipped)")
+
+    if args.dry_run:
+        if cache:
+            cache.close()
+        print(f"\n  {C.YELLOW}(dry run — would copy {len(rels)}, link {len(links)}, "
+              f"skip {len(skipped)}){C.RESET}")
+        scli.close()
+        dcli.close()
+        return 0
+
+    # ── Phase 3 — Space check (default; override with --force) ──
+    banner("Phase 3 — Space check")
+    if rels and not _check_space_remote(dcli, dst, sum(src_files[r][0] for r in rels), args.force):
+        if cache:
+            cache.close()
+        scli.close()
+        dcli.close()
+        return 1
+
+    # ── Phase 4 — Remote-to-remote copy (in tar chunks) ──
+    banner("Phase 4 — Remote-to-remote copy")
+    total = sum(src_files[r][0] for r in rels) or 1
+    done_bytes = done_files = last = 0
+    chunk_mb = max(1, getattr(args, "chunk_size", 100))
+    chunk_bytes = chunk_mb * 1024 * 1024
+    batches = _batch_rels(rels, lambda r: src_files[r][0], max_bytes=chunk_bytes)
+    print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)}) "
+          f"in {len(batches)} chunk(s) of ~{chunk_mb} MB\n")
+    for bi, batch in enumerate(batches):
+        so, se = _ssh_tar_send(scli, parent, batch)
+        di, do, de = dcli.exec_command(
+            "mkdir -p %s && cd %s && tar xpf -" % (shlex.quote(dst), shlex.quote(dst)))
+        while True:
+            b = so.read(131072)
+            if not b:
+                break
+            di.channel.sendall(b)
+            done_bytes += len(b)
+            if done_bytes - last >= 2 * 1024 * 1024:
+                last = done_bytes
+                _tar_emit(done_bytes, total, done_files, len(rels), start)
+        di.channel.shutdown_write()
+        rcs, rcd = so.channel.recv_exit_status(), do.channel.recv_exit_status()
+        if rcs or rcd:
+            err = (se.read() + de.read()).decode("utf-8", "replace").strip()
+            print(f"{C.RED}Error: {err or 'remote tar failed'}{C.RESET}")
+            scli.close()
+            dcli.close()
+            return 1
+        done_files += len(batch)
+        _tar_emit(done_bytes, total, done_files, len(rels), start)
+        print(f"  chunk {bi + 1}/{len(batches)} done "
+              f"({done_files}/{len(rels)} files, {fmt_size(done_bytes)})")
+
+    # dedup links on the destination remote, honoring its FS
+    if links:
+        cmds = []
+        for dup, target in links:
+            dd = posixpath.dirname(dup)
+            if dd:
+                cmds.append("mkdir -p " + shlex.quote(dd))
+            if dcaps["hardlink"]:
+                cmds.append("ln -f %s %s" % (shlex.quote(target), shlex.quote(dup)))
+            else:
+                rt = posixpath.relpath(target, dd or ".")
+                cmds.append("ln -sf %s %s" % (shlex.quote(rt), shlex.quote(dup)))
+        _o, _e, rc = _ssh_run(dcli, "cd %s && " % shlex.quote(dst) + " && ".join(cmds))
+        if rc:
+            print(f"  {C.YELLOW}Warning: some dedup links could not be created{C.RESET}")
+
+    # verify: hash the same files on BOTH remotes and compare
+    verified = True
+    vhashes = {}
+    if not args.no_verify and algo:
+        check = list(rels) + [d for d, _t in links]
+        banner("Verifying")
+        sh = _ssh_remote_hashes(scli, parent, check, scaps)
+        dh = _ssh_remote_hashes(dcli, dst, check, dcaps)
+        vhashes = dict(sh)                            # source == dest content
+        bad = 0
+        for k, rel in enumerate(check):
+            if sh.get(rel) and dh.get(rel) and sh[rel] != dh[rel]:
+                bad += 1
+                print(f"  {C.RED}✗ verify mismatch: {rel}{C.RESET}")
+            if (k + 1) % 16 == 0 or k + 1 == len(check):
+                _verify_emit(k + 1, len(check))
+        verified = (bad == 0)
+        if verified:
+            print(f"  {C.GREEN}✓ Verified {len(check)} file(s){C.RESET}")
+
+    # record EVERY copied file in the dedup DB (complete index of the dest)
+    if cache is None and not args.no_dedup and algo:
+        cache = SshDedupCache(dst_remote.host, dst)
+    if cache is not None:
+        all_h = dict(copy_hashes or {})
+        all_h.update(vhashes)
+        for rel in rels:
+            h = all_h.get(rel)
+            if h:
+                cache.record(rel, src_files[rel][0], src_files[rel][1], h)
+        cache.close()
+
+    _tar_emit(total, total, len(rels) + len(links), len(src_files), start, final=True)
+    _ssh_done_summary(
+        f"{src_remote.user}@{src_remote.host}:{rpath}",
+        f"{dst_remote.user}@{dst_remote.host}:{dst}", len(src_files),
+        sum(src_files[r][0] for r in rels), time.time() - start, "transferred",
+        copied=len(rels), linked=len(links), skipped=len(skipped), saved=saved,
+        verified=(verified if (not args.no_verify and algo) else None))
+    scli.close()
+    dcli.close()
+    return 0 if verified else 1
+
+
+def copy_via_tar_ssh(src_remote, dst_remote, dst, local_srcs, args):
+    """SSH-only copy via tar over the exec channel (no SFTP). Returns exit code.
+    Handles remote→local (pull), local→remote (push), remote→remote (r2r)."""
+    if not _has_paramiko:
+        print(f"{C.RED}Error: SSH transfers require paramiko.{C.RESET}")
+        return 1
+    start = time.time()
+
+    try:
+        if src_remote and dst_remote:
+            return _ssh_r2r_smart(src_remote, dst_remote, dst, args, start)
+        elif src_remote:
+            return _ssh_pull_smart(src_remote, dst, args, start)
+        elif dst_remote:
+            return _ssh_push_smart(dst_remote, dst, local_srcs, args, start)
+        print(f"{C.RED}Error: --ssh-no-sftp needs a remote source or destination.{C.RESET}")
+        return 1
+    except Exception as e:
+        msg = str(e).strip().splitlines()[0] if str(e).strip() else e.__class__.__name__
+        print(f"{C.RED}Error: {msg}{C.RESET}")
+        return 1
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
 def main():
+    # Capture the creds passphrase out of the environment before we spawn any
+    # child process (chattr/setfacl/getfacl/ACL helpers), so the secret is never
+    # inherited into their environments. See _scrub_passphrase_env.
+    _scrub_passphrase_env()
     parser = argparse.ArgumentParser(
+        prog="fast_copy.py",
         description="Block-order fast copy with dedup — reads files in physical "
-                    "disk order, deduplicates identical files",
+                    "disk order, deduplicates identical files. Copies between "
+                    "local paths, SSH hosts (user@host:/path), and cloud object "
+                    "storage (s3:// / az:// / gs://).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            subcommands:
+              creds <sub>      Manage saved cloud/SSH connection profiles in the
+                               credentials file: add, list, edit, remove, test,
+                               encrypt/decrypt, lock. Run 'fast_copy.py creds' for help.
+              ls <target>      List a cloud location (saved connection name or
+                               s3:// / az:// / gs:// URL) or a remote SSH directory
+                               (saved ssh connection or user@host:/path, via SFTP).
+                               Alias: list-objects. Run 'fast_copy.py ls -h' for help.
+
+            examples:
+              fast_copy.py /data /media/usb/data           local  → local
+              fast_copy.py /data user@host:/backup         local  → remote (SSH)
+              fast_copy.py user@host:/data /local/backup   remote → local
+              fast_copy.py /data s3://bucket/backup        local  → cloud
+              fast_copy.py creds add aws-dev               save a connection profile
+              fast_copy.py ls aws-dev                      list a saved cloud connection
+              fast_copy.py ls user@host:/var/log           list a remote SSH directory
+            """),
     )
-    parser.add_argument("--version", "-V", action="store_true",
-                        help="Show version and exit")
-    parser.add_argument("--check-update", action="store_true",
-                        help="Show available updates and release notes")
-    parser.add_argument("--update", nargs="?", const=True, default=False,
-                        metavar="VERSION",
-                        help="Download and install latest (or a specific version)")
     parser.add_argument("paths", nargs="*", metavar="SOURCE ... DESTINATION",
                         help="One or more sources, followed by the destination. "
                              "A source can be a folder, file, or glob pattern "
@@ -5246,75 +9946,154 @@ def main():
                              "basenames (cp -r style). Glob in the basename "
                              "also works for SSH sources, e.g. "
                              "user@host:/data/*.tar.gz")
-    parser.add_argument("--buffer", type=int, default=DEFAULT_BUFFER_MB,
+
+    copy_grp = parser.add_argument_group("copy options")
+    copy_grp.add_argument("--buffer", type=int, default=DEFAULT_BUFFER_MB,
                         help=f"Buffer size in MB (default: {DEFAULT_BUFFER_MB})")
-    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS,
+    copy_grp.add_argument("--threads", type=int, default=DEFAULT_THREADS,
                         help=f"Threads for hashing/layout (default: {DEFAULT_THREADS})")
-    parser.add_argument("--dry-run", action="store_true",
+    copy_grp.add_argument("--cloud-concurrency", type=int,
+                        default=DEFAULT_CLOUD_CONCURRENCY,
+                        help=f"Concurrent uploads/downloads for object storage "
+                             f"(s3/az/gs). Small-file transfers are latency-bound, "
+                             f"so this defaults higher than --threads "
+                             f"(default: {DEFAULT_CLOUD_CONCURRENCY})")
+    copy_grp.add_argument("--dry-run", action="store_true",
                         help="Show copy plan without copying")
-    parser.add_argument("-v", "--verbose", action="store_true",
+    copy_grp.add_argument("-v", "--verbose", action="store_true",
                         help="Verbose output (full FS detection details, etc.)")
-    parser.add_argument("--no-verify", action="store_true",
+    copy_grp.add_argument("--no-verify", action="store_true",
                         help="Skip post-copy verification")
-    parser.add_argument("--log-file", default=None,
+    copy_grp.add_argument("--log-file", default=None,
                         help="Write structured JSON log to file")
-    parser.add_argument("--no-dedup", action="store_true",
+    copy_grp.add_argument("--no-dedup", action="store_true",
                         help="Disable deduplication")
-    parser.add_argument("--hash", choices=["auto", "xxh128", "sha256"],
+    copy_grp.add_argument("--hash", choices=["auto", "xxh128", "sha256"],
                         default="auto",
                         help="Hash algorithm for dedup/verify. "
                              "auto (default): xxh128 if installed, else sha256. "
                              "xxh128: force xxh128 (10x faster, non-cryptographic). "
                              "sha256: force sha256 (cryptographic; collision-resistant).")
-    parser.add_argument("--force", action="store_true",
+    copy_grp.add_argument("--force", action="store_true",
                         help="Skip space check, copy even if not enough space")
-    parser.add_argument("--overwrite", action="store_true",
+    copy_grp.add_argument("--overwrite", action="store_true",
                         help="Overwrite all files, skip identical-file detection")
-    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+    copy_grp.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="Exclude files/dirs by name or glob (e.g. .venv, "
                              "*.bat, .git*). Matching directories are pruned. "
                              "Repeatable.")
-    parser.add_argument("-R", "--keep-parents", action="store_true",
-                        dest="keep_parents",
-                        help="Preserve each source's full parent path under the "
-                             "destination (rsync -R semantics). Without this, "
-                             "multi-source and glob copies use the source's "
-                             "basename only — `/etc /var/log dst/` writes to "
-                             "`dst/etc/` and `dst/log/`. With --keep-parents, "
-                             "they write to `dst/etc/` and `dst/var/log/`. "
-                             "Use for incident snapshots and forensic captures "
-                             "where source provenance must be preserved. "
-                             "No effect on single-source copies.")
-    parser.add_argument("--no-cache", action="store_true",
+    copy_grp.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
-    parser.add_argument("--use-sudo", action="store_true",
+    copy_grp.add_argument("--ssh-no-sftp", action="store_true", dest="ssh_no_sftp",
+                        help="Transfer over plain SSH using tar (no SFTP subsystem). "
+                             "For servers with SSH enabled but SFTP disabled "
+                             "(e.g. some NAS). Supports dedup/incremental/verify.")
+    copy_grp.add_argument("--chunk-size", type=int, default=100, metavar="MB",
+                        dest="chunk_size",
+                        help="SSH (--ssh-no-sftp) tar batch size in MB (default: "
+                             "100). Bigger = fewer round-trips; smaller = finer "
+                             "resume granularity. This is NOT --buffer (that's "
+                             "the block-copy I/O buffer).")
+    copy_grp.add_argument("--use-sudo", action="store_true",
                         help="Re-exec self under sudo if not already root. "
                              "sudo will prompt for the password on the terminal. "
                              "Useful when source or destination needs root "
                              "(e.g. /var/lib/longhorn/replicas). Linux/macOS only.")
-    # Destination SSH options
-    parser.add_argument("--ssh-dst-port", "--ssh-port", type=int, default=22,
+    copy_grp.add_argument("--preserve", default=None, metavar="TOKENS",
+                        help="Comma-separated metadata kinds to preserve on the "
+                             "destination: mode,times (default), owner, xattr, "
+                             "acl. Special tokens: all, none. Examples: "
+                             "--preserve=owner,xattr  --preserve=all. Under "
+                             "--use-sudo, --preserve=all is implicit unless you "
+                             "pass --preserve explicitly. Destination filesystems "
+                             "that can't store some metadata (FAT32 for xattrs, "
+                             "etc.) drop those attributes; a one-line summary "
+                             "reports what was preserved vs dropped.")
+    copy_grp.add_argument("--progress-json", action="store_true",
+                        help=argparse.SUPPRESS)
+
+    ssh_grp = parser.add_argument_group("ssh options (remote source / destination)")
+    ssh_grp.add_argument("--ssh-dst-port", "--ssh-port", type=int, default=22,
                         dest="ssh_port",
                         help="SSH port for remote destination (default: 22)")
-    parser.add_argument("--ssh-dst-key", "--ssh-key", default=None,
+    ssh_grp.add_argument("--ssh-dst-key", "--ssh-key", default=None,
                         dest="ssh_key",
                         help="Path to SSH private key for remote destination")
-    parser.add_argument("--ssh-dst-password", "--ssh-password", action="store_true",
+    ssh_grp.add_argument("--ssh-dst-password", "--ssh-password", action="store_true",
                         dest="ssh_password",
                         help="Prompt for SSH password for remote destination")
-    parser.add_argument("-z", "--compress", action="store_true",
+    ssh_grp.add_argument("--ssh-dst-password-env", default=None, metavar="VAR",
+                        dest="ssh_password_env", help=argparse.SUPPRESS)
+    ssh_grp.add_argument("--ssh-strict-host-key-checking", action="store_true",
+                        dest="ssh_strict_host_keys",
+                        help="Reject SSH host keys not already in known_hosts "
+                             "instead of the interactive trust-on-first-use "
+                             "prompt. Use for CI/automated runs to prevent "
+                             "first-connection MITM.")
+    ssh_grp.add_argument("-z", "--compress", action="store_true",
                         help="Enable SSH compression (good for slow links)")
-    # Source SSH options
-    parser.add_argument("--ssh-src-port", "--src-port", type=int, default=22,
+    ssh_grp.add_argument("--ssh-src-port", "--src-port", type=int, default=22,
                         dest="src_port",
                         help="SSH port for remote source (default: 22)")
-    parser.add_argument("--ssh-src-key", "--src-key", default=None,
+    ssh_grp.add_argument("--ssh-src-key", "--src-key", default=None,
                         dest="src_key",
                         help="Path to SSH private key for remote source")
-    parser.add_argument("--ssh-src-password", "--src-password", action="store_true",
+    ssh_grp.add_argument("--ssh-src-password", "--src-password", action="store_true",
                         dest="src_password",
                         help="Prompt for SSH password for remote source")
+    ssh_grp.add_argument("--ssh-src-password-env", default=None, metavar="VAR",
+                        dest="src_password_env", help=argparse.SUPPRESS)
+
+    cloud_grp = parser.add_argument_group(
+        "cloud / object storage options (s3:// az:// gs://)")
+    cloud_grp.add_argument("--endpoint-url", default=None,
+                        help="Custom S3-compatible endpoint (MinIO, Cloudflare "
+                             "R2, Wasabi, Backblaze B2).")
+    cloud_grp.add_argument("--s3-region", default=None,
+                        help="AWS region for s3:// (default: us-east-1)")
+    cloud_grp.add_argument("--s3-profile", default=None,
+                        help="AWS named profile from ~/.aws/credentials")
+    cloud_grp.add_argument("--az-connection-string", default=None,
+                        help="Azure Blob connection string (or env "
+                             "AZURE_STORAGE_CONNECTION_STRING)")
+    cloud_grp.add_argument("--az-account", default=None,
+                        help="Azure storage account name (with --az-key)")
+    cloud_grp.add_argument("--az-key", default=None,
+                        help="Azure storage account key. WARNING: a key passed "
+                             "on the command line is visible to other users via "
+                             "`ps` and is saved in shell history. Prefer a saved "
+                             "connection (fast_copy.py creds add) or the "
+                             "AZURE_STORAGE_CONNECTION_STRING env var.")
+    cloud_grp.add_argument("--gcs-project", default=None,
+                        help="Google Cloud project for gs://")
+    cloud_grp.add_argument("--gcs-credentials", default=None,
+                        help="Path to a GCS service-account JSON key file")
+    cloud_grp.add_argument("--credentials-file", default=None, metavar="PATH",
+                        help="Named-connection file for cloud credentials. "
+                             "Reference a connection by name (e.g. aws-dev, "
+                             "aws-dev:folder) or in a URL as s3://name@bucket/key. "
+                             "Defaults to credentials.json next to fast_copy.py "
+                             "(override with this flag or $FAST_COPY_CREDENTIALS). "
+                             "Manage it with: fast_copy.py creds add/list/edit/"
+                             "remove/test.")
+
+    info_grp = parser.add_argument_group("info & self-update")
+    info_grp.add_argument("--version", "-V", action="store_true",
+                        help="Show version and exit")
+    info_grp.add_argument("--check-update", action="store_true",
+                        help="Show available updates and release notes")
+    info_grp.add_argument("--update", nargs="?", const=True, default=False,
+                        metavar="VERSION",
+                        help="Download and install latest (or a specific version)")
     args = parser.parse_args()
+
+    if args.progress_json:
+        global PROGRESS_JSON
+        PROGRESS_JSON = True
+
+    if getattr(args, "ssh_strict_host_keys", False):
+        global _strict_host_keys
+        _strict_host_keys = True
 
     # Split positional paths into (sources..., destination). When 2+ positionals
     # are given, the last one is the destination and any earlier ones are
@@ -5356,6 +10135,37 @@ def main():
     # Must come before dedup, verify, or cache lookups.
     _set_hash_algo(args.hash)
 
+    # ── Named-connection endpoints (profiles) ─────────────────────────
+    # Expand `name` / `name:path` endpoints that match a saved connection
+    # (cloud or ssh) into their concrete form, and pull any SSH credentials
+    # from the profile — before cloud/SSH routing below sees the paths.
+    apply_named_endpoints(args)
+
+    # ── Object storage routing (v4.0.0) ───────────────────────────────
+    # If either endpoint is a cloud URL (s3:// / az:// / gs://), hand off to
+    # the object-storage backends. The local/SSH engine below handles only
+    # filesystem and SSH paths.
+    if is_cloud_path(args.source) or is_cloud_path(args.destination):
+        run_cloud_transfer(args)
+        return
+
+    # ── --preserve resolution ────────────────────────────────────────
+    # Default: mode + times (matches v3.1.x). When --use-sudo and no
+    # explicit --preserve, promote to 'all' since /etc backups without
+    # ownership are usually useless. When user passed --preserve, honor
+    # exactly what they asked.
+    try:
+        if args.preserve is None:
+            if _is_under_sudo() or args.use_sudo:
+                spec = PreserveSpec.from_tokens("all")
+            else:
+                spec = PreserveSpec()  # mode + times
+        else:
+            spec = PreserveSpec.from_tokens(args.preserve)
+    except ValueError as e:
+        parser.error(str(e))
+    _set_preserve_spec(spec)
+
     global _log_enabled
     if args.log_file:
         _log_enabled = True
@@ -5376,6 +10186,10 @@ def main():
         print(f"\n  {C.RED}Error: SSH transfers require paramiko.{C.RESET}")
         print(f"  Install it with: {C.BOLD}python -m pip install paramiko{C.RESET}\n")
         sys.exit(1)
+
+    # --preserve scope: owner/xattr/ACL now round-trip across L2L, L2R,
+    # R2L, and R2R. Remote operations require python3 on the relevant
+    # endpoint; at copy time we emit a clear message if it's missing.
 
     # One-time warning if xxhash is not installed
     if _hash_name != "xxh128":
@@ -5405,7 +10219,6 @@ def main():
     src_mode = None  # "dir", "file", "glob", "multi", "remote", or "remote_glob"
     glob_files = []
     multi_sources = []  # absolute paths, set when src_mode == "multi"
-    multi_sources_raw = []  # original CLI strings, parallel to multi_sources
     remote_glob_pattern = None  # set when src_mode == "remote_glob"
 
     if args.extra_sources and src_remote:
@@ -5428,7 +10241,6 @@ def main():
                 print(f"{C.RED}Error: source not found: {s}{C.RESET}")
                 sys.exit(1)
         multi_sources = [os.path.abspath(s) for s in all_src]
-        multi_sources_raw = list(all_src)
         src_mode = "multi"
         src = os.path.commonpath(multi_sources)
         if not os.path.isdir(src):
@@ -5487,13 +10299,6 @@ def main():
         else:
             src_display = src
 
-    # --keep-parents only changes layout for multi-source and glob copies.
-    # For a single file/dir source it would have no observable effect; warn
-    # so the user knows the flag didn't do anything.
-    if args.keep_parents and src_mode in ("dir", "file", "remote"):
-        print(f"  {C.YELLOW}Note: --keep-parents has no effect with a single "
-              f"source. Use 2+ source paths or a glob pattern.{C.RESET}")
-
     # Detect destination filesystem early so we can fold the strategy
     # into the Dedup banner line and use it for Phase 2/3.
     fs_info = None
@@ -5503,6 +10308,13 @@ def main():
             fs_info = detect_capabilities(dst)
         except Exception as e:
             fs_error = str(e)
+        # Probe destination for extended-metadata support upfront if the
+        # user asked for xattr or ACL preservation, so we can warn early
+        # and fall back gracefully on unsupported filesystems (FAT32, etc).
+        if _preserve_spec.xattr:
+            _probe_dst_xattr_support(dst)
+        if _preserve_spec.acl:
+            _probe_dst_acl_support(dst)
 
     banner("FAST BLOCK-ORDER COPY")
     print(f"  Source:      {C.BOLD}{src_display}{C.RESET}")
@@ -5549,6 +10361,17 @@ def main():
     if not src_remote and not dst_remote:
         print(f"  Hash cache:  {'disabled' if args.no_cache else 'enabled'}")
     print(f"  Overwrite:   {'always' if args.overwrite else 'skip identical'}")
+    # Show Preserve only when more than the default mode+times is requested,
+    # so the banner stays quiet for typical copies.
+    _spec_on = [k for k in PreserveSpec.KINDS if getattr(_preserve_spec, k)]
+    _spec_extended = [k for k in ("owner", "xattr", "acl") if getattr(_preserve_spec, k)]
+    if _spec_extended:
+        _spec_note = ""
+        if _preserve_spec.xattr and _preserve_dst_caps["xattr"] is False:
+            _spec_note = f" {C.YELLOW}(dst FS does not support xattrs){C.RESET}"
+        if _preserve_spec.acl and _preserve_dst_caps["acl"] is False:
+            _spec_note += f" {C.YELLOW}(dst FS does not support ACLs){C.RESET}"
+        print(f"  Preserve:    {C.BOLD}{','.join(_spec_on)}{C.RESET}{_spec_note}")
     if (src_remote or dst_remote) and args.compress:
         print(f"  Compression: {C.GREEN}enabled{C.RESET}")
     print(f"  Platform:    {_system}")
@@ -5571,13 +10394,24 @@ def main():
 
     print()
 
+    # ── SSH-only (no SFTP) fast path: tar over the exec channel ─────────
+    if getattr(args, "ssh_no_sftp", False) and (src_remote or dst_remote):
+        _tar_local_srcs = None
+        if not src_remote:
+            _tar_local_srcs = (multi_sources if args.extra_sources else [src_arg])
+        sys.exit(copy_via_tar_ssh(src_remote, dst_remote, dst, _tar_local_srcs, args))
+
     # ── Connect to remote source if needed ─────────────────────────────
     src_ssh = None
     if src_remote:
         banner("SSH — Connecting to source")
         src_password = None
-        if args.src_password:
+        if args.src_password_env:
+            src_password = os.environ.get(args.src_password_env)
+        elif args.src_password:
             src_password = getpass.getpass(f"Password for {src_remote.user}@{src_remote.host}: ")
+        elif getattr(args, "_resolved_src_password", None):
+            src_password = args._resolved_src_password
         src_ssh = SSHConnection(src_remote, port=src_remote.port, key_path=args.src_key,
                                 password=src_password, compress=args.compress,
                                 ).connect()
@@ -5648,10 +10482,7 @@ def main():
         errors = []
         for fpath in glob_files:
             abs_f = os.path.abspath(fpath)
-            if args.keep_parents:
-                rel = _keep_parents_rel(fpath)
-            else:
-                rel = os.path.relpath(abs_f, src)
+            rel = os.path.relpath(abs_f, src)
             try:
                 st = os.stat(abs_f)
                 entries.append(FileEntry(src=abs_f, rel=rel, size=st.st_size,
@@ -5662,16 +10493,11 @@ def main():
         print(f"  {C.GREEN}Found {len(entries)} files{C.RESET}")
     elif src_mode == "multi":
         # cp -r src1 src2 ... dst/  → each source preserves its basename
-        # under destination. With --keep-parents, the source's full parent
-        # path is preserved instead (rsync -R semantics). Directories are
-        # walked; files are added directly.
+        # under destination. Directories are walked; files are added directly.
         entries = []
         errors = []
-        for s, s_raw in zip(multi_sources, multi_sources_raw):
-            if args.keep_parents:
-                base = _keep_parents_rel(s_raw)
-            else:
-                base = os.path.basename(s.rstrip(os.sep)) or s
+        for s in multi_sources:
+            base = os.path.basename(s.rstrip(os.sep)) or s
             if os.path.isfile(s):
                 try:
                     st = os.stat(s)
@@ -5827,8 +10653,12 @@ def main():
             # ── Connect to destination ───────────────────────────────
             banner("SSH — Connecting to destination")
             dst_password = None
-            if args.ssh_password:
+            if args.ssh_password_env:
+                dst_password = os.environ.get(args.ssh_password_env)
+            elif args.ssh_password:
                 dst_password = getpass.getpass(f"Password for {dst_remote.user}@{dst_remote.host}: ")
+            elif getattr(args, "_resolved_dst_password", None):
+                dst_password = args._resolved_dst_password
             dst_ssh = SSHConnection(dst_remote, port=dst_remote.port, key_path=args.ssh_key,
                                     password=dst_password, compress=args.compress,
                                     ).connect()
@@ -5986,6 +10816,30 @@ def main():
             copy_hybrid_r2r(copy_entries, src_ssh, dst_ssh, src, dst, progress, buf_size)
             progress.finish()
 
+            # R2R extended-metadata: collect xattr/ACL/owner from src remote
+            # via the existing collector, then apply to dst remote via the
+            # same script L2R uses. Both endpoints need python3.
+            if _preserve_spec.any_extended():
+                want_o = _preserve_spec.owner
+                want_x = _preserve_spec.xattr
+                want_a = _preserve_spec.acl
+                if not (src_ssh.caps.get("python3") and dst_ssh.caps.get("python3")):
+                    print(f"  {C.YELLOW}Skipping R2R owner/xattr/ACL transfer "
+                          f"— one of the remotes lacks python3.{C.RESET}")
+                else:
+                    print(f"  {C.DIM}Collecting + applying remote metadata "
+                          f"for {len(copy_entries)} files...{C.RESET}",
+                          end="", flush=True)
+                    rel_paths = [e.rel for e in copy_entries]
+                    meta = _remote_collect_metadata(src_ssh, src, rel_paths,
+                                                    want_x, want_a,
+                                                    want_owner=want_o)
+                    _apply_collected_metadata_to_remote(
+                        dst_ssh, dst, meta, want_o, want_x, want_a)
+                    print(f"\r  {C.GREEN}R2R metadata: collected {len(meta)} "
+                          f"records, applied to destination                    "
+                          f"{C.RESET}")
+
             # Post-copy rename for R2R file-destination
             if _dst_file_rename is not None and copy_entries:
                 new_rel, old_rel = _dst_file_rename
@@ -6030,6 +10884,7 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_preserve_summary()
             if args.log_file:
                 write_log_file(args.log_file, {
                     "source": f"{src_remote.user}@{src_remote.host}:{src}",
@@ -6153,6 +11008,35 @@ def main():
                                         case_renames=case_renames)
             progress.finish()
 
+            # R2L extended-metadata preservation (xattr/ACL). Owner already
+            # rode through tar headers via filter='tar' in _safe_tar_extract.
+            # We collect xattrs/ACLs from the remote side via a single batched
+            # python3 script and apply them locally.
+            if _preserve_spec.xattr or _preserve_spec.acl:
+                want_x = _preserve_spec.xattr and _preserve_dst_caps["xattr"] is not False
+                want_a = _preserve_spec.acl and _preserve_dst_caps["acl"] is not False
+                if want_x or want_a:
+                    if not src_ssh.caps.get("python3"):
+                        print(f"  {C.YELLOW}Skipping remote xattr/ACL "
+                              f"collection — remote lacks python3.{C.RESET}")
+                    else:
+                        print(f"  {C.DIM}Collecting remote metadata for "
+                              f"{len(copy_entries)} files...{C.RESET}",
+                              end="", flush=True)
+                        rel_paths = [e.rel for e in copy_entries]
+                        meta = _remote_collect_metadata(src_ssh, src, rel_paths,
+                                                        want_x, want_a)
+                        _apply_remote_metadata_local(meta, dst, want_x, want_a)
+                        # 'meta' may be {} when no files had any xattr/ACL —
+                        # that's "nothing to preserve", not a failure.
+                        if meta:
+                            print(f"\r  {C.GREEN}Collected remote metadata "
+                                  f"for {len(meta)} files                    "
+                                  f"{C.RESET}")
+                        else:
+                            print(f"\r  {C.DIM}No remote xattrs/ACLs found "
+                                  f"to preserve                    {C.RESET}")
+
             # Create links locally (reflink-aware when supported)
             if link_map:
                 create_links(link_map, dst, fs_strategy=fs_strategy)
@@ -6177,6 +11061,7 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_preserve_summary()
             if args.log_file:
                 write_log_file(args.log_file, {
                     "source": f"{src_remote.user}@{src_remote.host}:{src}",
@@ -6222,8 +11107,12 @@ def main():
             # ── Connect ──────────────────────────────────────────────
             banner("SSH — Connecting")
             password = None
-            if args.ssh_password:
+            if args.ssh_password_env:
+                password = os.environ.get(args.ssh_password_env)
+            elif args.ssh_password:
                 password = getpass.getpass(f"Password for {remote.user}@{remote.host}: ")
+            elif getattr(args, "_resolved_dst_password", None):
+                password = args._resolved_dst_password
             ssh = SSHConnection(remote, port=remote.port, key_path=args.ssh_key,
                                 password=password, compress=args.compress,
                                 ).connect()
@@ -6296,6 +11185,28 @@ def main():
             copy_hybrid_remote(copy_entries, ssh, dst, progress, buf_size)
             progress.finish()
 
+            # L2R extended-metadata preservation (owner/xattr/ACL). Mode and
+            # mtime ride through tar headers already; owner/xattr/ACL need
+            # a separate push step because the tar producer strips them or
+            # the tar format doesn't carry them. We collect locally and
+            # ship a serialized payload to a python3 helper on the remote.
+            if _preserve_spec.owner or _preserve_spec.xattr or _preserve_spec.acl:
+                want_o = _preserve_spec.owner
+                want_x = _preserve_spec.xattr
+                want_a = _preserve_spec.acl
+                if not ssh.caps.get("python3"):
+                    print(f"  {C.YELLOW}Skipping remote owner/xattr/ACL "
+                          f"apply — remote lacks python3.{C.RESET}")
+                else:
+                    print(f"  {C.DIM}Applying remote metadata for "
+                          f"{len(copy_entries)} files...{C.RESET}",
+                          end="", flush=True)
+                    _push_metadata_to_remote(ssh, dst, copy_entries, src,
+                                             want_o, want_x, want_a)
+                    print(f"\r  {C.GREEN}Applied remote metadata for "
+                          f"{len(copy_entries)} files                    "
+                          f"{C.RESET}")
+
             # Create links on remote
             if link_map:
                 create_links_remote(ssh, link_map, dst)
@@ -6322,6 +11233,7 @@ def main():
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_preserve_summary()
             if args.log_file:
                 write_log_file(args.log_file, {
                     "source": src_display, "destination": f"{remote.user}@{remote.host}:{dst}",
@@ -6531,6 +11443,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     print(data_line)
     print(f"  Time:    {C.BOLD}{fmt_time(elapsed)}{C.RESET}")
     print(f"  Speed:   {C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    _print_preserve_summary()
     # Hidden audit file when running under sudo — written BEFORE write_log_file
     # since the latter clears _log_entries.
     write_sudo_audit(args.source, dst, {
@@ -6557,7 +11470,84 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     print()
 
 
-if __name__ == "__main__":
+def _reexec_under_sudo():
+    """If --use-sudo is present and we're not already root, re-exec the whole
+    command under sudo — so privileged subcommands work without the user typing
+    `sudo …`: the copy path (preserve-all) and `creds lock/unlock`, which need
+    root for chattr. Strips --use-sudo from the elevated argv so it doesn't
+    loop. Returns (caller continues unprivileged) when no elevation is needed:
+    flag absent, already root, or a platform without geteuid."""
+    if "--use-sudo" not in sys.argv:
+        return
+    if not hasattr(os, "geteuid"):
+        print(f"Error: --use-sudo is not supported on {_system}", file=sys.stderr)
+        sys.exit(1)
+    if os.geteuid() == 0:
+        return  # already root — nothing to elevate
+    # Before elevating, refuse if the script file, its directory, or the Python
+    # interpreter could be modified by anyone other than the invoker or root —
+    # otherwise a non-root attacker with write access to any of them would own
+    # the resulting root process.
+    def _check_safe_for_sudo(path, label):
+        try:
+            rp = os.path.realpath(path)
+            st = os.stat(rp)
+        except OSError as e:
+            print(f"Error: --use-sudo: cannot stat {label} ({path}): {e}",
+                  file=sys.stderr)
+            sys.exit(1)
+        me = os.geteuid()
+        if st.st_uid not in (0, me):
+            print(f"Error: --use-sudo: {label} {rp} is owned by uid={st.st_uid} "
+                  f"(not root or invoking user uid={me}). Refusing to elevate.",
+                  file=sys.stderr)
+            sys.exit(1)
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            print(f"Error: --use-sudo: {label} {rp} is group/world writable "
+                  f"(mode={oct(st.st_mode & 0o777)}). Fix: chmod go-w {rp}",
+                  file=sys.stderr)
+            sys.exit(1)
+        return rp
+    script_real = _check_safe_for_sudo(_get_self_path(), "script")
+    _check_safe_for_sudo(os.path.dirname(script_real), "script directory")
+    _check_safe_for_sudo(sys.executable, "Python interpreter")
+    new_argv = [a for a in sys.argv if a != "--use-sudo"]
+    try:
+        os.execvp("sudo", ["sudo", sys.executable] + new_argv)
+    except (OSError, FileNotFoundError) as e:
+        print(f"Error: cannot exec sudo: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cli_entry():
+    """Full command-line entry point: the same dispatch as running fast_copy.py
+    directly — sudo re-exec, the creds/ls/deps subcommands, --version/
+    --check-update/--update, then main(). Exposed as a function (not inline under
+    __main__) so the GUI's `--fc-core` passthrough behaves exactly like the
+    standalone CLI, not just the copy path."""
+    # Elevate early (when --use-sudo is given) so it covers every subcommand,
+    # including `creds lock/unlock` — must run before the creds dispatch below.
+    _reexec_under_sudo()
+    # `creds` manager subcommand — handled before argparse (it has its own args).
+    if len(sys.argv) > 1 and sys.argv[1] == "creds":
+        try:
+            sys.exit(creds_manager(sys.argv[2:]))
+        except KeyboardInterrupt:
+            sys.stderr.write("\n  Interrupted.\n")
+            sys.exit(130)
+    if len(sys.argv) > 1 and sys.argv[1] in ("ls", "list-objects"):
+        try:
+            sys.exit(cloud_ls(sys.argv[2:]))
+        except KeyboardInterrupt:
+            sys.stderr.write("\n  Interrupted.\n")
+            sys.exit(130)
+    if len(sys.argv) > 1 and sys.argv[1] in ("deps", "check-deps", "doctor"):
+        install = any(a in ("--install", "-i") for a in sys.argv[2:])
+        try:
+            sys.exit(check_dependencies(install=install))
+        except KeyboardInterrupt:
+            sys.stderr.write("\n  Interrupted.\n")
+            sys.exit(130)
     # Handle --version, --check-update, --update before argparse requires positional args
     if "--version" in sys.argv or "-V" in sys.argv:
         print(f"fast-copy v{__version__}")
@@ -6601,50 +11591,10 @@ if __name__ == "__main__":
                 print("Error: --update-sha256 must be 64 hex characters.", file=sys.stderr)
                 sys.exit(1)
         self_update(target_version=target_ver, expected_sha256=expected_sha)
+        _post_update_dep_check()
         sys.exit(0)
-    # --use-sudo: re-exec self under sudo so the user doesn't have to type
-    # `sudo python fast_copy.py …`. sudo prompts for the password
-    # interactively on the terminal; we strip the flag from argv so the
-    # elevated process doesn't loop.
-    if "--use-sudo" in sys.argv:
-        if not hasattr(os, "geteuid"):
-            print(f"Error: --use-sudo is not supported on {_system}",
-                  file=sys.stderr)
-            sys.exit(1)
-        if os.geteuid() != 0:
-            # Before elevating, refuse if the script file, its directory, or
-            # the Python interpreter could be modified by anyone other than
-            # the invoker or root. A non-root attacker with write access to
-            # any of those would otherwise own the resulting root process.
-            def _check_safe_for_sudo(path, label):
-                try:
-                    rp = os.path.realpath(path)
-                    st = os.stat(rp)
-                except OSError as e:
-                    print(f"Error: --use-sudo: cannot stat {label} ({path}): {e}",
-                          file=sys.stderr)
-                    sys.exit(1)
-                me = os.geteuid()
-                if st.st_uid not in (0, me):
-                    print(f"Error: --use-sudo: {label} {rp} is owned by uid={st.st_uid} "
-                          f"(not root or invoking user uid={me}). Refusing to elevate.",
-                          file=sys.stderr)
-                    sys.exit(1)
-                if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-                    print(f"Error: --use-sudo: {label} {rp} is group/world writable "
-                          f"(mode={oct(st.st_mode & 0o777)}). "
-                          f"Fix: chmod go-w {rp}", file=sys.stderr)
-                    sys.exit(1)
-                return rp
-            script_real = _check_safe_for_sudo(_get_self_path(), "script")
-            _check_safe_for_sudo(os.path.dirname(script_real), "script directory")
-            _check_safe_for_sudo(sys.executable, "Python interpreter")
-            new_argv = [a for a in sys.argv if a != "--use-sudo"]
-            try:
-                os.execvp("sudo", ["sudo", sys.executable] + new_argv)
-            except (OSError, FileNotFoundError) as e:
-                print(f"Error: cannot exec sudo: {e}", file=sys.stderr)
-                sys.exit(1)
+    # --use-sudo elevation is handled at the top of __main__ (see
+    # _reexec_under_sudo) so it also covers the `creds` subcommands.
 
     # Windows: clean up .old file from previous update on normal runs
     if _system == "Windows":
@@ -6659,3 +11609,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
         sys.exit(130)
+
+
+if __name__ == "__main__":
+    cli_entry()

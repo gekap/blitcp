@@ -1,0 +1,7 @@
+# Optional — only needed for object-storage transfers (s3:// / az:// / gs://).
+# The fast_copy.py engine imports these lazily; a plain local or SSH copy
+# needs none of them.
+boto3>=1.28              # S3 and all S3-compatible (MinIO, R2, Wasabi, B2)
+azure-storage-blob>=12.0 # Azure Blob Storage (az://)
+google-cloud-storage>=2.0 # Google Cloud Storage (gs://)
+cryptography>=41.0       # only for an encrypted credentials file (creds encrypt)

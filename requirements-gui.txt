@@ -1,0 +1,3 @@
+# Optional — only needed for the desktop GUI (fast_copy_gui_qt.py).
+# The fast_copy.py engine itself is stdlib-only and needs none of this.
+PySide6>=6.6

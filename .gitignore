@@ -1,7 +1,6 @@
 REPORT.md
 __pycache__/
 *.pyc
-.claude/
 # Local test artifacts (not part of the tool)
 blue1
 downloads1
@@ -11,3 +10,17 @@ test_*.py
 pentest_scenarios.py
 fs_detect.py
 check_exploits.py
+# TLS material (Cloudflare Origin Cert + private key for fast-copy.dev)
+*.pem
+*.key
+*.crt
+
+# fast-copy credentials live next to the script — never commit them
+credentials.json
+fastcopy-creds.json
+
+# Google Cloud service-account key(s) — never commit
+fastcopy-498019-33a083612ff5.json
+*-service-account*.json
+gcs-*.json
+keys.txt

@@ -23,7 +23,6 @@ jobs:
           - os: windows-latest
             name: windows
             artifact: fast_copy.exe
-            python-version: '3.8'
 
     runs-on: ${{ matrix.os }}
 
@@ -40,20 +39,69 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
 
-      - name: Rename binary with platform suffix
+      - name: Rename binaries with platform suffix
         shell: bash
         run: |
-          if [ "${{ matrix.name }}" = "windows" ]; then
-            mv dist/fast_copy.exe dist/fast_copy-${{ matrix.name }}.exe
+          n="${{ matrix.name }}"
+          if [ "$n" = "windows" ]; then
+            mv dist/fast_copy.exe dist/fast_copy-$n.exe
+            [ -f dist/fast_copy_gui.exe ] && mv dist/fast_copy_gui.exe dist/fast_copy_gui-$n.exe
           else
-            mv dist/fast_copy dist/fast_copy-${{ matrix.name }}
+            mv dist/fast_copy dist/fast_copy-$n
+            # GUI on macOS is a .app bundle → zip it; elsewhere it's a loose binary.
+            if [ -d dist/fast_copy_gui.app ]; then
+              (cd dist && zip -qr fast_copy_gui-$n.app.zip fast_copy_gui.app)
+            elif [ -f dist/fast_copy_gui ]; then
+              mv dist/fast_copy_gui dist/fast_copy_gui-$n
+            fi
           fi
+          ls -la dist/
+
+      # Authenticode-sign the Windows binaries (CLI + GUI) with signtool — used
+      # for private testing with your own cert (incl. a self-signed test cert).
+      # Self-skips when no cert is configured. For PUBLIC releases, leave this
+      # unset and use the free SignPath `sign-windows` job below instead.
+      # Secrets: WINDOWS_CERT_PFX_BASE64 (base64 of your .pfx), WINDOWS_CERT_PASSWORD.
+      - name: Sign Windows binaries (signtool)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) {
+            Write-Host "::warning::WINDOWS_CERT_PFX_BASE64 not set — shipping UNSIGNED Windows binaries."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' -ErrorAction SilentlyContinue |
+                        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe not found in the Windows SDK.' }
+          Write-Host "Using $signtool"
+          foreach ($f in Get-ChildItem 'dist\fast_copy*-windows.exe') {
+            & $signtool sign `
+              /f $pfx /p $env:WINDOWS_CERT_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              /d 'fast-copy' $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signing failed for $($f.Name)" }
+            # Verify is informational: a self-signed test cert's root isn't trusted
+            # on the runner, so /pa returns non-zero even though the file IS signed.
+            & $signtool verify /pa /v $f.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::$($f.Name): signed OK, but chain not trusted on the runner (expected for a self-signed test cert)."
+            }
+          }
+          Remove-Item $pfx -Force
+          exit 0          # don't let verify's exit code fail the step
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fast_copy-${{ matrix.name }}
-          path: dist/fast_copy-${{ matrix.name }}*
+          path: |
+            dist/fast_copy-${{ matrix.name }}*
+            dist/fast_copy_gui-${{ matrix.name }}*
 
   build-macos-intel:
     runs-on: macos-latest
@@ -76,18 +124,53 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
         run: |
-          arch -x86_64 "$X86_PYTHON" -m pip install pyinstaller xxhash paramiko --quiet --disable-pip-version-check
-          arch -x86_64 "$X86_PYTHON" -m PyInstaller --onefile --name fast_copy --clean --noupx --console --hidden-import=xxhash --hidden-import=paramiko fast_copy.py
+          # PyInstaller runs in the env; build it there.
+          arch -x86_64 "$X86_PYTHON" -m pip install pyinstaller --quiet --disable-pip-version-check
+          # Force x86_64-compatible wheels for deps with native code (cryptography's
+          # Rust ext, cffi, xxhash, paramiko's pynacl/bcrypt). On GitHub's arm64
+          # macOS runners a plain install grabs arm64 wheels even under `arch -x86_64`,
+          # so resolve explicitly by platform tag instead of host detection.
+          PKGDIR="$RUNNER_TEMP/x86libs"
+          arch -x86_64 "$X86_PYTHON" -m pip install \
+            --only-binary=:all: --target "$PKGDIR" \
+            --platform macosx_10_9_x86_64 \
+            --platform macosx_10_12_x86_64 \
+            --platform macosx_10_13_x86_64 \
+            --platform macosx_11_0_x86_64 \
+            --platform macosx_10_12_universal2 \
+            --platform macosx_11_0_universal2 \
+            xxhash paramiko cryptography cffi pynacl bcrypt PySide6
+          # Make the x86_64 deps importable by PyInstaller's analysis/hooks.
+          PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
+            --onefile --name fast_copy --clean --noupx --console \
+            --paths "$PKGDIR" --icon assets/fast-copy.icns \
+            --hidden-import=xxhash --hidden-import=paramiko \
+            fast_copy.py
           file dist/fast_copy
+          # GUI (best-effort — must not block the CLI release).
+          PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
+            --onefile --windowed --name fast_copy_gui --clean --noupx \
+            --paths "$PKGDIR" --icon assets/fast-copy.icns \
+            --hidden-import=xxhash --hidden-import=paramiko \
+            fast_copy_modern_gui.py || echo "::warning::macOS-intel GUI build failed; shipping CLI only"
 
-      - name: Rename binary
-        run: mv dist/fast_copy dist/fast_copy-macos-intel
+      - name: Rename binaries
+        run: |
+          mv dist/fast_copy dist/fast_copy-macos-intel
+          if [ -d dist/fast_copy_gui.app ]; then
+            (cd dist && zip -qr fast_copy_gui-macos-intel.app.zip fast_copy_gui.app)
+          elif [ -f dist/fast_copy_gui ]; then
+            mv dist/fast_copy_gui dist/fast_copy_gui-macos-intel
+          fi
+          ls -la dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fast_copy-macos-intel
-          path: dist/fast_copy-macos-intel
+          path: |
+            dist/fast_copy-macos-intel*
+            dist/fast_copy_gui-macos-intel*
 
   release:
     needs: [build, build-macos-intel]
@@ -113,3 +196,53 @@ jobs:
           done
           # Also upload the Python script
           gh release upload "$tag" fast_copy.py --clobber
+
+  # ── Free Authenticode signing via SignPath Foundation (open-source program) ──
+  # Runs only when the SignPath variables/secret are configured, so the release
+  # still succeeds before you've been approved. Setup (one-time, by you):
+  #   1. Apply at https://signpath.io/open-source (project must be public OSS —
+  #      this repo is Apache-2.0, so it qualifies). Get approved.
+  #   2. In SignPath, create a project (link this GitHub repo) + a "release"
+  #      signing policy, and an artifact configuration that signs the two .exe
+  #      files inside the fast_copy-windows artifact.
+  #   3. Add repo Variables: SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+  #      SIGNPATH_POLICY_SLUG. Add repo Secret: SIGNPATH_API_TOKEN.
+  # Once set, this job signs the Windows CLI + GUI and replaces the unsigned
+  # assets on the release with the signed ones.
+  sign-windows:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    permissions:
+      contents: write
+      id-token: write          # SignPath verifies build provenance via OIDC
+    steps:
+      - name: Resolve Windows artifact id
+        id: art
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                --jq '.artifacts[] | select(.name=="fast_copy-windows") | .id')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Submit Windows binaries to SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.art.outputs.id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Replace release assets with signed binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          for f in signed/*; do
+            echo "Uploading signed $f ..."
+            gh release upload "$tag" "$f" --clobber
+          done

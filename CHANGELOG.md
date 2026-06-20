@@ -1,44 +1,248 @@
 # Changelog
 
-## v3.1.2 — 2026-05-24
+## v3.6.0 — 2026-05-31
 
-Adds `-R, --keep-parents` to multi-source and glob copies. Without the
-flag (unchanged default), each source is written under its basename:
-`fast-copy /etc /var/log dst/` produces `dst/etc/` and `dst/log/`. With
-the flag, each source's full parent path is preserved (rsync `-R`
-semantics): the same command produces `dst/etc/` and `dst/var/log/`.
+Object storage becomes a first-class citizen. `s3://`, `az://`, and `gs://`
+now work as **both source and destination** in `fast_copy.py` itself — no
+separate tool. The stale `fast_copy_s3.py` fork is **retired**. Existing
+local/SSH CLI is unchanged, so this is an additive minor release.
 
-### Why this matters
+### New Features
 
-The basename layout is great for Longhorn-style backups where every
-source has a unique name (`pvc-*`). It's wrong for incident snapshots,
-forensic captures, and any case where mixing sources from different
-parent directories needs unambiguous provenance — `dst/log/` does not
-tell a future analyst whether the original was `/var/log` or
-`/usr/local/log`, and two sources with the same basename would silently
-merge. `--keep-parents` preserves the full path so the snapshot tree
-mirrors the source filesystem exactly.
+- **S3 / S3-compatible (`s3://bucket/key`)** — AWS S3 plus MinIO, Cloudflare
+  R2, Wasabi, Backblaze B2 via `--endpoint-url`. Credentials via the standard
+  boto3 chain (env / `~/.aws` / instance profile) or `--s3-profile`.
+- **Azure Blob Storage (`az://container/blob`)** — connection string,
+  account+key, or `AZURE_STORAGE_*` environment variables.
+- **Native Google Cloud Storage (`gs://bucket/object`)** — application default
+  credentials or `--gcs-credentials` service-account JSON.
+- **Every direction:** upload (local→cloud), **download (cloud→local — new)**,
+  and cloud→cloud (server-side within a bucket, relay-through-local across
+  providers).
+- **Object metadata schema** (`fc_relpath`, `fc_mtime`, `fc_mode`, `fc_hash`,
+  `fc_hash_algo`, optional `fc_uid`/`fc_gid`) so a download restores the file
+  faithfully and cross-run dedup works without re-reading bytes.
+- **Within-run dedup** via server-side copy (S3 CopyObject / Azure Copy Blob /
+  GCS rewrite) — duplicate bytes never leave the cloud; bandwidth-saved is
+  reported separately from storage used.
+- **Cross-run dedup** via a `.fast_copy_manifest.json` manifest object:
+  re-uploading an unchanged tree skips every object.
+- **Post-transfer verification** — uploads are sampled and HEAD-checked against
+  the stored hash; downloads are re-hashed and compared to `fc_hash`
+  (mismatch → non-zero exit).
+- **Named connections** — a `{"connections": {name: {type, …}}}` credentials
+  file (default `~/.config/fast-copy/credentials.json`, `0600`, auto-loaded;
+  `--credentials-file` to override) lets you reference a saved account in a URL
+  as `s3://name@bucket/key`. Source and destination can use different accounts
+  or even different S3 vendors (Artesca / Qumulo / MinIO / AWS) in one command.
+  Manage it with `fast_copy.py creds add|list|remove|test` (secrets prompted
+  hidden, never echoed). The file lives next to `fast_copy.py` by default
+  (override: `FAST_COPY_CREDENTIALS` env or `--credentials-file`) — predictable
+  and outside the Microsoft-Store Python `%APPDATA%` virtualization sandbox.
+- **Encryption at rest** for the credentials file — `creds encrypt|decrypt|rekey`
+  (AES-256-GCM, scrypt-derived key from a passphrase via
+  `FAST_COPY_CREDS_PASSPHRASE` or a hidden prompt). The file is bound to this
+  `fast_copy.py`'s SHA-256 as AEAD associated data for tamper-evidence; a binary
+  update warns and re-binds rather than locking you out (the key is the
+  passphrase, not the hash). `creds lock|unlock` toggles OS immutability
+  (`chattr +i` / `chflags` / read-only) as opt-in tamper-resistance — needs root,
+  not absolute against root. The file is `0600` and hidden.
+- **GUI support** — the desktop GUI accepts cloud URLs and a *Cloud
+  credentials* settings panel with a *Saved connections* dropdown (reads/writes
+  the same file); secrets are passed to the engine via the environment, never
+  on the command line.
 
-### Scope
+### Notes
 
-- Affects multi-source mode (≥2 source paths) and glob mode (single
-  quoted pattern fast-copy expands internally).
-- Single-source copies (`fast-copy /var/log dst/`) emit a one-line note
-  and are unchanged — the flag has no observable effect there.
-- No change to any other code path: dedup, sparse-file detection,
-  `--use-sudo` hardening, SSH transfers, and the v3.1.1 security
-  posture are all identical.
+- Cloud SDKs (`boto3`, `azure-storage-blob`, `google-cloud-storage`) are
+  **optional and lazily imported** — a local or SSH copy needs none of them.
+  Install with `pip install -r requirements-cloud.txt`.
+- Object-storage transfers take a **single source** per run.
+- Tested end-to-end against MinIO, Azurite, and fake-gcs-server emulators
+  (`test_object_store.py`): round-trip byte-identity, within/cross-run dedup,
+  dry-run, and corruption detection — 5/5 per provider.
 
-### Usage
+## v3.3.0 — 2026-05-21
 
-```bash
-# Incident snapshot — preserve full /etc, /var/log, /home/operator
-fast-copy --use-sudo -R /etc /var/log /home/operator /mnt/snap/
-# Produces /mnt/snap/etc/, /mnt/snap/var/log/, /mnt/snap/home/operator/
+Brings `--preserve` to feature parity on Windows. The v3.2.0 release wired
+POSIX ACLs (Linux + experimental macOS) and POSIX xattrs through every
+copy mode; v3.3.0 adds the Windows equivalents — NTFS Security Descriptors
+(owner + DACL) and NTFS Alternate Data Streams — so `--preserve all`
+finally means the same thing on every supported OS.
 
-# Longhorn replicas (no flag needed — unique basenames already)
-fast-copy /var/lib/longhorn/replicas/pvc-* /mnt/backup/
-```
+### New Features
+
+- **NTFS DACL preservation (`--preserve acl` on Windows)** — uses pywin32's
+  `win32security` to read and write the destination file's DACL via
+  `GetNamedSecurityInfo` / `SetNamedSecurityInfo`. Explicit ACEs (e.g. a
+  per-user permission you've granted on a source file) round-trip
+  byte-identical at the SDDL level. SACL (audit ACL) is intentionally
+  skipped — requires `SE_SECURITY_NAME` and is rarely useful for backups.
+
+- **NTFS owner preservation (`--preserve owner` on Windows)** — sets the
+  owner SID via a *separate* `SetNamedSecurityInfo` call from the DACL,
+  so a privilege failure on owner-set doesn't drag the ACL down with it.
+  After the set call, fast-copy reads the owner back to verify it actually
+  changed — `SetNamedSecurityInfo(OWNER, ...)` silently no-ops when
+  `SeRestorePrivilege` is held but not enabled (a common admin-shell
+  quirk), and the re-read catches that and reports `owner_skip_unprivileged`
+  instead of mis-claiming "preserved." Errors `5 (ERROR_ACCESS_DENIED)`,
+  `1307 (ERROR_INVALID_OWNER)`, and `1314 (ERROR_PRIVILEGE_NOT_HELD)` all
+  surface as a clean "skipped" with the wording **`need Administrator +
+  SeRestorePrivilege`** instead of the POSIX-flavored "need root."
+
+- **NTFS Alternate Data Streams preservation (`--preserve xattr` on
+  Windows)** — ADS is the NTFS analog of POSIX extended attributes.
+  Enumerates non-default streams via `kernel32!FindFirstStreamW` /
+  `FindNextStreamW` (ctypes — avoids requiring pywin32 just for ADS) and
+  copies each via Python's native `open("path:streamname", ...)`. The
+  default `$DATA` stream (the file's main content) is skipped — already
+  handled by the normal copy. Round-trips common cases like browser
+  Mark-of-the-Web (`Zone.Identifier`) and `com.dropbox.attributes`.
+
+- **`pywin32` is an optional Windows-only dependency.** A Windows install
+  without pywin32 still copies bytes; the NTFS ACL helpers lazy-import
+  and gracefully skip when the module is missing. ADS preservation has no
+  pywin32 dependency at all (pure ctypes against `kernel32`).
+
+### Internal refactor
+
+- New `_apply_extended_meta` helper centralizes the platform dispatch
+  (Windows / Linux / macOS) for owner/xattr/ACL application. Both
+  `_safe_apply_meta` (large-file path) and `copy_block_stream`'s
+  post-extract loop (small-file path) now call it — closing a v3.3.0-cycle
+  bug where small files (<1 MB) bypassed the Windows branch and never
+  reached `_copy_acls_windows` / `_copy_ads_windows`.
+
+### Tests
+
+- **`TestNTFSACLPreservation`** and **`TestNTFSAlternateDataStreams`** in
+  `test_preserve.py` — six new tests covering DACL round-trip, explicit
+  ACE drop-when-not-requested, summary count accuracy, single-stream
+  round-trip, multi-stream round-trip, and stream-drop-when-not-requested.
+  Both classes are gated `@unittest.skipUnless(sys.platform == "win32")`
+  so the suite stays green on Linux/macOS.
+
+- **Validated on real Windows 10/11 + NTFS** (domain-joined workstation,
+  PowerShell + pywin32 6.x). The end-to-end test driver (an `icacls`-based
+  PowerShell harness) confirms a source file with an explicit Everyone:Read
+  ACE plus a `Zone.Identifier` stream copies through fast-copy with all of
+  DACL, ADS, and owner preserved when the running shell has
+  `SeRestorePrivilege` enabled.
+
+### Compatibility
+
+- No CLI changes. Existing `--preserve mode,times,owner,xattr,acl,all`
+  syntax is unchanged.
+- Linux + macOS code paths are byte-identical to v3.2.0; only Windows
+  gets new behavior.
+- v3.2.0's experimental macOS ACL path is unchanged in v3.3.0 — still
+  awaits validation on real Darwin hardware.
+
+### Acknowledgments
+
+NTFS validation tested on a domain-joined Windows machine with pywin32
+6.x. Owner preservation's silent-no-op gotcha (SeRestorePrivilege held
+but not enabled) was caught during validation and resulted in the
+post-set verification logic that's now in `_copy_acls_windows`.
+
+## v3.2.0 — 2026-05-19
+
+Adds explicit metadata-preservation control via a new `--preserve` flag
+covering mode, times, owner, xattrs, and POSIX ACLs across all four copy
+modes (L2L, L2R, R2L, R2R). The bulk-backup workflow introduced in v3.1.0
+(`--use-sudo` + sparse files) was great at moving bytes but dropped
+ownership and extended attributes; v3.2.0 closes that gap.
+
+### New Features
+
+- **`--preserve TOKENS` flag** — comma-separated subset of
+  `mode,times,owner,xattr,acl` plus the special tokens `all` and `none`.
+  Default is `mode,times` (the v3.1.x behavior). Under `--use-sudo`,
+  `--preserve all` is implicit unless the user passes `--preserve`
+  explicitly, since `/etc` backups without ownership are usually
+  useless.
+
+  ```bash
+  fast-copy --use-sudo /etc /var/log /mnt/backup/      # implicit --preserve all
+  fast-copy /src /dst --preserve xattr,acl             # explicit subset
+  ```
+
+- **xattr preservation (Linux/macOS)** — `os.listxattr` / `os.getxattr`
+  / `os.setxattr` for the `user.*` namespace, wired through every local
+  copy path (block-stream tar pipe for small files, individual buffer
+  copy for large files, sparse-aware copy for VM disks).
+
+- **POSIX ACL preservation (Linux)** — `getfacl -p -E` / `setfacl
+  --restore=-` shell-out, applied at the same hook points as xattrs.
+  Round-trips numeric uid/gid so ACLs work across machines.
+
+- **Ownership preservation** — `fchown` via the open file descriptor
+  when running as root; non-root runs count as "skipped (need root)"
+  rather than failing. On R2L copies, tar's `filter='tar'` now
+  preserves ownership through the receive path when extraction runs
+  elevated (was previously sanitized to uid/gid 0).
+
+- **Cross-mode extended-metadata round-trip via SSH** — for L2R, R2L,
+  and R2R, the script runs a small `python3` helper on the relevant
+  remote to enumerate or apply xattrs/ACLs/ownership. Batched at 5000
+  files per SSH call. Gracefully no-ops if the remote lacks `python3`;
+  the end-of-run summary reports what was preserved vs. dropped.
+
+  | Mode    | mode | times | owner | xattr | ACL (Linux) | ACL (macOS) |
+  |---------|------|-------|-------|-------|-------------|-------------|
+  | L2L     | tar  | tar   | fchown | os.\*xattr | getfacl/setfacl | chmod +a *(experimental)* |
+  | L2R     | tar  | tar   | remote chown | remote setxattr | remote setfacl | n/a |
+  | R2L     | tar  | tar   | tar filter | remote collect | remote collect | *(experimental)* |
+  | R2R     | tar  | tar   | collect→apply | collect→apply | collect→apply | n/a |
+
+- **Destination FS capability probe** — before the copy phase, a quick
+  `setxattr` / `setfacl` (Linux) or `chmod +a` (macOS) probe on a
+  throw-away tempfile under the destination root tells us whether the
+  filesystem can store extended metadata at all. Unsupported FSes
+  (FAT32, exFAT, many SMB mounts) are reported once in the banner so
+  the user isn't surprised by a silent drop.
+
+- **End-of-run summary lines** — when extended preservation is
+  requested, the DONE banner adds one line per metadata kind:
+
+  ```
+    Owner:   preserved on 1,247, skipped on 312 (need root)
+    xattrs:  preserved on 1,559
+    ACLs:    preserved on 1,559
+  ```
+
+  Mirrors the existing "Bandwidth saved vs Disk usage" honesty pattern
+  — what was actually applied versus what couldn't be.
+
+- **macOS POSIX ACL support (experimental)** — `_copy_acls_macos`
+  shell-out using `ls -lde` to read NFSv4-style ACEs and `chmod +a` to
+  apply them. The code path is wired and a Darwin-only test class is
+  included; the implementation hasn't yet been validated against a real
+  Mac, so the docstring marks it experimental. Includes `chmod -N`
+  before applying ACEs so overwrite/incremental copies don't accumulate
+  duplicates.
+
+### Test additions
+
+- **`test_preserve.py`** — 23 tests covering xattr round-trip on small
+  and large files, ACL round-trip on Linux, owner-skipped-when-not-root
+  accounting, parser correctness for `--preserve` tokens, banner
+  formatting, R2L/L2R/R2R live-NAS round-trips through the SSH
+  helpers, and a Darwin-only `TestMacOSACLPreservation` class that
+  validates the experimental macOS path when run on a real Mac.
+
+### Compatibility
+
+No CLI changes for existing workflows. Non-elevated copies of regular
+files behave identically to v3.1.1. `--use-sudo` runs without an
+explicit `--preserve` flag now preserve everything by default; pass
+`--preserve mode,times` to recover the v3.1.x behavior.
+
+The R2L tar extraction filter changes from `'data'` to `'tar'` only
+when `--preserve owner` is set. `_validate_tar_member` already rejects
+absolute paths, symlinks, devices, and members whose realpath escapes
+the destination, so the `'tar'` filter is safe in combination.
 
 ## v3.1.1 — 2026-05-18
 
