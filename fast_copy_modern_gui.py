@@ -1293,6 +1293,53 @@ class _DownloadWorker(QThread):
             self.done.emit(False, str(e).splitlines()[0] if str(e).strip() else e.__class__.__name__)
 
 
+class _ConfirmHostKeyPolicy:
+    """paramiko host-key policy: instead of silently auto-adding an unknown host
+    key (a MITM risk), prompt the user to verify the fingerprint — OpenSSH-style
+    TOFU. Known hosts are checked by paramiko before this runs, so a CHANGED key
+    raises BadHostKeyException (rejected). SSH browsing runs on the main thread,
+    so a modal dialog here is safe. Declining raises SSHException (connection
+    rejected)."""
+
+    def __init__(self, parent, known_hosts_path):
+        self.parent = parent
+        self.known_hosts_path = known_hosts_path
+
+    def missing_host_key(self, client, hostname, key):
+        import paramiko
+        import hashlib
+        fp = "SHA256:" + base64.b64encode(
+            hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+        had_cursor = QApplication.overrideCursor() is not None
+        if had_cursor:
+            QApplication.restoreOverrideCursor()
+        try:
+            m = QMessageBox(self.parent)
+            m.setWindowTitle("Unknown SSH host")
+            m.setIcon(QMessageBox.Warning)
+            m.setText(f"The authenticity of host '{hostname}' can't be established.")
+            m.setInformativeText(
+                f"{key.get_name()} key fingerprint:\n{fp}\n\n"
+                "Trust this host and save it to ~/.ssh/known_hosts?")
+            trust = m.addButton("Trust", QMessageBox.AcceptRole)
+            m.addButton("Cancel", QMessageBox.RejectRole)
+            m.exec()
+            if m.clickedButton() is not trust:
+                raise paramiko.SSHException(
+                    f"Host key for {hostname} was not trusted by the user")
+        finally:
+            if had_cursor:
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+        # Trusted: accept for this session and append a single entry to known_hosts.
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        try:
+            os.makedirs(os.path.dirname(self.known_hosts_path), exist_ok=True)
+            with open(self.known_hosts_path, "a", encoding="utf-8") as f:
+                f.write(f"{hostname} {key.get_name()} {key.get_base64()}\n")
+        except OSError:
+            pass
+
+
 # ───────────────────────────────────────────────────────── main window ──
 class FastCopyGUI(QWidget):
     def __init__(self):
@@ -2236,7 +2283,7 @@ class FastCopyGUI(QWidget):
 
     def open_docs(self):
         import webbrowser
-        webbrowser.open("https://github.com/gekap/fast-copy")
+        webbrowser.open("https://fast-copy.dev/#docs")
 
     # ─────────────────────────────────────────────────────── sources ──
     def add_source(self):
@@ -3280,7 +3327,20 @@ class FastCopyGUI(QWidget):
             self._ssh_close(name)
         import paramiko
         cli = paramiko.SSHClient()
-        cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Verify host keys (no silent MITM): load known hosts so a CHANGED key on
+        # a known host is rejected (paramiko raises BadHostKeyException), and an
+        # unknown host triggers an explicit fingerprint-confirmation prompt
+        # (TOFU, like OpenSSH) instead of auto-adding.
+        known = os.path.expanduser("~/.ssh/known_hosts")
+        try:
+            cli.load_system_host_keys()
+        except Exception:
+            pass
+        try:
+            cli.load_host_keys(known)
+        except (OSError, IOError):
+            pass
+        cli.set_missing_host_key_policy(_ConfirmHostKeyPolicy(self, known))
         kw = dict(hostname=conn.get("host"), port=int(conn.get("port", 22) or 22),
                   username=conn.get("user") or None,
                   timeout=8, banner_timeout=8, auth_timeout=8)
