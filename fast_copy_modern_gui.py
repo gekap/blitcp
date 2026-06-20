@@ -1263,6 +1263,36 @@ class _UpdateCheckWorker(QThread):
             self.done.emit({"err": msg})
 
 
+class _DownloadWorker(QThread):
+    """Downloads a release asset off the UI thread. Emits done(ok, path_or_err)."""
+    done = Signal(bool, str)
+
+    def __init__(self, url, dest):
+        super().__init__()
+        self.url, self.dest = url, dest
+
+    def run(self):
+        import urllib.request
+        try:
+            ctx = fc._get_ssl_context() if (FC_OK and hasattr(fc, "_get_ssl_context")) else None
+            req = urllib.request.Request(self.url, headers={"User-Agent": "fast-copy-gui"})
+            with urllib.request.urlopen(req, timeout=60, context=ctx) as r, \
+                    open(self.dest, "wb") as f:
+                while True:
+                    chunk = r.read(262144)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            self.done.emit(True, self.dest)
+        except Exception as e:
+            try:
+                if os.path.exists(self.dest):
+                    os.remove(self.dest)
+            except OSError:
+                pass
+            self.done.emit(False, str(e).splitlines()[0] if str(e).strip() else e.__class__.__name__)
+
+
 # ───────────────────────────────────────────────────────── main window ──
 class FastCopyGUI(QWidget):
     def __init__(self):
@@ -2003,7 +2033,7 @@ class FastCopyGUI(QWidget):
         cl.addWidget(cic)
         cl.addLayout(col, 1)
         self.upd_btn = textbtn("Check for updates", oid="btnsm")
-        self.upd_btn.clicked.connect(self.check_update)
+        self.upd_btn.clicked.connect(self._update_btn_clicked)
         cl.addWidget(self.upd_btn)
         lay.addWidget(card)
 
@@ -3832,10 +3862,108 @@ class FastCopyGUI(QWidget):
             self.upd_btn.setText("Up to date")
             self.show_toast(f"fast-copy is up to date (v{res['uptodate']})")
         elif res.get("latest"):
-            self.upd_btn.setText("Update: " + res["latest"])
+            self._update_tag = res["latest"]
+            self.upd_btn.setText("Download " + res["latest"])
             self.show_toast(f"Update available: {res['latest']} "
-                            f"(you have v{res['current']}) — "
-                            f"github.com/gekap/fast-copy/releases")
+                            f"(you have v{res['current']}) — click to download")
+
+    def _update_btn_clicked(self):
+        """One button: check first, then become a real downloader once an update
+        is known."""
+        if getattr(self, "_update_tag", None):
+            self.download_update()
+        else:
+            self.check_update()
+
+    def _gui_asset_name(self):
+        """The release asset for THIS GUI build/platform."""
+        import platform as _pf
+        if sys.platform.startswith("win"):
+            return "fast_copy_gui-windows.exe"
+        if sys.platform == "darwin":
+            if _pf.machine().lower() in ("x86_64", "i386"):
+                return "fast_copy_gui-macos-intel.app.zip"
+            return "fast_copy_gui-macos-arm64.app.zip"
+        return "fast_copy_gui-linux"
+
+    def download_update(self):
+        """Download the matching GUI asset for the available release into the
+        user's Downloads folder, then offer to reveal it. (In-place replacement
+        of a running app — especially a macOS .app — isn't safe, so we download
+        and hand off to the user.)"""
+        tag = getattr(self, "_update_tag", None)
+        if not tag or not FC_OK or getattr(self, "_dl_running", False):
+            return
+        asset = self._gui_asset_name()
+        url = None
+        try:
+            for rel in (fc._fetch_releases() or []):
+                if rel.get("tag_name") == tag:
+                    for a in rel.get("assets", []):
+                        if a.get("name") == asset:
+                            url = a.get("browser_download_url")
+                            break
+                    break
+        except Exception:
+            url = None
+        if not url:
+            QMessageBox.warning(
+                self, "Update",
+                f"Couldn't find {asset} in release {tag}.\n\nDownload manually:\n"
+                f"https://github.com/{GUI_REPO}/releases/tag/{tag}")
+            return
+        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.isdir(downloads):
+            downloads = os.path.expanduser("~")
+        dest = os.path.join(downloads, asset)
+        self._dl_running = True
+        self.upd_btn.setEnabled(False)
+        self.upd_btn.setText("Downloading…")
+        self.show_toast("Downloading " + asset + " …")
+        self._dl_thread = _DownloadWorker(url, dest)
+        self._dl_thread.done.connect(self._on_download_done)
+        self._dl_thread.finished.connect(lambda: setattr(self, "_dl_thread", None))
+        self._dl_thread.start()
+
+    def _on_download_done(self, ok, info):
+        self._dl_running = False
+        self.upd_btn.setEnabled(True)
+        self.upd_btn.setText("Download " + getattr(self, "_update_tag", "update"))
+        if not ok:
+            QMessageBox.critical(self, "Download failed",
+                                 "Could not download the update:\n" + info)
+            return
+        dest = info
+        if dest.endswith(".app.zip"):
+            hint = ("Quit fast-copy, unzip the file, and drag fast-copy.app into "
+                    "Applications (replacing the old one).")
+        elif sys.platform.startswith("win"):
+            hint = ("Close fast-copy, then replace your current "
+                    "fast_copy_gui.exe with the downloaded file.")
+        else:
+            hint = ("Close fast-copy, then replace your current binary with the "
+                    "downloaded file (chmod +x it).")
+        m = QMessageBox(self)
+        m.setWindowTitle("Update downloaded")
+        m.setIcon(QMessageBox.Information)
+        m.setText("Downloaded to:\n" + dest)
+        m.setInformativeText(hint)
+        reveal = m.addButton("Reveal in folder", QMessageBox.AcceptRole)
+        m.addButton("Close", QMessageBox.RejectRole)
+        m.exec()
+        if m.clickedButton() is reveal:
+            self._reveal(dest)
+
+    def _reveal(self, path):
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        except Exception:
+            pass
 
     # ───────────────────────────────────────────────────── toast ──
     def show_toast(self, msg):
