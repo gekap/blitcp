@@ -14,7 +14,22 @@ import os
 import sys
 import shutil
 import platform
+import importlib.util
 import subprocess
+
+# Optional cloud backends. When importable in the build environment they are
+# bundled into the frozen binary (see cloud_collect_flags) so the standalone
+# GUI/CLI — whose --fc-core engine runs inside the same embedded interpreter —
+# can do s3://, az:// and gs:// transfers without a separate Python install.
+# Maps the probe-import to the top packages PyInstaller must collect whole
+# (these carry data files / metadata that import analysis alone would miss).
+CLOUD_COLLECT = {
+    "boto3": ["boto3", "botocore", "s3transfer"],
+    "azure.storage.blob": ["azure.storage.blob", "azure.core"],
+    "google.cloud.storage": ["google.cloud.storage", "google.cloud",
+                             "google.api_core", "google.auth",
+                             "google.resumable_media"],
+}
 
 
 def install_deps():
@@ -41,6 +56,40 @@ def install_deps():
                     sys.executable, "-m", "pip", "install", pip_name, "--quiet",
                     "--disable-pip-version-check", "--break-system-packages",
                 ])
+    # Optional cloud SDKs — best-effort so the binary ships with cloud support.
+    # A failure here is non-fatal: the build proceeds and simply omits cloud.
+    if os.path.exists("requirements-cloud.txt"):
+        try:
+            __import__("boto3")
+            print("  OK: cloud SDKs (boto3/azure/gcs)")
+        except ImportError:
+            print("  Installing cloud SDKs (boto3/azure/gcs)...")
+            for extra in ([], ["--break-system-packages"]):
+                try:
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", "-r",
+                        "requirements-cloud.txt", "--quiet",
+                        "--disable-pip-version-check", *extra,
+                    ])
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+            else:
+                print("  WARN: cloud SDKs not installed — binary will omit "
+                      "s3://, az:// and gs:// support")
+
+
+def cloud_collect_flags():
+    """`--collect-all` flags for whichever cloud SDKs are importable here."""
+    flags, seen = [], set()
+    for probe, pkgs in CLOUD_COLLECT.items():
+        if importlib.util.find_spec(probe) is None:
+            continue
+        for pkg in pkgs:
+            if pkg not in seen:
+                seen.add(pkg)
+                flags.append("--collect-all=" + pkg)
+    return flags
 
 
 def build_target(name, script, windowed=False, icon=None):
@@ -62,6 +111,7 @@ def build_target(name, script, windowed=False, icon=None):
         "--hidden-import=xxhash",
         "--hidden-import=paramiko",
     ]
+    cmd += cloud_collect_flags()
     if icon and os.path.exists(icon):
         cmd += ["--icon", icon]
 

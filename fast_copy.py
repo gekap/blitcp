@@ -7351,12 +7351,22 @@ class S3Backend(CloudBackend):
         }
         # Explicit keys from the credentials file (else boto3's default chain:
         # env / ~/.aws / instance profile).
-        if c.get("access_key_id") and c.get("secret_access_key"):
+        has_explicit_keys = bool(c.get("access_key_id")
+                                 and c.get("secret_access_key"))
+        if has_explicit_keys:
             client_kwargs["aws_access_key_id"] = c["access_key_id"]
             client_kwargs["aws_secret_access_key"] = c["secret_access_key"]
             if c.get("session_token"):
                 client_kwargs["aws_session_token"] = c["session_token"]
         self.client = session.client("s3", **client_kwargs)
+        # Fail fast with a clean message instead of a NoCredentialsError
+        # traceback at the first API call. Only check the default chain when
+        # no explicit keys were given (session creds don't reflect client keys).
+        if not has_explicit_keys and session.get_credentials() is None:
+            raise SystemExit(
+                "Error: S3 needs credentials. Add them with `creds add`, use "
+                "--s3-profile, or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY "
+                "(and AWS_SESSION_TOKEN if used).")
 
     def list_objects(self, prefix):
         out = {}
@@ -7483,7 +7493,16 @@ class GCSBackend(CloudBackend):
                 client_options={"api_endpoint": emulator},
                 project=client_kwargs.get("project", "fast-copy"))
         else:
-            self.client = storage.Client(**client_kwargs)
+            try:
+                self.client = storage.Client(**client_kwargs)
+            except Exception as e:
+                from google.auth.exceptions import DefaultCredentialsError
+                if isinstance(e, DefaultCredentialsError):
+                    raise SystemExit(
+                        "Error: GCS needs credentials. Provide --gcs-credentials "
+                        "<service-account.json>, set GOOGLE_APPLICATION_CREDENTIALS, "
+                        "or run `gcloud auth application-default login`.")
+                raise
         self.bucket = self.client.bucket(self.container)
 
     def list_objects(self, prefix):
