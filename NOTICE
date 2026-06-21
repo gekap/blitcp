@@ -11,6 +11,13 @@ Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
 WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
+If you redistribute fast-copy, in whole or in part, in source or binary
+form (including inside a larger or closed-source product), you must retain
+this NOTICE file and a copy of the Apache 2.0 LICENSE, keep all copyright
+and attribution notices intact in the source files, and state any
+significant changes you made. You may add your own copyright for your
+modifications, but you may not remove the above attribution.
+
 ---
 
 The prebuilt binaries bundle the following third-party components, each
