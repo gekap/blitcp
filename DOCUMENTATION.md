@@ -18,7 +18,6 @@ This document is the canonical reference for every option exposed by both the CL
 - [Listing remote objects (`ls` / `list-objects`)](#listing-remote-objects-ls--list-objects)
 - [Dependency check (`deps` / `doctor`)](#dependency-check-deps--doctor)
 - [Updating (`--check-update`, `--update`, `--update-sha256`, `--version`)](#updating---check-update---update---update-sha256---version)
-- [Running the GUI binary as CLI (`--fc-core`)](#running-the-gui-binary-as-cli---fc-core)
 - [How It Works](#how-it-works)
 - [Tips](#tips)
 
@@ -354,21 +353,6 @@ fast_copy.py --update --update-sha256 <64-hex-from-release-page>
 ```
 
 > `--update` is refused under `sudo` (running as root or with `SUDO_USER` set): update as your normal user first, then re-elevate deliberately for the next root run.
-
----
-
-## Running the GUI binary as CLI (`--fc-core`)
-
-The bundled GUI binary embeds the full CLI engine. Invoke it with `--fc-core` and **prefix any CLI arguments** to run it exactly like the standalone CLI (copies, `creds`, `ls`, `deps`, update, etc.):
-
-```
-fast_copy_gui --fc-core /data /mnt/usb/data
-fast_copy_gui --fc-core creds list
-fast_copy_gui --fc-core ls aws-prod
-fast_copy_gui --fc-core --version
-```
-
-> **Windows caveat:** the GUI is a *windowed* binary, so console output may not appear. For routine CLI use, prefer the dedicated console binary `fast_copy-windows.exe` (i.e. `fast_copy.exe`) instead of the GUI's `--fc-core` passthrough.
 
 ---
 
