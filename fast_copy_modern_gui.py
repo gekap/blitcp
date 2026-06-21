@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 George Kapellakis
+# Licensed under the Apache License, Version 2.0
+# See LICENSE file for details.
 """fast-copy — PySide6 modern GUI.
 
 A faithful native reproduction of the fast-copy modern look-and-feel mockup:

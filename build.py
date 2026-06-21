@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 George Kapellakis
+# Licensed under the Apache License, Version 2.0
+# See LICENSE file for details.
 """
 Build script — compiles fast_copy into a standalone executable.
 
