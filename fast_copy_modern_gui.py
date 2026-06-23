@@ -89,7 +89,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.7.4"
+GUI_VERSION = "3.7.5"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -1267,18 +1267,23 @@ class _UpdateCheckWorker(QThread):
 
 
 class _DownloadWorker(QThread):
-    """Downloads a release asset off the UI thread. Emits done(ok, path_or_err)."""
+    """Downloads a release asset off the UI thread. Emits done(ok, path_or_err).
+
+    When expected_size is given, a size mismatch fails the download — the same
+    integrity guard the CLI self-update applies before replacing a binary."""
     done = Signal(bool, str)
 
-    def __init__(self, url, dest):
+    def __init__(self, url, dest, expected_size=None):
         super().__init__()
         self.url, self.dest = url, dest
+        self.expected_size = expected_size
 
     def run(self):
         import urllib.request
         try:
             ctx = fc._get_ssl_context() if (FC_OK and hasattr(fc, "_get_ssl_context")) else None
             req = urllib.request.Request(self.url, headers={"User-Agent": "fast-copy-gui"})
+            written = 0
             with urllib.request.urlopen(req, timeout=60, context=ctx) as r, \
                     open(self.dest, "wb") as f:
                 while True:
@@ -1286,6 +1291,10 @@ class _DownloadWorker(QThread):
                     if not chunk:
                         break
                     f.write(chunk)
+                    written += len(chunk)
+            if self.expected_size and written != self.expected_size:
+                raise OSError(f"size mismatch — expected {self.expected_size}, "
+                              f"got {written} bytes")
             self.done.emit(True, self.dest)
         except Exception as e:
             try:
@@ -3106,10 +3115,17 @@ class FastCopyGUI(QWidget):
             return False, "Unlock credentials.json first"
         # Encrypt by default: the first time a secret would be written to a
         # not-yet-encrypted file, offer to set a passphrase and switch to
-        # AES-256-GCM. Declining keeps the cleartext write (with the engine's
-        # warning), and we'll offer again on the next secret-bearing save.
+        # AES-256-GCM.
         if not self.creds_encrypted and self._has_secret_entries():
             self._offer_encryption()
+            # Encryption is mandatory for secret-bearing credentials. If the
+            # user cancelled the passphrase prompt (or left it blank), refuse
+            # the write rather than persist passwords/keys in cleartext. The
+            # caller rolls back the in-memory change, so nothing — on disk or
+            # in memory — is left holding plaintext secrets.
+            if not self.creds_encrypted:
+                return False, ("Encryption required: enter a passphrase to "
+                               "save passwords or keys. Nothing was written.")
         try:
             if self.creds_encrypted:
                 fc._creds_passphrase_cache = bytearray(bytes(self.creds_pw))
@@ -3141,13 +3157,15 @@ class FastCopyGUI(QWidget):
         return any(isinstance(c, dict) and has(c) for c in self.conns.values())
 
     def _offer_encryption(self):
-        """Encrypt-by-default prompt: ask for a new passphrase and switch the file
-        to AES-256-GCM. No-op if the user cancels (the save then stays cleartext)."""
+        """Mandatory-encryption prompt: ask for a new passphrase and switch the
+        file to AES-256-GCM. No-op if the user cancels — and the caller
+        (_persist_credentials) then refuses the write, so secrets are never
+        persisted in cleartext."""
         dlg = PasswordDialog(
             self, "Encrypt credentials",
             "Protect your saved passwords and keys with a passphrase "
             "(AES-256-GCM). You'll need it to unlock credentials.json later. "
-            "Press Cancel to keep saving in cleartext.",
+            "Cancelling will not save your passwords or keys.",
             "New passphrase", confirm=True)
         if not dlg.exec():
             return                       # declined → falls through to plaintext write
@@ -3949,22 +3967,44 @@ class FastCopyGUI(QWidget):
             return "fast_copy_gui-macos-arm64.app.zip"
         return "fast_copy_gui-linux"
 
+    def _can_auto_install(self):
+        """Whether the GUI can replace its own binary in place — like the CLI's
+        self-update. Supported only on frozen Linux/Windows builds with write
+        access to the binary's directory. A running-from-source (.py) launch has
+        no binary to swap, and a running macOS .app bundle can't be safely
+        replaced in place, so both fall back to a download + manual handoff."""
+        if not getattr(sys, "frozen", False):
+            return False
+        if sys.platform == "darwin":
+            return False
+        try:
+            return os.access(os.path.dirname(sys.executable), os.W_OK)
+        except OSError:
+            return False
+
     def download_update(self):
-        """Download the matching GUI asset for the available release into the
-        user's Downloads folder, then offer to reveal it. (In-place replacement
-        of a running app — especially a macOS .app — isn't safe, so we download
-        and hand off to the user.)"""
+        """Fetch the matching GUI asset for the available release. On frozen
+        Linux/Windows builds the new binary replaces the running one in place
+        (mirroring the CLI self-update), then the GUI offers to relaunch. macOS
+        .app bundles and source runs download to ~/Downloads and hand off to the
+        user. Never runs while a copy is in progress."""
         tag = getattr(self, "_update_tag", None)
         if not tag or not FC_OK or getattr(self, "_dl_running", False):
             return
+        # Do not touch the binary while any copy/transfer is running: an
+        # in-place swap mid-job could destabilise the running engine.
+        if self.running:
+            self.show_toast("Finish or cancel the running copy before updating")
+            return
         asset = self._gui_asset_name()
-        url = None
+        url, size = None, None
         try:
             for rel in (fc._fetch_releases() or []):
                 if rel.get("tag_name") == tag:
                     for a in rel.get("assets", []):
                         if a.get("name") == asset:
                             url = a.get("browser_download_url")
+                            size = a.get("size")
                             break
                     break
         except Exception:
@@ -3975,15 +4015,33 @@ class FastCopyGUI(QWidget):
                 f"Couldn't find {asset} in release {tag}.\n\nDownload manually:\n"
                 f"https://github.com/{GUI_REPO}/releases/tag/{tag}")
             return
-        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
-        if not os.path.isdir(downloads):
-            downloads = os.path.expanduser("~")
-        dest = os.path.join(downloads, asset)
+        # Defence in depth: only download from GitHub over HTTPS (the URL comes
+        # from the GitHub release API, but verify before replacing a binary).
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        allowed = {"github.com", "objects.githubusercontent.com",
+                   "github-releases.githubusercontent.com"}
+        if parsed.scheme != "https" or parsed.hostname not in allowed:
+            QMessageBox.critical(self, "Update",
+                                 "Unexpected download URL (not HTTPS GitHub):\n" + url)
+            return
+
+        if self._can_auto_install():
+            # Download beside the running binary so the swap is an atomic,
+            # same-filesystem replace.
+            dest = sys.executable + ".update_tmp"
+            self._update_inplace_target = sys.executable
+        else:
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            if not os.path.isdir(downloads):
+                downloads = os.path.expanduser("~")
+            dest = os.path.join(downloads, asset)
+            self._update_inplace_target = None
         self._dl_running = True
         self.upd_btn.setEnabled(False)
         self.upd_btn.setText("Downloading…")
         self.show_toast("Downloading " + asset + " …")
-        self._dl_thread = _DownloadWorker(url, dest)
+        self._dl_thread = _DownloadWorker(url, dest, expected_size=size)
         self._dl_thread.done.connect(self._on_download_done)
         self._dl_thread.finished.connect(lambda: setattr(self, "_dl_thread", None))
         self._dl_thread.start()
@@ -3992,11 +4050,41 @@ class FastCopyGUI(QWidget):
         self._dl_running = False
         self.upd_btn.setEnabled(True)
         self.upd_btn.setText("Download " + getattr(self, "_update_tag", "update"))
+        target = getattr(self, "_update_inplace_target", None)
         if not ok:
+            if target:                       # clean a partial .update_tmp
+                try:
+                    os.remove(target + ".update_tmp")
+                except OSError:
+                    pass
             QMessageBox.critical(self, "Download failed",
                                  "Could not download the update:\n" + info)
             return
         dest = info
+
+        # In-place install (frozen Linux/Windows): replace the running binary
+        # and offer to relaunch — the GUI equivalent of `fast_copy --update`.
+        if target:
+            if self.running:                 # a copy started during the download
+                self.show_toast("Copy in progress — update not applied")
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                return
+            ok2, msg = self._install_inplace(dest, target)
+            if not ok2:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                QMessageBox.critical(
+                    self, "Update failed",
+                    "Could not replace the application:\n" + msg)
+                return
+            self._prompt_relaunch()
+            return
+
         if dest.endswith(".app.zip"):
             hint = ("Quit fast-copy, unzip the file, and drag fast-copy.app into "
                     "Applications (replacing the old one).")
@@ -4016,6 +4104,51 @@ class FastCopyGUI(QWidget):
         m.exec()
         if m.clickedButton() is reveal:
             self._reveal(dest)
+
+    def _install_inplace(self, downloaded_path, target):
+        """Replace the running GUI binary with the freshly downloaded asset,
+        mirroring the CLI self-update swap: Windows renames the locked .exe out
+        of the way (current -> .old) then moves the new one in; Linux does an
+        atomic os.replace and restores the executable bit. Returns (ok, msg)."""
+        try:
+            if sys.platform.startswith("win"):
+                old = target + ".old"
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+                os.rename(target, old)
+                os.rename(downloaded_path, target)
+            else:
+                try:
+                    mode = os.stat(target).st_mode
+                except OSError:
+                    mode = 0o755
+                os.replace(downloaded_path, target)
+                os.chmod(target, mode)
+            return True, target
+        except OSError as e:
+            return False, str(e)
+
+    def _prompt_relaunch(self):
+        """After an in-place update, offer to restart into the new binary."""
+        tag = getattr(self, "_update_tag", "update")
+        m = QMessageBox(self)
+        m.setWindowTitle("Update installed")
+        m.setIcon(QMessageBox.Information)
+        m.setText(f"fast-copy was updated to {tag}.")
+        m.setInformativeText("Restart now to use the new version?")
+        r = m.addButton("Restart now", QMessageBox.AcceptRole)
+        m.addButton("Later", QMessageBox.RejectRole)
+        m.exec()
+        # update is applied either way; reset the button out of "Download" state
+        self._update_tag = None
+        self._update_inplace_target = None
+        self.upd_btn.setText("Up to date")
+        if m.clickedButton() is r:
+            args = [] if getattr(sys, "frozen", False) else [os.path.abspath(__file__)]
+            QProcess.startDetached(sys.executable, args)
+            self.close()
 
     def _reveal(self, path):
         try:
@@ -4055,6 +4188,16 @@ def main():
     # Windows: give the app its own taskbar identity so it uses OUR icon
     # instead of grouping under the python/pythonw launcher icon.
     if sys.platform.startswith("win"):
+        # Clean up the .old binary left by a previous in-place update — the
+        # running .exe can't be deleted during the swap, only renamed, so we
+        # remove it on the next launch (mirrors the CLI's cli_entry cleanup).
+        if getattr(sys, "frozen", False):
+            try:
+                old = sys.executable + ".old"
+                if os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                pass
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(

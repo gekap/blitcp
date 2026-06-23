@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.7.4"
+__version__ = "3.7.5"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2685,6 +2685,17 @@ def hash_file_sha256(filepath):
 # ════════════════════════════════════════════════════════════════════════════
 # SPACE CHECK
 # ════════════════════════════════════════════════════════════════════════════
+def _makedirs_or_die(path, what="destination"):
+    """Create a directory tree, turning an OSError (e.g. a read-only or
+    permission-denied destination) into a clean single-line error instead of a
+    raw Python traceback — fast-copy's project-wide error convention."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise SystemExit(f"Error: cannot create {what} {path!r}: "
+                         f"{e.strerror or e}")
+
+
 def check_destination_space(dst, required_bytes, force=False):
     """
     Check if destination has enough free space.
@@ -2692,7 +2703,7 @@ def check_destination_space(dst, required_bytes, force=False):
     Returns True if OK to proceed, False to abort.
     """
     # Create dst if it doesn't exist so we can stat its filesystem
-    os.makedirs(dst, exist_ok=True)
+    _makedirs_or_die(dst)
 
     try:
         usage = shutil.disk_usage(dst)
@@ -10610,7 +10621,7 @@ def main():
     # ── Phase 2: Deduplication ───────────────────────────────────────
     dedup_db = None
     if not src_remote and not dst_remote and not args.no_dedup and not args.no_cache:
-        os.makedirs(dst, exist_ok=True)
+        _makedirs_or_die(dst)
         try:
             dedup_db = DedupDB(dst)
         except Exception as e:
