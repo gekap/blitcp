@@ -89,7 +89,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.8.0"
+GUI_VERSION = "3.8.1"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -2550,9 +2550,11 @@ class FastCopyGUI(QWidget):
             argv += ["--chunk-size", self.chunk_input.text().strip()]
         for p in self.exclude_patterns:
             argv += ["--exclude", p]
+        # Always send an explicit --preserve so deselecting every chip means
+        # "preserve nothing" (--preserve none). Omitting the flag would let the
+        # engine fall back to its mode,times default — the opposite of intent.
         preserve = [k for k, o in self.meta_opts.items() if o.property("active")]
-        if preserve:
-            argv += ["--preserve", ",".join(preserve)]
+        argv += ["--preserve", ",".join(preserve) if preserve else "none"]
         if self.flag_opts["overwrite all"].property("active"):
             argv.append("--overwrite")
         if self.flag_opts["force"].property("active"):

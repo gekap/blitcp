@@ -629,6 +629,60 @@ def _check_smb_parse(rep, ctx):
                "smb:// + UNC map correctly; non-SMB inputs ignored")
 
 
+def _check_posix_only_os_calls(rep, ctx):
+    """Flag POSIX-only os.* fd/metadata calls (fchmod, fchown, fdatasync, …) that
+    are NOT guarded by hasattr(os, "<name>") in an enclosing function. These raise
+    AttributeError (not OSError) on Windows, so a bare `except OSError` does not
+    catch them and the copy crashes. Regression guard for the v3.8.1
+    os.fchmod-on-Windows bug (large-file copies crashed under default preserve)."""
+    WATCH = {"fchmod", "fchown", "lchmod", "fchdir", "fdatasync",
+             "posix_fadvise", "posix_fallocate", "mkfifo", "mknod"}
+    try:
+        with open(ctx["target"], "r", encoding="utf-8", errors="replace") as f:
+            tree = ast.parse(f.read(), filename=ctx["target"])
+    except (OSError, SyntaxError) as e:
+        rep.skip("POSIX-only os.* guards", str(e))
+        return
+    parents = {}
+    for node in ast.walk(tree):
+        for ch in ast.iter_child_nodes(node):
+            parents[ch] = node
+
+    def enclosing_funcs(node):
+        out, p = [], parents.get(node)
+        while p is not None:
+            if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.append(p)
+            p = parents.get(p)
+        return out
+
+    def guards(fn, name):
+        for n in ast.walk(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in ("hasattr", "getattr") and len(n.args) >= 2
+                    and isinstance(n.args[0], ast.Name) and n.args[0].id == "os"
+                    and isinstance(n.args[1], ast.Constant)
+                    and n.args[1].value == name):
+                return True
+        return False
+
+    offenders = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in WATCH
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"):
+            nm = node.func.attr
+            if not any(guards(fn, nm) for fn in enclosing_funcs(node)):
+                offenders.append(f"os.{nm} @L{node.lineno}")
+    if offenders:
+        rep.fail("POSIX-only os.* guards",
+                 "unguarded (AttributeError on Windows): " + "; ".join(offenders[:8]))
+    else:
+        rep.ok("POSIX-only os.* guards",
+               "fd/metadata POSIX calls are hasattr-guarded (Windows-safe)")
+
+
 def section_security(rep, ctx):
     targets = [ctx["target"]]
     repo = os.path.dirname(os.path.abspath(ctx["target"]))
@@ -701,6 +755,8 @@ def section_security(rep, ctx):
     _check_gui_creds_enforce_encryption(rep, repo)
     # SMB/UNC URL parsing must not collide with SSH/cloud/local paths
     _check_smb_parse(rep, ctx)
+    # POSIX-only os.* fd calls must be hasattr-guarded (Windows crash regression)
+    _check_posix_only_os_calls(rep, ctx)
 
     # external scanners (best effort)
     _run_external_scanner(rep, "bandit",

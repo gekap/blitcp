@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.8.0"
+__version__ = "3.8.1"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -886,6 +886,9 @@ def _apply_owner_via_fd(fd, src_st):
         _preserve_stats["owner_skip_unprivileged"] += 1
         return False
     try:
+        if not hasattr(os, "fchown"):       # POSIX-only; not present on Windows
+            _preserve_stats["owner_skip_unprivileged"] += 1
+            return False
         os.fchown(fd, src_st.st_uid, src_st.st_gid)
         _preserve_stats["owner_ok"] += 1
         return True
@@ -938,8 +941,14 @@ def _safe_apply_meta(fd, dst_path, src_st, src_path=None):
     fchmod via fd, lstat before path-based calls."""
     spec = _preserve_spec
     if spec.mode:
+        # os.fchmod is POSIX-only (absent on Windows → AttributeError, which the
+        # OSError handler would NOT catch). Fall back to a path-based chmod so
+        # Windows still applies the mode (the read-only bit) instead of crashing.
         try:
-            os.fchmod(fd, stat.S_IMODE(src_st.st_mode))
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, stat.S_IMODE(src_st.st_mode))
+            elif dst_path:
+                os.chmod(_long_path(dst_path), stat.S_IMODE(src_st.st_mode))
         except OSError:
             pass
     if spec.times:
@@ -1117,7 +1126,8 @@ def write_sudo_audit(src_display, dst_display, summary):
             print(f"  {C.YELLOW}Could not write audit file: {e}{C.RESET}")
             return
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
         except OSError:
             pass
     finally:
