@@ -6,8 +6,11 @@ on:
     tags:
       - 'v*'
 
+# Least privilege by default: most jobs only read the repo. Jobs that publish
+# release assets escalate to `contents: write` at the job level (see `release`
+# and `sign-windows`).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -198,6 +201,8 @@ jobs:
   release:
     needs: [build, build-macos-intel]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write          # uploads binaries + fast_copy.py to the GitHub release
 
     steps:
       - uses: actions/checkout@v4
@@ -250,7 +255,7 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
       - name: Submit Windows binaries to SignPath
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e  # v1.3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
