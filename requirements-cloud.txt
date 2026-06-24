@@ -5,4 +5,4 @@ boto3>=1.28              # S3 and all S3-compatible (MinIO, R2, Wasabi, B2)
 azure-storage-blob>=12.0 # Azure Blob Storage (az://)
 google-cloud-storage>=2.0 # Google Cloud Storage (gs://)
 smbprotocol>=1.10        # SMB/CIFS shares (smb://host/share and \\host\share)
-cryptography>=41.0       # only for an encrypted credentials file (creds encrypt)
+cryptography>=49.0.0     # only for an encrypted credentials file (creds encrypt); >=49 clears GHSA-537c-gmf6-5ccf, CVE-2023-50782, CVE-2024-0727, AIKIDO-2026-94131
