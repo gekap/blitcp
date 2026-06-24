@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.7.5"
+__version__ = "3.8.0"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -209,7 +209,7 @@ def _safe_open_read_fd(path):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    return os.open(path, flags)
+    return os.open(_long_path(path), flags)
 
 
 def _safe_open_write_fd(path, truncate=True):
@@ -225,7 +225,7 @@ def _safe_open_write_fd(path, truncate=True):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    return os.open(path, flags, 0o600)
+    return os.open(_long_path(path), flags, 0o600)
 
 
 class PreserveSpec:
@@ -4364,7 +4364,7 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
     print(f"  {C.CYAN}Streaming {len(small_entries)} small files ({fmt_size(small_size)}) "
           f"via pipe...{C.RESET}")
 
-    os.makedirs(dst_root, exist_ok=True)
+    os.makedirs(_long_path(dst_root), exist_ok=True)
 
     # Create an OS-level pipe for streaming between producer and consumer
     read_fd, write_fd = os.pipe()
@@ -4625,7 +4625,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
         dst_dir = os.path.dirname(dst_path)
 
         try:
-            os.makedirs(dst_dir, exist_ok=True)
+            os.makedirs(_long_path(dst_dir), exist_ok=True)
 
             if entry.size == 0:
                 try:
@@ -5689,7 +5689,7 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
     sender.start()
 
     # Streaming extraction with byte-level progress for large files (no temp file)
-    os.makedirs(dst_root, exist_ok=True)
+    os.makedirs(_long_path(dst_root), exist_ok=True)
     reader = channel.makefile("rb")
     extracted = 0
     try:
@@ -6362,6 +6362,8 @@ _DEPENDENCIES = [
      "Azure Blob Storage (az://)"),
     ("google-cloud-storage", "google.cloud.storage", "google-cloud-storage>=2.0",
      "Google Cloud Storage (gs://)"),
+    ("smbprotocol", "smbclient", "smbprotocol>=1.10",
+     "SMB/CIFS shares (smb://host/share and \\\\host\\share)"),
     ("xxhash", "xxhash", "xxhash",
      "Faster hashing (xxh128; falls back to SHA-256 if absent)"),
 ]
@@ -6681,6 +6683,118 @@ def is_cloud_path(path_str):
     return parse_cloud_url(path_str) is not None
 
 
+# SMB/CIFS endpoints (v3.8.0) are modelled as a fourth object backend so they
+# reuse the cloud upload/download/dedup orchestration. container=share,
+# prefix=path-within-share, which keeps join_key/list_objects/manifest and the
+# _upload/_download drivers working unchanged.
+SMBSpec = namedtuple("SMBSpec",
+                     ["scheme", "container", "prefix", "connection",
+                      "host", "port", "user"],
+                     defaults=[None, None, 445, None])
+
+
+def parse_smb_url(path_str):
+    """Parse an SMB/CIFS location into an SMBSpec, or return None.
+
+    Accepted forms (host is always explicit — saved connections are referenced
+    by bare name like SSH, not embedded in the URL):
+      smb://[user@]host[:port]/share/path
+      \\\\host\\share\\path          (Windows UNC)
+      //host/share/path             (forward-slash UNC)
+
+    Raises SystemExit only for an smb://-looking URL that is malformed.
+    """
+    if not path_str:
+        return None
+    user = None
+    port = 445
+    if path_str.startswith("smb://"):
+        rest = path_str[len("smb://"):]
+        authority, _, tail = rest.partition("/")
+        if "@" in authority:
+            head, authority = authority.rsplit("@", 1)
+            user = head or None
+        host = authority
+        if host.startswith("["):                       # bracketed IPv6
+            close = host.find("]")
+            if close != -1:
+                hostname = host[1:close]
+                after = host[close + 1:]
+                host = hostname
+                if after.startswith(":") and after[1:].isdigit():
+                    port = int(after[1:])
+        elif ":" in host:
+            host, _, p = host.partition(":")
+            if p.isdigit():
+                port = int(p)
+        rest = tail
+    elif path_str.startswith("\\\\") or path_str.startswith("//"):
+        body = path_str.replace("\\", "/").lstrip("/")
+        host, _, rest = body.partition("/")
+    else:
+        return None
+    if not host:
+        raise SystemExit(f"Error: malformed SMB path (missing host): {path_str!r}")
+    share, _, prefix = rest.partition("/")
+    if not share:
+        raise SystemExit(f"Error: malformed SMB path (missing share): {path_str!r}")
+    prefix = prefix.strip("/")
+    if ".." in share.split("/") or ".." in prefix.split("/"):
+        raise SystemExit(f"Error: '..' is not allowed in an SMB path: {path_str!r}")
+    return SMBSpec(scheme="smb", container=share, prefix=prefix, connection=None,
+                   host=host, port=port, user=user)
+
+
+def is_smb_path(path_str):
+    return parse_smb_url(path_str) is not None
+
+
+def parse_object_url(path_str):
+    """Parse any object-backend URL (cloud or SMB) → spec, or None."""
+    return parse_cloud_url(path_str) or parse_smb_url(path_str)
+
+
+def _smb_creds_present(args):
+    """True if the invocation carries any SMB credential (saved-conn stash or
+    a --smb-* flag) — used to decide whether to route a UNC path through the
+    native SMB client rather than the OS."""
+    return bool(getattr(args, "_smb_creds", None)
+                or getattr(args, "smb_user", None)
+                or getattr(args, "smb_password", False)
+                or getattr(args, "smb_password_env", None)
+                or getattr(args, "smb_domain", None))
+
+
+def _route_as_smb(path, args):
+    """Whether a path should be handled by the SMB backend. `smb://` always is.
+    A backslash UNC (\\\\host\\share) routes to SMB on non-Windows always, and on
+    Windows only when SMB creds are given (otherwise the OS redirector + native
+    local engine handle it — faster, no extra dependency). A forward-slash UNC
+    (//host/share) is ambiguous on POSIX, so it routes to SMB only with creds."""
+    if not path:
+        return False
+    if path.startswith("smb://"):
+        return True
+    if path.startswith("\\\\"):
+        if _system == "Windows" and not _smb_creds_present(args):
+            return False
+        return True
+    if path.startswith("//"):
+        return _smb_creds_present(args)
+    return False
+
+
+def _object_spec(path, args):
+    """Spec for a path that should go through the object orchestrator, else None
+    (cloud always; SMB subject to _route_as_smb)."""
+    c = parse_cloud_url(path)
+    if c:
+        return c
+    if _route_as_smb(path, args):
+        return parse_smb_url(path)
+    return None
+
+
 def _looks_like_profile_ref(token):
     """Cheap test (no credentials access) for whether a token could name a saved
     connection: a bare name like `aws-dev` / `aws-dev/`, or `name:subpath`.
@@ -6688,7 +6802,7 @@ def _looks_like_profile_ref(token):
     qualifies even if a same-named *directory* exists (an explicit connection
     name wins over a coincidental — or auto-created — folder); an existing
     *file* does not. Used to decide whether to open/unlock the creds file."""
-    if not token or parse_cloud_url(token):
+    if not token or parse_object_url(token):
         return False
     t = token.rstrip("/").rstrip(os.sep)
     if not t or t in (".", ".."):
@@ -6727,9 +6841,10 @@ def resolve_named_endpoint(token, conns):
     Returns (new_token, ssh_overrides):
       • cloud connection → ("s3://name@bucket/key", None)
       • ssh connection   → ("user@host:/path", {port, key, password})
+      • smb connection   → ("smb://host/share[/sub]", {"smb": {...creds...}})
       • not a profile    → (None, None)  (leave the token untouched)
     """
-    if not token or parse_cloud_url(token):
+    if not token or parse_object_url(token):
         return None, None
     name, sub = token, None
     if ":" in token:
@@ -6786,6 +6901,27 @@ def resolve_named_endpoint(token, conns):
         overrides = {"port": int(conn.get("port", 22)), "key": conn.get("key"),
                      "password": conn.get("password")}
         return new, overrides
+    if ctype == "smb":
+        if not conn.get("host"):
+            raise SystemExit(f"Error: SMB connection {name!r} has no host.")
+        share = conn.get("share")
+        if share and sub:
+            loc = f"{share}/{sub.strip('/')}"
+        elif share:
+            loc = share
+        elif sub:
+            loc = sub                     # name:share/path when no default share
+        else:
+            raise SystemExit(
+                f"Error: SMB connection {name!r} has no default share. Use "
+                f"{name}:<share>/<path>, or set one with: "
+                f"fast_copy.py creds edit {name}")
+        port = int(conn.get("port", 445))
+        new = f"smb://{conn['host']}:{port}/{loc}"
+        overrides = {"smb": {"host": conn["host"], "user": conn.get("user"),
+                             "password": conn.get("password"),
+                             "domain": conn.get("domain"), "port": port}}
+        return new, overrides
     return None, None
 
 
@@ -6803,7 +6939,9 @@ def apply_named_endpoints(args):
     new_src, src_over = resolve_named_endpoint(args.source, conns)
     if new_src:
         args.source = new_src
-        if src_over:
+        if src_over and "smb" in src_over:
+            _stash_smb_creds(args, src_over["smb"])
+        elif src_over:
             if args.src_port == 22 and src_over["port"]:
                 args.src_port = src_over["port"]
             if not args.src_key and src_over["key"]:
@@ -6813,13 +6951,28 @@ def apply_named_endpoints(args):
     new_dst, dst_over = resolve_named_endpoint(args.destination, conns)
     if new_dst:
         args.destination = new_dst
-        if dst_over:
+        if dst_over and "smb" in dst_over:
+            _stash_smb_creds(args, dst_over["smb"])
+        elif dst_over:
             if args.ssh_port == 22 and dst_over["port"]:
                 args.ssh_port = dst_over["port"]
             if not args.ssh_key and dst_over["key"]:
                 args.ssh_key = dst_over["key"]
             if dst_over["password"]:
                 args._resolved_dst_password = dst_over["password"]
+
+
+def _stash_smb_creds(args, creds):
+    """Record per-host SMB credentials resolved from a saved connection so the
+    SMBBackend can find them by host (works for both sides of an SMB↔SMB copy)."""
+    host = creds.get("host")
+    if not host:
+        return
+    store = getattr(args, "_smb_creds", None)
+    if store is None:
+        store = {}
+        args._smb_creds = store
+    store[host] = {k: v for k, v in creds.items() if v is not None}
 
 
 # ── Credentials file (named connections) ─────────────────────────────────────
@@ -7232,7 +7385,8 @@ def resolve_connection(spec, args):
     return creds
 
 
-CLOUD_SCHEME_NAMES = {"s3": "S3", "az": "Azure Blob", "gs": "Google Cloud Storage"}
+CLOUD_SCHEME_NAMES = {"s3": "S3", "az": "Azure Blob", "gs": "Google Cloud Storage",
+                      "smb": "SMB/CIFS"}
 
 
 def _quote_rel(rel):
@@ -7548,9 +7702,184 @@ class GCSBackend(CloudBackend):
             new.patch()
 
 
+class SMBBackend(CloudBackend):
+    """SMB/CIFS share as an object backend, via the pure-Python smbprotocol
+    library. container=share, prefix=path within the share. Credentials resolve
+    from a saved connection (by host), --smb-* flags, or env. SMB has no
+    per-object metadata store, so cross-run dedup/verify ride the same
+    HMAC-signed manifest sidecar the cloud backends use; mtime is preserved
+    natively, mode/owner are best-effort (manifest only)."""
+    scheme = "smb"
+
+    def __init__(self, spec, args, creds=None):
+        super().__init__(spec, args, creds)
+        try:
+            import smbclient
+            import smbprotocol.exceptions as _smbexc
+        except ImportError:
+            raise SystemExit("Error: SMB transfers require smbprotocol. "
+                             "Install with: python -m pip install smbprotocol")
+        self._sc = smbclient
+        self._smbexc = _smbexc
+        c = dict(self.creds or {})
+        stash = (getattr(args, "_smb_creds", None) or {}).get(spec.host, {})
+        for k, v in stash.items():
+            c.setdefault(k, v)
+        self.host = spec.host or c.get("host")
+        if not self.host:
+            raise SystemExit("Error: SMB needs a host "
+                             "(smb://host/share or a saved connection).")
+        self.port = int(spec.port or c.get("port")
+                        or getattr(args, "smb_port", None) or 445)
+        user = spec.user or c.get("user") or getattr(args, "smb_user", None)
+        domain = c.get("domain") or getattr(args, "smb_domain", None)
+        password = c.get("password")
+        if not password and getattr(args, "smb_password_env", None):
+            password = os.environ.get(args.smb_password_env)
+        if not password and getattr(args, "smb_password", False):
+            password = getpass.getpass(
+                f"  SMB password for {user or ''}@{self.host}: ")
+        encrypt = not getattr(args, "smb_no_encrypt", False)
+        # Connection kwargs passed to EVERY smbclient call: get_smb_tree only
+        # reuses a pooled session when server + credentials + port match, so the
+        # non-default port and creds must travel with each operation.
+        self._ck = dict(
+            username=(f"{domain}\\{user}" if (domain and user) else user),
+            password=password, port=self.port, encrypt=encrypt)
+        # The transfer drivers call upload/download/server_side_copy from a
+        # thread pool, but concurrent operations on an SMB session corrupted
+        # small files in testing (a parallel write/copy could land 0 bytes). SMB
+        # over a single connection gains little from fan-out anyway, so serialise
+        # every backend operation with a re-entrant lock — correctness first.
+        self._lock = threading.RLock()
+        try:
+            try:
+                smbclient.register_session(self.host, **self._ck)
+            except TypeError:                      # older lib without encrypt kw
+                self._ck.pop("encrypt", None)
+                smbclient.register_session(self.host, **self._ck)
+        except Exception as e:
+            raise SystemExit(f"Error: SMB connection to {self.host} failed: "
+                             f"{str(e).splitlines()[0] if str(e) else e}")
+        self.root = "\\\\" + self.host + "\\" + self.container
+        self._dl_manifest = None
+
+    def _unc(self, key):
+        sub = (key or "").replace("/", "\\").strip("\\")
+        return self.root + ("\\" + sub if sub else "")
+
+    def _ensure_manifest(self):
+        if self._dl_manifest is None:
+            self._dl_manifest = _load_cloud_manifest(self, self.prefix) or {}
+
+    def _meta_for(self, key):
+        """fc_* metadata for a key from the manifest (SMB keeps none on the
+        object), so verify + relpath-restore work on download/head."""
+        if key.endswith(CLOUD_MANIFEST_NAME):
+            return {}
+        self._ensure_manifest()
+        prefix = self.prefix.rstrip("/")
+        rel = key[len(prefix):].lstrip("/") \
+            if prefix and key.startswith(prefix) else key
+        info = self._dl_manifest.get(rel)
+        meta = {}
+        if info and info.get("hash"):
+            meta = {"fc_hash": info["hash"], "fc_hash_algo": _hash_name,
+                    "fc_relpath": _quote_rel(rel)}
+        try:
+            meta.setdefault("fc_mtime",
+                            repr(self._sc.stat(self._unc(key), **self._ck).st_mtime))
+        except Exception:
+            pass
+        return meta
+
+    def list_objects(self, prefix):
+        out = {}
+        base = self.root.rstrip("\\")
+        root = self._unc(prefix or "")
+        with self._lock:
+            # Single-file prefix → return just that object.
+            try:
+                st = self._sc.stat(root, **self._ck)
+                if not stat.S_ISDIR(st.st_mode):
+                    rel = root[len(base):].lstrip("\\").replace("\\", "/")
+                    return {rel: {"size": st.st_size}}
+            except Exception:
+                pass
+            try:
+                for dirpath, _dirs, files in self._sc.walk(root, **self._ck):
+                    for fn in files:
+                        full = dirpath.rstrip("\\") + "\\" + fn
+                        rel = full[len(base):].lstrip("\\").replace("\\", "/")
+                        try:
+                            size = self._sc.stat(full, **self._ck).st_size
+                        except OSError:
+                            size = 0
+                        out[rel] = {"size": size}
+            except self._smbexc.SMBOSError:
+                return out
+        return out
+
+    def head(self, key):
+        with self._lock:
+            try:
+                self._sc.stat(self._unc(key), **self._ck)
+            except Exception:
+                return None
+            return self._meta_for(key)
+
+    def upload(self, local_path, key, metadata):
+        unc = self._unc(key)
+        with self._lock:
+            try:
+                self._sc.makedirs(unc.rsplit("\\", 1)[0], exist_ok=True, **self._ck)
+            except OSError:
+                pass
+            with open(local_path, "rb") as src, \
+                    self._sc.open_file(unc, mode="wb", **self._ck) as dst:
+                for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                    dst.write(chunk)
+            self._set_mtime(unc, metadata)
+
+    def download(self, key, local_path):
+        unc = self._unc(key)
+        with self._lock:
+            with self._sc.open_file(unc, mode="rb", **self._ck) as src, \
+                    open(local_path, "wb") as dst:
+                for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                    dst.write(chunk)
+            return self._meta_for(key)
+
+    def server_side_copy(self, src_key, dst_key, metadata):
+        # smbprotocol's high-level API doesn't expose FSCTL_SRV_COPYCHUNK, so a
+        # "server-side" copy relays bytes through the client over the same
+        # session (correct, just not zero-copy).
+        dst_unc = self._unc(dst_key)
+        with self._lock:
+            try:
+                self._sc.makedirs(dst_unc.rsplit("\\", 1)[0], exist_ok=True,
+                                  **self._ck)
+            except OSError:
+                pass
+            with self._sc.open_file(self._unc(src_key), mode="rb", **self._ck) as s, \
+                    self._sc.open_file(dst_unc, mode="wb", **self._ck) as d:
+                for chunk in iter(lambda: s.read(1024 * 1024), b""):
+                    d.write(chunk)
+            self._set_mtime(dst_unc, metadata)
+
+    def _set_mtime(self, unc, metadata):
+        if metadata and metadata.get("fc_mtime"):
+            try:
+                t = float(metadata["fc_mtime"])
+                self._sc.utime(unc, (t, t), **self._ck)
+            except Exception:
+                pass
+
+
 def make_backend(spec, args):
     creds = resolve_connection(spec, args)
-    cls = {"s3": S3Backend, "az": AzureBackend, "gs": GCSBackend}[spec.scheme]
+    cls = {"s3": S3Backend, "az": AzureBackend, "gs": GCSBackend,
+           "smb": SMBBackend}[spec.scheme]
     return cls(spec, args, creds)
 
 
@@ -7584,6 +7913,8 @@ def _entry_has_secret(c):
     if t == "az":
         return bool(c.get("connection_string") or c.get("key"))
     if t == "ssh":
+        return bool(c.get("password"))
+    if t == "smb":
         return bool(c.get("password"))
     return False
 
@@ -7832,6 +8163,13 @@ def creds_manager(argv):
                 extra = f"{c.get('user')}@{c.get('host')}:{c.get('port', 22)} {auth}"
                 if c.get("path"):
                     extra += f" path={c.get('path')}"
+            elif t == "smb":
+                dom = (c.get("domain") + "\\") if c.get("domain") else ""
+                auth = "password=***" if c.get("password") else "anonymous"
+                extra = (f"{dom}{c.get('user')}@{c.get('host')}:{c.get('port', 445)}"
+                         f" {auth}")
+                if c.get("share"):
+                    extra += f" share={c.get('share')}"
             else:
                 extra = ""
             if t in ("s3", "az", "gs") and c.get("container"):
@@ -7854,11 +8192,11 @@ def creds_manager(argv):
         if not name:
             print(f"{C.RED}Error: 'creds add' needs a connection name.{C.RESET}")
             return 1
-        t = (input("  Type [s3/azure/gcs/ssh]: ").strip() or "s3").lower()
+        t = (input("  Type [s3/azure/gcs/ssh/smb]: ").strip() or "s3").lower()
         t = {"azure": "az", "gcs": "gs", "s3": "s3", "az": "az", "gs": "gs",
-             "ssh": "ssh", "sftp": "ssh"}.get(t)
-        if t not in ("s3", "az", "gs", "ssh"):
-            print(f"{C.RED}Error: type must be s3, azure, gcs, or ssh.{C.RESET}")
+             "ssh": "ssh", "sftp": "ssh", "smb": "smb", "cifs": "smb"}.get(t)
+        if t not in ("s3", "az", "gs", "ssh", "smb"):
+            print(f"{C.RED}Error: type must be s3, azure, gcs, ssh, or smb.{C.RESET}")
             return 1
         entry = {"type": t}
         if t == "s3":
@@ -7906,6 +8244,29 @@ def creds_manager(argv):
             dp = input("  Default remote path (blank = none): ").strip()
             if dp:
                 entry["path"] = dp
+        elif t == "smb":
+            entry["host"] = input("  Host (name or IP): ").strip()
+            if not entry["host"]:
+                print(f"{C.RED}Error: SMB connection needs a host.{C.RESET}")
+                return 1
+            u = input(f"  User [{getpass.getuser()}]: ").strip()
+            entry["user"] = u or getpass.getuser()
+            pw = _prompt_secret("  Password (blank = anonymous/guest): ")
+            if pw:
+                entry["password"] = pw
+            dom = input("  Domain (blank = none): ").strip()
+            if dom:
+                entry["domain"] = dom
+            p = input("  Port [445]: ").strip()
+            if p:
+                try:
+                    entry["port"] = int(p)
+                except ValueError:
+                    print(f"{C.RED}Error: port must be a number.{C.RESET}")
+                    return 1
+            sh = input("  Default share (blank = none): ").strip()
+            if sh:
+                entry["share"] = sh
         if t in ("s3", "az", "gs"):
             # A default bucket/container lets you copy to just `name` (no URL).
             cword = "container" if t == "az" else "bucket"
@@ -8004,6 +8365,19 @@ def creds_manager(argv):
             setif("key", ask("Private key path", cur.get("key")))
             setif("password", ask("Password", cur.get("password"), secret=True))
             setif("path", ask("Default remote path", cur.get("path")))
+        elif t == "smb":
+            setif("host", ask("Host", cur.get("host")))
+            setif("user", ask("User", cur.get("user")))
+            setif("password", ask("Password", cur.get("password"), secret=True))
+            setif("domain", ask("Domain", cur.get("domain")))
+            port = ask("Port", cur.get("port", 445))
+            if port not in (None, ""):
+                try:
+                    entry["port"] = int(port)
+                except (ValueError, TypeError):
+                    print(f"{C.RED}Error: port must be a number.{C.RESET}")
+                    return 1
+            setif("share", ask("Default share", cur.get("share")))
         else:
             print(f"{C.RED}Error: connection {name!r} has an unknown type {t!r}.{C.RESET}")
             return 1
@@ -8047,6 +8421,23 @@ def creds_manager(argv):
                         pass
             print(f"  {C.GREEN}✓ {name}: SSH connection OK "
                   f"({spec.user}@{spec.host}:{spec.port}){C.RESET}")
+            return 0
+        if scheme == "smb":
+            c = conns[name]
+            spec = SMBSpec(scheme="smb", container=(c.get("share") or ""),
+                           prefix="", connection=name, host=c.get("host"),
+                           port=int(c.get("port", 445)), user=c.get("user"))
+            try:
+                b = make_backend(spec, argparse.Namespace(credentials_file=path))
+                if c.get("share"):
+                    b.list_objects("")
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"  {C.RED}✗ {name}: connection failed — {e}{C.RESET}")
+                return 1
+            print(f"  {C.GREEN}✓ {name}: SMB connection OK "
+                  f"({c.get('user')}@{c.get('host')}:{c.get('port', 445)}){C.RESET}")
             return 0
         if scheme not in ("s3", "az", "gs"):
             print(f"{C.RED}Error: connection {name!r} has no valid type.{C.RESET}")
@@ -8147,13 +8538,108 @@ def run_cloud_transfer(args):
               f"(got {len(args.extra_sources) + 1}). Point one source at a "
               f"common parent, or run separate copies.{C.RESET}")
         sys.exit(1)
-    src_spec = parse_cloud_url(args.source)
-    dst_spec = parse_cloud_url(args.destination)
+    src_spec = _object_spec(args.source, args)
+    dst_spec = _object_spec(args.destination, args)
+    # One object side + one SSH side → relay through a local temp dir.
+    if src_spec and not dst_spec and parse_remote_path(args.destination):
+        return _relay_object_ssh(args, src_spec, obj_is_src=True)
+    if dst_spec and not src_spec and parse_remote_path(args.source):
+        return _relay_object_ssh(args, dst_spec, obj_is_src=False)
     if src_spec and dst_spec:
         return _cloud_to_cloud(args, src_spec, dst_spec)
     if dst_spec:
         return _upload_to_cloud(args, dst_spec)
     return _download_from_cloud(args, src_spec)
+
+
+def _self_invoke_cmd():
+    """Command prefix to re-invoke this tool's CLI (frozen binary or script)."""
+    if _is_frozen():
+        base = [_get_self_path()]
+        if os.path.basename(_get_self_path()).lower().startswith("fast_copy_gui"):
+            base.append("--fc-core")        # GUI-as-core dispatch
+        return base
+    return [sys.executable, os.path.abspath(__file__)]
+
+
+def _run_ssh_leg(args, source, destination):
+    """Run the local↔SSH half of a relay as a child process, reusing the whole
+    SSH copy engine. Passwords are forwarded via env vars, never argv."""
+    import subprocess
+    cmd = _self_invoke_cmd() + [source, destination,
+                                "--threads", str(args.threads),
+                                "--buffer", str(args.buffer)]
+    env = dict(os.environ)
+    if getattr(args, "dry_run", False):
+        cmd.append("--dry-run")
+    if getattr(args, "no_verify", False):
+        cmd.append("--no-verify")
+    if getattr(args, "no_dedup", False):
+        cmd.append("--no-dedup")
+    if getattr(args, "compress", False):
+        cmd.append("--compress")
+    if getattr(args, "ssh_no_sftp", False):
+        cmd.append("--ssh-no-sftp")
+    if getattr(args, "force", False):
+        cmd.append("--force")
+    if getattr(args, "chunk_size", None):
+        cmd += ["--chunk-size", str(args.chunk_size)]
+    for pat in (getattr(args, "exclude", None) or []):
+        cmd += ["--exclude", pat]
+    if getattr(args, "preserve", None):
+        cmd += ["--preserve", args.preserve]
+    if getattr(args, "ssh_port", 22) != 22:
+        cmd += ["--ssh-dst-port", str(args.ssh_port)]
+    if getattr(args, "ssh_key", None):
+        cmd += ["--ssh-dst-key", args.ssh_key]
+    if getattr(args, "src_port", 22) != 22:
+        cmd += ["--ssh-src-port", str(args.src_port)]
+    if getattr(args, "src_key", None):
+        cmd += ["--ssh-src-key", args.src_key]
+    dpw = getattr(args, "_resolved_dst_password", None)
+    if dpw:
+        env["_FC_RELAY_DST_PW"] = dpw
+        cmd += ["--ssh-dst-password-env", "_FC_RELAY_DST_PW"]
+    elif getattr(args, "ssh_password", False):
+        cmd.append("--ssh-dst-password")
+    elif getattr(args, "ssh_password_env", None):
+        cmd += ["--ssh-dst-password-env", args.ssh_password_env]
+    spw = getattr(args, "_resolved_src_password", None)
+    if spw:
+        env["_FC_RELAY_SRC_PW"] = spw
+        cmd += ["--ssh-src-password-env", "_FC_RELAY_SRC_PW"]
+    elif getattr(args, "src_password", False):
+        cmd.append("--ssh-src-password")
+    elif getattr(args, "src_password_env", None):
+        cmd += ["--ssh-src-password-env", args.src_password_env]
+    return subprocess.run(cmd, env=env).returncode
+
+
+def _relay_object_ssh(args, obj_spec, obj_is_src):
+    """Relay between an object endpoint (cloud/SMB) and an SSH endpoint through a
+    local temp dir: reuse the object up/download drivers and the SSH copy engine
+    (invoked as a child so none of its logic is duplicated)."""
+    import tempfile
+    relay = tempfile.mkdtemp(prefix="fast_copy_relay_")
+    pretty = CLOUD_SCHEME_NAMES[obj_spec.scheme]
+    try:
+        if obj_is_src:
+            print(f"  {C.DIM}Relaying {pretty} → SSH through local temp...{C.RESET}")
+            dl = argparse.Namespace(**vars(args))
+            dl.destination = relay
+            _download_from_cloud(dl, obj_spec)
+            rc = _run_ssh_leg(args, relay, args.destination)
+        else:
+            print(f"  {C.DIM}Relaying SSH → {pretty} through local temp...{C.RESET}")
+            rc = _run_ssh_leg(args, args.source, relay)
+            if rc == 0:
+                up = argparse.Namespace(**vars(args))
+                up.source = relay
+                _upload_to_cloud(up, obj_spec)
+        if rc != 0:
+            sys.exit(rc)
+    finally:
+        shutil.rmtree(relay, ignore_errors=True)
 
 
 def _preserve_set(args):
@@ -8441,7 +8927,8 @@ def _cloud_to_cloud(args, src_spec, dst_spec):
     """Cloud→cloud. Same provider + same container → server-side copy; otherwise
     relay through a local temp directory (download then upload)."""
     if (src_spec.scheme == dst_spec.scheme
-            and src_spec.container == dst_spec.container):
+            and src_spec.container == dst_spec.container
+            and getattr(src_spec, "host", None) == getattr(dst_spec, "host", None)):
         backend = make_backend(src_spec, args)
         banner(f"COPY (server-side) — {CLOUD_SCHEME_NAMES[src_spec.scheme]}")
         objects = {k: v for k, v in backend.list_objects(src_spec.prefix).items()
@@ -8694,7 +9181,7 @@ def cloud_ls(argv):
               f"or user@host:/path.{C.RESET}")
         return 1
     ns = argparse.Namespace(credentials_file=cred_file)
-    spec = parse_cloud_url(target)
+    spec = parse_cloud_url(target) or parse_smb_url(target)
     if spec is None:
         # Only open/unlock the credentials file when the target actually looks
         # like a saved-profile name. A bare user@host:/path is listed directly
@@ -8703,17 +9190,20 @@ def cloud_ls(argv):
             conns = _conns_for_named_endpoints(ns)
             new, overrides = resolve_named_endpoint(target, conns) if conns else (None, None)
             if new:
-                cloud_spec = parse_cloud_url(new)
-                if cloud_spec is not None:
-                    spec = cloud_spec
+                obj_spec = parse_object_url(new)
+                if obj_spec is not None:
+                    if overrides and "smb" in overrides:
+                        _stash_smb_creds(ns, overrides["smb"])
+                    spec = obj_spec
                 else:  # resolved to an SSH endpoint
                     return _ssh_ls(new, overrides, ssh_port, ssh_key, ssh_password)
         elif parse_remote_path(target):
             # A bare user@host:/path SSH target — no creds file involved.
             return _ssh_ls(target, None, ssh_port, ssh_key, ssh_password)
-    if spec is None or spec.scheme not in ("s3", "az", "gs"):
+    if spec is None or spec.scheme not in ("s3", "az", "gs", "smb"):
         print(f"{C.RED}Error: {target!r} is not a cloud connection/URL "
-              f"(s3://, az://, gs://) or an SSH path (user@host:/path).{C.RESET}")
+              f"(s3://, az://, gs://), an smb:// / UNC share, or an SSH path "
+              f"(user@host:/path).{C.RESET}")
         return 1
     try:
         backend = make_backend(spec, ns)
@@ -8726,7 +9216,10 @@ def cloud_ls(argv):
         return 1
     # Hide fast_copy's own manifest sidecar from the listing.
     keys = sorted(k for k in objs if not k.endswith(REMOTE_MANIFEST_NAME))
-    where = f"{spec.scheme}://{spec.container}/{spec.prefix or ''}"
+    if spec.scheme == "smb":
+        where = f"smb://{getattr(spec, 'host', '')}/{spec.container}/{spec.prefix or ''}"
+    else:
+        where = f"{spec.scheme}://{spec.container}/{spec.prefix or ''}"
     if not keys:
         print(f"  No objects in {where}")
         return 0
@@ -10098,6 +10591,19 @@ def main():
                         help="Google Cloud project for gs://")
     cloud_grp.add_argument("--gcs-credentials", default=None,
                         help="Path to a GCS service-account JSON key file")
+    cloud_grp.add_argument("--smb-user", default=None,
+                        help="Username for smb:// / UNC shares (overrides any "
+                             "user in the URL)")
+    cloud_grp.add_argument("--smb-domain", default=None,
+                        help="Windows/AD domain for SMB authentication")
+    cloud_grp.add_argument("--smb-port", type=int, default=None,
+                        help="SMB port (default: 445)")
+    cloud_grp.add_argument("--smb-password", action="store_true",
+                        help="Prompt for the SMB password")
+    cloud_grp.add_argument("--smb-password-env", default=None, metavar="VAR",
+                        help=argparse.SUPPRESS)
+    cloud_grp.add_argument("--smb-no-encrypt", action="store_true",
+                        help="Disable SMB3 transport encryption (on by default)")
     cloud_grp.add_argument("--credentials-file", default=None, metavar="PATH",
                         help="Named-connection file for cloud credentials. "
                              "Reference a connection by name (e.g. aws-dev, "
@@ -10172,10 +10678,14 @@ def main():
     apply_named_endpoints(args)
 
     # ── Object storage routing (v4.0.0) ───────────────────────────────
-    # If either endpoint is a cloud URL (s3:// / az:// / gs://), hand off to
-    # the object-storage backends. The local/SSH engine below handles only
-    # filesystem and SSH paths.
-    if is_cloud_path(args.source) or is_cloud_path(args.destination):
+    # If either endpoint is a cloud URL (s3:// / az:// / gs://) or an SMB/CIFS
+    # location (smb:// or a UNC \\host\share), hand off to the object-storage
+    # backends. SMB is intercepted HERE, before parse_remote_path below, which
+    # would otherwise misread smb://host as an SSH host. The local/SSH engine
+    # handles only plain filesystem and SSH paths.
+    if (is_cloud_path(args.source) or is_cloud_path(args.destination)
+            or _route_as_smb(args.source, args)
+            or _route_as_smb(args.destination, args)):
         run_cloud_transfer(args)
         return
 

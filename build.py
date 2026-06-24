@@ -32,6 +32,7 @@ CLOUD_COLLECT = {
     "google.cloud.storage": ["google.cloud.storage", "google.cloud",
                              "google.api_core", "google.auth",
                              "google.resumable_media"],
+    "smbclient": ["smbprotocol", "smbclient", "spnego", "pyasn1"],
 }
 
 

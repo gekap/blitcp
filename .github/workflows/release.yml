@@ -41,7 +41,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cloud.txt
-          python -c "import boto3, azure.storage.blob, google.cloud.storage; print('cloud SDKs OK')"
+          python -c "import boto3, azure.storage.blob, google.cloud.storage, smbclient; print('cloud + SMB SDKs OK')"
 
       - name: Build executable
         run: python build.py
@@ -154,7 +154,7 @@ jobs:
           # failure must not block the CLI release.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m pip install \
             --target "$PKGDIR" \
-            boto3 azure-storage-blob google-cloud-storage \
+            boto3 azure-storage-blob google-cloud-storage smbprotocol \
             || echo "::warning::cloud SDK install failed; binaries omit cloud"
           # Only collect cloud packages PyInstaller can actually find, else the
           # build errors out on a missing --collect-all target.
@@ -162,6 +162,9 @@ jobs:
           if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c \
               "import boto3, azure.storage.blob, google.cloud.storage" 2>/dev/null; then
             CLOUD_FLAGS="--collect-all=boto3 --collect-all=botocore --collect-all=s3transfer --collect-all=azure.storage.blob --collect-all=azure.core --collect-all=google.cloud.storage --collect-all=google.cloud --collect-all=google.api_core --collect-all=google.auth --collect-all=google.resumable_media"
+          fi
+          if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c "import smbclient" 2>/dev/null; then
+            CLOUD_FLAGS="$CLOUD_FLAGS --collect-all=smbprotocol --collect-all=smbclient --collect-all=spnego --collect-all=pyasn1"
           fi
           # Make the x86_64 deps importable by PyInstaller's analysis/hooks.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \

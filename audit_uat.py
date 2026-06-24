@@ -572,6 +572,63 @@ _SECRET_PATTERNS = [
 ]
 
 
+def _import_target(ctx):
+    """Import the fast_copy.py under test as a module (its CLI is __main__-guarded
+    so import has no side effects). Cached on ctx."""
+    if ctx.get("_mod") is not None:
+        return ctx["_mod"]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fastcopy_under_test",
+                                                  ctx["target"])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ctx["_mod"] = mod
+    return mod
+
+
+def _check_smb_parse(rep, ctx):
+    """Unit-check parse_smb_url: smb:// + UNC map correctly, and non-SMB inputs
+    (drive letters, SSH user@host:/path, cloud URLs) are left for other parsers."""
+    try:
+        mod = _import_target(ctx)
+    except Exception as e:
+        rep.skip("SMB URL parsing", f"could not import target: {e}")
+        return
+    p = getattr(mod, "parse_smb_url", None)
+    if not p:
+        rep.skip("SMB URL parsing", "parse_smb_url not present")
+        return
+    bad = []
+
+    def check(inp, want):
+        try:
+            got = p(inp)
+        except SystemExit as e:
+            bad.append(f"{inp!r}→error {e}")
+            return
+        if want is None:
+            if got is not None:
+                bad.append(f"{inp!r}→expected None, got {got}")
+        elif got is None:
+            bad.append(f"{inp!r}→None")
+        elif (got.scheme, got.host, got.container, got.prefix) != want:
+            bad.append(f"{inp!r}→{(got.scheme, got.host, got.container, got.prefix)} != {want}")
+
+    check("smb://h/s/p", ("smb", "h", "s", "p"))
+    check("smb://user@h:445/s/a/b", ("smb", "h", "s", "a/b"))
+    check(r"\\h\s\p", ("smb", "h", "s", "p"))
+    check("//h/s/p", ("smb", "h", "s", "p"))
+    check("C:\\x", None)
+    check("user@host:/p", None)
+    check("/local/path", None)
+    check("s3://bucket/key", None)
+    if bad:
+        rep.fail("SMB URL parsing", "; ".join(bad[:6]))
+    else:
+        rep.ok("SMB URL parsing",
+               "smb:// + UNC map correctly; non-SMB inputs ignored")
+
+
 def section_security(rep, ctx):
     targets = [ctx["target"]]
     repo = os.path.dirname(os.path.abspath(ctx["target"]))
@@ -642,6 +699,8 @@ def section_security(rep, ctx):
     _check_credentials_encrypted(rep, repo)
     # ...and no GUI code path may write secret credentials in cleartext
     _check_gui_creds_enforce_encryption(rep, repo)
+    # SMB/UNC URL parsing must not collide with SSH/cloud/local paths
+    _check_smb_parse(rep, ctx)
 
     # external scanners (best effort)
     _run_external_scanner(rep, "bandit",
@@ -945,6 +1004,46 @@ def section_modes(rep, ctx):
                 rep.skip(m, "no local S3/Azure/GCS emulator reachable")
         else:
             _run_cloud_roundtrip(rep, ctx, backend)
+
+    # SMB modes — opt-in; a real round-trip needs a reachable server + creds,
+    # supplied via FC_AUDIT_SMB_URL (e.g. smb://user@127.0.0.1/share/audit) and
+    # FC_AUDIT_SMB_PASS. Otherwise skip cleanly.
+    if not ctx.get("allow_smb"):
+        for m in ("SMB upload", "SMB download", "SMB->SMB"):
+            rep.skip(m, "SMB modes opt-in (--allow-smb)")
+    else:
+        url = os.environ.get("FC_AUDIT_SMB_URL")
+        if not url:
+            for m in ("SMB upload", "SMB download", "SMB->SMB"):
+                rep.skip(m, "set FC_AUDIT_SMB_URL (+FC_AUDIT_SMB_PASS) to test SMB")
+        else:
+            _run_smb_roundtrip(rep, ctx, url)
+
+
+def _run_smb_roundtrip(rep, ctx, base_url):
+    target = ctx["target"]
+    pw = os.environ.get("FC_AUDIT_SMB_PASS")
+    env = {"FC_AUDIT_SMB_PASS": pw} if pw else None
+    pw_flags = ["--smb-password-env", "FC_AUDIT_SMB_PASS"] if pw else []
+    base = base_url.rstrip("/")
+    with temp_workspace() as ws:
+        src = make_tree(os.path.join(ws, "src"), big_mb=1)
+        rc, out, err = run_fc(target, [src, base] + pw_flags,
+                              timeout=180, extra_env=env)
+        if rc != 0 and "smbprotocol" in (out + err).lower():
+            for m in ("SMB upload", "SMB download", "SMB->SMB"):
+                rep.skip(m, "smbprotocol not installed")
+            return
+        (rep.ok if rc == 0 else rep.fail)(
+            "SMB upload", "uploaded" if rc == 0 else f"rc={rc} {err[:140]}")
+        dst = os.path.join(ws, "dl")
+        rc2, out2, err2 = run_fc(target, [base, dst] + pw_flags,
+                                 timeout=180, extra_env=env)
+        ok, d = tree_equal(src, dst)
+        (rep.ok if rc2 == 0 and ok else rep.fail)(
+            "SMB download", "round-trip verified" if rc2 == 0 and ok
+            else f"rc={rc2} {d} {err2[:140]}")
+        rep.skip("SMB->SMB", "covered by upload+download round-trip")
 
 
 def _detect_cloud_backend():
@@ -1342,6 +1441,8 @@ def main(argv=None):
                    help="Exercise Push/Pull/R2R over localhost SSH")
     p.add_argument("--allow-cloud", action="store_true",
                    help="Exercise cloud modes against a local emulator")
+    p.add_argument("--allow-smb", action="store_true",
+                   help="Exercise SMB modes (needs FC_AUDIT_SMB_URL/PASS)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
@@ -1353,7 +1454,7 @@ def main(argv=None):
         return 2
 
     ctx = {"target": target, "allow_remote": args.allow_remote,
-           "allow_cloud": args.allow_cloud}
+           "allow_cloud": args.allow_cloud, "allow_smb": args.allow_smb}
     rep = Reporter(verbose=args.verbose, quiet=args.quiet)
 
     print(f"{C.BOLD}fast-copy audit + UAT{C.RESET}")

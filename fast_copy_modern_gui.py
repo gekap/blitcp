@@ -89,7 +89,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.7.5"
+GUI_VERSION = "3.8.0"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -841,10 +841,19 @@ FIELDSETS = {
         ("password", "Password — or passphrase if the key is encrypted", "", True),
         ("path", "Default remote path", "", False),
     ],
+    "smb": [
+        ("host", "Host (name or IP)", "", False),
+        ("user", "User", "", False),
+        ("password", "Password (blank = anonymous/guest)", "", True),
+        ("domain", "Domain (blank = none)", "", False),
+        ("port", "Port", "445", False),
+        ("share", "Default share", "", False),
+    ],
 }
 TYPE_LABELS = [
     ("s3", "Amazon S3 / compatible"), ("az", "Azure Blob"),
     ("gs", "Google Cloud Storage"), ("ssh", "SSH / SFTP"),
+    ("smb", "SMB / CIFS"),
 ]
 
 
@@ -3467,19 +3476,28 @@ class FastCopyGUI(QWidget):
         ctype = conn.get("type")
         if not FC_OK:
             return None, "fast_copy.py is required for cloud browsing"
-        bucket = conn.get("container") or conn.get("bucket")
+        is_smb = ctype == "smb"
+        bucket = (conn.get("share") if is_smb
+                  else conn.get("container") or conn.get("bucket"))
         if not bucket:
-            return None, "no default bucket/container set on this connection"
+            kind = "share" if is_smb else "bucket/container"
+            return None, f"no default {kind} set on this connection"
         backend_cls = {"s3": fc.S3Backend, "az": fc.AzureBackend,
-                       "gs": fc.GCSBackend}.get(ctype)
+                       "gs": fc.GCSBackend, "smb": fc.SMBBackend}.get(ctype)
         if not backend_cls:
-            return None, f"unsupported cloud type {ctype!r}"
+            return None, f"unsupported connection type {ctype!r}"
         prefix = "" if cwd in ("/", "") else cwd.strip("/") + "/"
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
-                                connection=conn["name"])
             creds = {k: v for k, v in conn.items() if k not in ("type", "name")}
+            if is_smb:
+                spec = fc.SMBSpec(scheme="smb", container=bucket, prefix="",
+                                  connection=conn["name"], host=conn.get("host"),
+                                  port=int(conn.get("port", 445)),
+                                  user=conn.get("user"))
+            else:
+                spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
+                                    connection=conn["name"])
             backend = backend_cls(spec, types.SimpleNamespace(), creds=creds)
             objs = backend.list_objects(prefix)
         except SystemExit as e:
@@ -3518,6 +3536,12 @@ class FastCopyGUI(QWidget):
             sub = cwd
         if conn["type"] == "ssh":
             return f"{conn.get('user', 'user')}@{conn.get('host', conn['name'])}:{sub}"
+        if conn["type"] == "smb":
+            # Reference the saved connection by name so credentials resolve
+            # (the SMB analogue of the cloud name@bucket form); expands to
+            # smb://host/share/<rel> with its password via resolve_named_endpoint.
+            rel = sub.lstrip("/")
+            return f"{conn['name']}:{rel}" if rel else conn["name"]
         bucket = conn.get("container", "backups")
         scheme = "az" if conn["type"] == "az" else "gs" if conn["type"] == "gs" else "s3"
         return f"{scheme}://{conn['name']}@{bucket}{sub}"
