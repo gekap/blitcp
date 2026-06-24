@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.7.5 — 2026-06-24
+
+Bug-fix release.
+
+### Bug Fixes
+
+- **Windows: large-file copies no longer crash.** Preserving file mode (the
+  default) called the POSIX-only `os.fchmod`, which raised `AttributeError` on
+  Windows and aborted the copy — including copies to UNC `\\host\share`
+  destinations. Mode is now applied via a path-based `chmod` fallback on
+  Windows.
+- **GUI: credentials are never written in cleartext.** Cancelling the
+  encryption-passphrase prompt no longer saves passwords/keys unencrypted — the
+  save is refused and rolled back. Deselecting every *preserve* option now sends
+  `--preserve none` instead of silently keeping the default.
+- **Clean error on an unwritable destination.** A read-only or
+  permission-denied destination now reports a single-line error instead of a raw
+  Python traceback.
+
 ## v3.6.0 — 2026-05-31
 
 Object storage becomes a first-class citizen. `s3://`, `az://`, and `gs://`

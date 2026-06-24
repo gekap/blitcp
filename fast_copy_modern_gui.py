@@ -89,7 +89,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.7.4"
+GUI_VERSION = "3.7.5"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -2532,9 +2532,11 @@ class FastCopyGUI(QWidget):
             argv += ["--chunk-size", self.chunk_input.text().strip()]
         for p in self.exclude_patterns:
             argv += ["--exclude", p]
+        # Always send an explicit --preserve so deselecting every chip means
+        # "preserve nothing" (--preserve none). Omitting the flag would let the
+        # engine fall back to its mode,times default — the opposite of intent.
         preserve = [k for k, o in self.meta_opts.items() if o.property("active")]
-        if preserve:
-            argv += ["--preserve", ",".join(preserve)]
+        argv += ["--preserve", ",".join(preserve) if preserve else "none"]
         if self.flag_opts["overwrite all"].property("active"):
             argv.append("--overwrite")
         if self.flag_opts["force"].property("active"):
@@ -3106,10 +3108,17 @@ class FastCopyGUI(QWidget):
             return False, "Unlock credentials.json first"
         # Encrypt by default: the first time a secret would be written to a
         # not-yet-encrypted file, offer to set a passphrase and switch to
-        # AES-256-GCM. Declining keeps the cleartext write (with the engine's
-        # warning), and we'll offer again on the next secret-bearing save.
+        # AES-256-GCM.
         if not self.creds_encrypted and self._has_secret_entries():
             self._offer_encryption()
+            # Encryption is mandatory for secret-bearing credentials. If the
+            # user cancelled the passphrase prompt (or left it blank), refuse
+            # the write rather than persist passwords/keys in cleartext. The
+            # caller rolls back the in-memory change, so nothing — on disk or
+            # in memory — is left holding plaintext secrets.
+            if not self.creds_encrypted:
+                return False, ("Encryption required: enter a passphrase to "
+                               "save passwords or keys. Nothing was written.")
         try:
             if self.creds_encrypted:
                 fc._creds_passphrase_cache = bytearray(bytes(self.creds_pw))
@@ -3141,13 +3150,15 @@ class FastCopyGUI(QWidget):
         return any(isinstance(c, dict) and has(c) for c in self.conns.values())
 
     def _offer_encryption(self):
-        """Encrypt-by-default prompt: ask for a new passphrase and switch the file
-        to AES-256-GCM. No-op if the user cancels (the save then stays cleartext)."""
+        """Mandatory-encryption prompt: ask for a new passphrase and switch the
+        file to AES-256-GCM. No-op if the user cancels — and the caller
+        (_persist_credentials) then refuses the write, so secrets are never
+        persisted in cleartext."""
         dlg = PasswordDialog(
             self, "Encrypt credentials",
             "Protect your saved passwords and keys with a passphrase "
             "(AES-256-GCM). You'll need it to unlock credentials.json later. "
-            "Press Cancel to keep saving in cleartext.",
+            "Cancelling will not save your passwords or keys.",
             "New passphrase", confirm=True)
         if not dlg.exec():
             return                       # declined → falls through to plaintext write
