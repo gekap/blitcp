@@ -7,8 +7,7 @@ on:
       - 'v*'
 
 # Least privilege by default: most jobs only read the repo. Jobs that publish
-# release assets escalate to `contents: write` at the job level (see `release`
-# and `sign-windows`).
+# release assets escalate to `contents: write` at the job level (see `release`).
 permissions:
   contents: read
 
@@ -71,8 +70,8 @@ jobs:
 
       # Authenticode-sign the Windows binaries (CLI + GUI) with signtool — used
       # for private testing with your own cert (incl. a self-signed test cert).
-      # Self-skips when no cert is configured. For PUBLIC releases, leave this
-      # unset and use the free SignPath `sign-windows` job below instead.
+      # Self-skips when no cert is configured, so public releases simply ship
+      # unsigned Windows binaries unless WINDOWS_CERT_* secrets are set.
       # Secrets: WINDOWS_CERT_PFX_BASE64 (base64 of your .pfx), WINDOWS_CERT_PASSWORD.
       - name: Sign Windows binaries (signtool)
         if: matrix.name == 'windows'
@@ -227,53 +226,3 @@ jobs:
           done
           # Also upload the Python script
           gh release upload "$tag" fast_copy.py --clobber
-
-  # ── Free Authenticode signing via SignPath Foundation (open-source program) ──
-  # Runs only when the SignPath variables/secret are configured, so the release
-  # still succeeds before you've been approved. Setup (one-time, by you):
-  #   1. Apply at https://signpath.io/open-source (project must be public OSS —
-  #      this repo is Apache-2.0, so it qualifies). Get approved.
-  #   2. In SignPath, create a project (link this GitHub repo) + a "release"
-  #      signing policy, and an artifact configuration that signs the two .exe
-  #      files inside the fast_copy-windows artifact.
-  #   3. Add repo Variables: SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
-  #      SIGNPATH_POLICY_SLUG. Add repo Secret: SIGNPATH_API_TOKEN.
-  # Once set, this job signs the Windows CLI + GUI and replaces the unsigned
-  # assets on the release with the signed ones.
-  sign-windows:
-    needs: [build, release]
-    runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ORGANIZATION_ID != '' }}
-    permissions:
-      contents: write
-      id-token: write          # SignPath verifies build provenance via OIDC
-    steps:
-      - name: Resolve Windows artifact id
-        id: art
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          id=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-                --jq '.artifacts[] | select(.name=="fast_copy-windows") | .id')
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-
-      - name: Submit Windows binaries to SignPath
-        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e  # v1.3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.art.outputs.id }}
-          wait-for-completion: true
-          output-artifact-directory: signed
-
-      - name: Replace release assets with signed binaries
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          for f in signed/*; do
-            echo "Uploading signed $f ..."
-            gh release upload "$tag" "$f" --clobber
-          done
