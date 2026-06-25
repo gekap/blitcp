@@ -4,7 +4,7 @@ A fast, cross-platform command-line tool for copying files and directories at ma
 
 ## Downloads
 
-Prebuilt CLI and GUI binaries for Windows, macOS and Linux are on the [Releases page](https://github.com/gekap/fast-copy/releases). The Windows builds are Authenticode code-signed via the free [SignPath Foundation](https://signpath.org/) open-source code-signing program.
+Prebuilt CLI and GUI binaries for Windows, macOS and Linux are on the [Releases page](https://github.com/gekap/fast-copy/releases).
 
 **Key capabilities:**
 - **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
