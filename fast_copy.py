@@ -1615,7 +1615,10 @@ class DedupDB:
 
         with self.lock:
             known_rels = set(
-                row[0] for row in self.conn.execute("SELECT mount_rel FROM dest_files")
+                row[0] for row in self.conn.execute(
+                    "SELECT mount_rel FROM dest_files WHERE hash_algo = ?",
+                    (_hash_name,),
+                )
             )
 
         print(f"  {C.DIM}Indexing existing files in {root_path} ...{C.RESET}",
