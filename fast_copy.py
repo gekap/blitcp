@@ -4253,6 +4253,10 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
               f"already on drive, will link instead of copy")
         for folder, count in sorted(crossrun_sources.items(), key=lambda x: -x[1]):
             print(f"      → {C.CYAN}{folder}/{C.RESET}: {count} files matched")
+    if inplace_count > 0:
+        print(f"    Inplace dedup:   {C.BOLD}{inplace_count}{C.RESET} files "
+              f"({C.GREEN}{fmt_size(inplace_bytes)}{C.RESET}) — "
+              f"target duplicates merged into reflinks")
     print(f"    Total duplicates:{C.BOLD} {dup_count}{C.RESET} "
           f"({fmt_pct(dup_count, total_files)} of files)")
     total_input_size = sum(e.size for e in entries)
