@@ -1680,6 +1680,7 @@ class DedupDB:
 
     def promote_from_existing(self, mount_rel, size, content_hash):
         """Move an entry from existing_index to dest_files (hash now known).
+        Always called after lazy hashing, regardless of whether hash matched.
         Does NOT commit — call commit_pending() periodically."""
         with self.lock:
             self.conn.execute(
