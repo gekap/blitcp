@@ -1582,6 +1582,105 @@ class DedupDB:
                 self.conn.commit()
             return len(gone)
 
+    # ── Existing-file index (lazy-hash dedup against pre-existing content) ──
+
+    def index_existing(self, root_path):
+        """Walk root_path and populate existing_index with (mount_rel, size).
+        Skips files already known in dest_files (hash already recorded).
+        Safe to call repeatedly — INSERT OR IGNORE skips already-indexed entries."""
+        root_path = os.path.realpath(root_path)
+        real_mount = os.path.realpath(self.mount)
+        if not root_path.startswith(real_mount):
+            print(f"  {C.YELLOW}Warning: --index-existing path {root_path!r} is not "
+                  f"on the destination mount {real_mount!r} — skipping{C.RESET}")
+            return
+
+        batch = []
+        scanned = 0
+        skipped_known = 0
+
+        with self.lock:
+            known_rels = set(
+                row[0] for row in self.conn.execute("SELECT mount_rel FROM dest_files")
+            )
+
+        print(f"  {C.DIM}Indexing existing files in {root_path} ...{C.RESET}",
+              end="", flush=True)
+
+        for dirpath, _dirs, filenames in os.walk(root_path):
+            for fname in filenames:
+                abs_path = os.path.join(dirpath, fname)
+                try:
+                    st = os.lstat(abs_path)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                mount_rel = os.path.relpath(abs_path, self.mount).replace(os.sep, '/')
+                if mount_rel in known_rels:
+                    skipped_known += 1
+                    continue
+                batch.append((mount_rel, st.st_size))
+                scanned += 1
+                if len(batch) >= 2000:
+                    with self.lock:
+                        self.conn.executemany(
+                            "INSERT OR IGNORE INTO existing_index (mount_rel, size) "
+                            "VALUES (?, ?)",
+                            batch,
+                        )
+                        self.conn.commit()
+                    batch.clear()
+                if scanned % 5000 == 0:
+                    print(f"\r  {C.DIM}Indexing... {scanned} files{C.RESET}",
+                          end="", flush=True)
+
+        if batch:
+            with self.lock:
+                self.conn.executemany(
+                    "INSERT OR IGNORE INTO existing_index (mount_rel, size) "
+                    "VALUES (?, ?)",
+                    batch,
+                )
+                self.conn.commit()
+
+        print(f"\r  {C.GREEN}Indexed {scanned} files into existing_index"
+              f" ({skipped_known} already in dest_files){C.RESET}          ")
+
+    def lookup_existing_by_size(self, size):
+        """Return list of mount_rel for existing_index entries matching size."""
+        with self.lock:
+            c = self.conn.cursor()
+            c.execute(
+                "SELECT mount_rel FROM existing_index WHERE size = ?",
+                (size,),
+            )
+            return [row[0] for row in c.fetchall()]
+
+    def promote_from_existing(self, mount_rel, size, content_hash):
+        """Move an entry from existing_index to dest_files (hash now known).
+        Always called after lazy hashing, regardless of whether hash matched."""
+        with self.lock:
+            self.conn.execute(
+                "DELETE FROM existing_index WHERE mount_rel = ?",
+                (mount_rel,),
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO dest_files "
+                "(mount_rel, size, content_hash, hash_algo) VALUES (?, ?, ?, ?)",
+                (mount_rel, size, content_hash, _hash_name),
+            )
+            self.conn.commit()
+
+    def remove_existing(self, mount_rel):
+        """Remove a stale entry from existing_index (file gone or size changed)."""
+        with self.lock:
+            self.conn.execute(
+                "DELETE FROM existing_index WHERE mount_rel = ?",
+                (mount_rel,),
+            )
+            self.conn.commit()
+
     def close(self):
         with self.lock:
             self.conn.commit()
@@ -3982,6 +4081,41 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                     canonical = None
                     # Track which folder the match came from
                     match_folder = mount_rel.split(os.sep)[0] if os.sep in mount_rel else mount_rel.split("/")[0]
+                    for e in group:
+                        link_map[e.rel] = ("__abs__", full_path)
+                        saved_bytes += e.size
+                        crossrun_count += 1
+                        crossrun_bytes += e.size
+                    crossrun_sources[match_folder] += len(group)
+                    break
+
+        # ── Existing-index dedup: lazy-hash size-matched pre-existing files ──
+        if canonical is not None and dedup_db:
+            candidates = dedup_db.lookup_existing_by_size(key[0])  # key[0] = size
+            real_mount = os.path.realpath(dedup_db.mount)
+            for mount_rel in candidates:
+                if '..' in mount_rel.split('/') or '..' in mount_rel.split(os.sep):
+                    continue
+                full_path = os.path.join(dedup_db.mount, mount_rel)
+                real_full = os.path.realpath(full_path)
+                if not (real_full.startswith(real_mount + os.sep) or real_full == real_mount):
+                    continue
+                try:
+                    st = os.stat(full_path)
+                except OSError:
+                    dedup_db.remove_existing(mount_rel)
+                    continue
+                if st.st_size != key[0]:
+                    dedup_db.remove_existing(mount_rel)
+                    continue
+                # Lazy hash — always promote to dest_files regardless of match
+                h = hash_file(full_path)
+                if h is None:
+                    continue
+                dedup_db.promote_from_existing(mount_rel, key[0], h)
+                if h == key[1]:  # key[1] = content_hash
+                    canonical = None
+                    match_folder = mount_rel.split('/')[0]
                     for e in group:
                         link_map[e.rel] = ("__abs__", full_path)
                         saved_bytes += e.size
@@ -10024,6 +10158,13 @@ def main():
                              "Repeatable.")
     copy_grp.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
+    copy_grp.add_argument("--index-existing", action="append", default=[],
+                        metavar="PATH", dest="index_existing",
+                        help="Scan PATH and register files by size in the dedup index. "
+                             "During sync, size-matched files are lazily hashed and "
+                             "reflinkd instead of copied if content matches. "
+                             "PATH must be on the same filesystem as the destination. "
+                             "Repeatable for multiple paths.")
     copy_grp.add_argument("--ssh-no-sftp", action="store_true", dest="ssh_no_sftp",
                         help="Transfer over plain SSH using tar (no SFTP subsystem). "
                              "For servers with SSH enabled but SFTP disabled "
@@ -10636,6 +10777,11 @@ def main():
             dedup_db = DedupDB(dst)
         except Exception as e:
             print(f"  {C.YELLOW}Warning: could not open hash cache: {e}{C.RESET}")
+
+    if dedup_db and getattr(args, 'index_existing', []):
+        banner("Phase 1b — Indexing existing files")
+        for idx_path in args.index_existing:
+            dedup_db.index_existing(os.path.abspath(idx_path))
 
     link_map = {}
     saved_bytes = 0
