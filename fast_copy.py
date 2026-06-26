@@ -1677,7 +1677,7 @@ class DedupDB:
 
     def promote_from_existing(self, mount_rel, size, content_hash):
         """Move an entry from existing_index to dest_files (hash now known).
-        Always called after lazy hashing, regardless of whether hash matched."""
+        Does NOT commit — call commit_pending() periodically."""
         with self.lock:
             self.conn.execute(
                 "DELETE FROM existing_index WHERE mount_rel = ?",
@@ -1688,15 +1688,19 @@ class DedupDB:
                 "(mount_rel, size, content_hash, hash_algo) VALUES (?, ?, ?, ?)",
                 (mount_rel, size, content_hash, _hash_name),
             )
-            self.conn.commit()
 
     def remove_existing(self, mount_rel):
-        """Remove a stale entry from existing_index (file gone or size changed)."""
+        """Remove a stale entry from existing_index (file gone or size changed).
+        Does NOT commit — call commit_pending() periodically."""
         with self.lock:
             self.conn.execute(
                 "DELETE FROM existing_index WHERE mount_rel = ?",
                 (mount_rel,),
             )
+
+    def commit_pending(self):
+        """Flush accumulated promote/remove writes to disk."""
+        with self.lock:
             self.conn.commit()
 
     def close(self):
@@ -4208,6 +4212,8 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                 if h is None:
                     continue
                 dedup_db.promote_from_existing(mount_rel, key[0], h)
+                if existing_hashed % 50 == 0:
+                    dedup_db.commit_pending()
                 # Inplace dedup: if other files on the target share this hash,
                 # deduplicate the newly-hashed file against the first known copy.
                 if dedup_inplace and key[0] > 0:
@@ -4230,6 +4236,8 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                         crossrun_bytes += e.size
                     crossrun_sources[match_folder] += len(group)
                     break
+            if candidates and dedup_db:
+                dedup_db.commit_pending()
 
         if canonical is not None:
             # Normal dedup: first file is canonical, rest are linked
