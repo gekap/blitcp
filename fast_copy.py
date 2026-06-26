@@ -1407,12 +1407,15 @@ class DedupDB:
     SQLite-backed hash cache stored at the mount/drive root.
     Shared across all destinations on the same drive.
 
-    Two tables:
-      source_cache  — keyed on (source rel_path, size, mtime_ns)
-                      Speeds up hashing: same source file → same hash
-                      regardless of which destination subfolder you copy to.
-      dest_files    — keyed on mount-relative path
-                      Tracks what's actually on the drive for cross-run dedup.
+    Three tables:
+      source_cache    — keyed on (source rel_path, size, mtime_ns)
+                        Speeds up hashing: same source file → same hash
+                        regardless of which destination subfolder you copy to.
+      dest_files      — keyed on mount-relative path
+                        Tracks what's actually on the drive for cross-run dedup.
+      existing_index  — keyed on mount-relative path, size only (no hash).
+                        Populated by --index-existing; entries are lazily hashed
+                        on first size-match and promoted to dest_files.
     """
 
     def __init__(self, dst_root):
@@ -1496,6 +1499,17 @@ class DedupDB:
         c.execute("""
             CREATE INDEX IF NOT EXISTS idx_dest_hash
             ON dest_files (content_hash)
+        """)
+        # Existing-file index — size only, no hash until lazily computed
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS existing_index (
+                mount_rel   TEXT PRIMARY KEY,
+                size        INTEGER NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_existing_size
+            ON existing_index (size)
         """)
         # Migrate old single-table schema if present
         try:
@@ -1617,6 +1631,10 @@ class DedupDB:
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 mount_rel = os.path.relpath(abs_path, self.mount).replace(os.sep, '/')
+                try:
+                    mount_rel.encode('utf-8')
+                except UnicodeEncodeError:
+                    continue  # skip filenames with non-UTF-8 bytes
                 if mount_rel in known_rels:
                     skipped_known += 1
                     continue
