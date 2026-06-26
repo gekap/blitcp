@@ -3510,7 +3510,7 @@ def _try_inplace_dedup_linux(src_path, dst_path, size):
     except ImportError:
         return False
     try:
-        with open(src_path, 'rb') as src_f, open(dst_path, 'rb') as dst_f:
+        with open(src_path, 'rb') as src_f, open(dst_path, 'r+b') as dst_f:
             req = _FileDeduperange()
             req.src_offset = 0
             req.src_length = size
