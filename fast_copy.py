@@ -4046,7 +4046,7 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
 # ════════════════════════════════════════════════════════════════════════════
 
 def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
-                fs_strategy=None):
+                fs_strategy=None, dedup_inplace=False):
     """
     Content-aware deduplication:
       1. Hash ALL files (using cache when available)
@@ -4139,8 +4139,17 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     crossrun_count = 0
     crossrun_bytes = 0
     crossrun_sources = defaultdict(int)  # folder → file count
+    inplace_count = 0
+    inplace_bytes = 0
+    existing_hashed = 0   # candidates hashed from existing_index this run
+
+    total_groups = len(hash_groups)
+    groups_done = 0
+    print(f"  {C.DIM}Cross-referencing {total_groups} unique sizes/hashes against drive...{C.RESET}",
+          end="", flush=True)
 
     for key, group in hash_groups.items():
+        groups_done += 1
         canonical = group[0]
 
         # ── Cross-run dedup: check if drive already has this content ──
@@ -4191,10 +4200,26 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                     dedup_db.remove_existing(mount_rel)
                     continue
                 # Lazy hash — always promote to dest_files regardless of match
+                existing_hashed += 1
+                short = full_path if len(full_path) <= 60 else "..." + full_path[-57:]
+                print(f"\r  {C.DIM}Hashing existing [{existing_hashed}]: {short}{C.RESET}          ",
+                      end="", flush=True)
                 h = hash_file(full_path)
                 if h is None:
                     continue
                 dedup_db.promote_from_existing(mount_rel, key[0], h)
+                # Inplace dedup: if other files on the target share this hash,
+                # deduplicate the newly-hashed file against the first known copy.
+                if dedup_inplace and key[0] > 0:
+                    same_on_target = dedup_db.lookup_by_hash(h)
+                    if len(same_on_target) > 1:
+                        canonical_rel, _ = same_on_target[0]
+                        if canonical_rel != mount_rel:
+                            canonical_full = os.path.join(dedup_db.mount, canonical_rel)
+                            if os.path.isfile(canonical_full):
+                                if _try_inplace_dedup_linux(canonical_full, full_path, key[0]):
+                                    inplace_count += 1
+                                    inplace_bytes += key[0]
                 if h == key[1]:  # key[1] = content_hash
                     canonical = None
                     match_folder = mount_rel.split('/')[0]
@@ -4217,7 +4242,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     within_run = dup_count - crossrun_count
     total_files = len(entries)
 
-    print(f"\r  {C.GREEN}Dedup complete:{C.RESET}                              ")
+    print(f"\r  {C.GREEN}Dedup complete:{C.RESET}                                                  ")
     print(f"    Unique files:    {C.BOLD}{len(unique_entries)}{C.RESET}")
     if within_run > 0:
         print(f"    Within-run dups: {C.BOLD}{within_run}{C.RESET} files "
@@ -10240,6 +10265,13 @@ def main():
                              "Repeatable.")
     copy_grp.add_argument("--no-cache", action="store_true",
                         help="Disable persistent hash cache (cross-run dedup database)")
+    copy_grp.add_argument("--dedup-existing", action="store_true",
+                        dest="dedup_existing", default=False,
+                        help="When lazily hashing files from --index-existing, "
+                             "deduplicate target files that share the same content "
+                             "into reflinks via FIDEDUPERANGE. Only files that are "
+                             "hashed anyway (due to size match) are considered. "
+                             "Linux/btrfs/XFS only.")
     copy_grp.add_argument("--index-existing", action="append", default=[],
                         metavar="PATH", dest="index_existing",
                         help="Scan PATH and register files by size in the dedup index. "
@@ -10883,7 +10915,8 @@ def main():
                 entries, src_ssh, src, args.threads, fs_strategy=fs_strategy)
         else:
             copy_entries, link_map, saved_bytes = deduplicate(
-                entries, args.threads, dedup_db, fs_strategy=fs_strategy)
+                entries, args.threads, dedup_db, fs_strategy=fs_strategy,
+                dedup_inplace=getattr(args, 'dedup_existing', False))
 
     unique_size = sum(e.size for e in copy_entries)
 
