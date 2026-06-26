@@ -3457,6 +3457,70 @@ def _try_reflink_windows(src_path, dst_path):
     return False
 
 
+# In-place deduplication via FIDEDUPERANGE ioctl ----------------------------
+# Unlike FICLONE (which creates a new file), FIDEDUPERANGE shares extents
+# between two *existing* files. The kernel verifies content matches block by
+# block before sharing — so already-shared extents are a safe no-op.
+#
+# _IOWR(0x94, 54, struct file_dedupe_range): header is 24 bytes.
+# (3 << 30) | (24 << 16) | (0x94 << 8) | 54 = 0xC0189436
+_LINUX_FIDEDUPERANGE = 0xC0189436
+_FILE_DEDUPE_RANGE_SAME    = 0  # extents are (now) shared
+_FILE_DEDUPE_RANGE_DIFFERS = 1  # content differs — not deduped
+
+
+class _FileDeduperangeInfo(ctypes.Structure):
+    _fields_ = [
+        ('dest_fd',       ctypes.c_int64),
+        ('dest_offset',   ctypes.c_uint64),
+        ('bytes_deduped', ctypes.c_uint64),
+        ('status',        ctypes.c_int32),
+        ('reserved',      ctypes.c_uint32),
+    ]
+
+
+class _FileDeduperange(ctypes.Structure):
+    _fields_ = [
+        ('src_offset',  ctypes.c_uint64),
+        ('src_length',  ctypes.c_uint64),
+        ('dest_count',  ctypes.c_uint16),
+        ('reserved1',   ctypes.c_uint16),
+        ('reserved2',   ctypes.c_uint32),
+        ('info',        _FileDeduperangeInfo * 1),
+    ]
+
+
+def _try_inplace_dedup_linux(src_path, dst_path, size):
+    """Share extents between src_path and dst_path via FIDEDUPERANGE.
+    The kernel verifies content before sharing; already-shared extents are
+    a no-op. Returns True if extents are now shared, False otherwise."""
+    if size == 0:
+        return True  # empty files share nothing, trivially "same"
+    if platform.machine().lower() not in _RECOGNIZED_LINUX_ARCHS:
+        return False
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    try:
+        with open(src_path, 'rb') as src_f, open(dst_path, 'rb') as dst_f:
+            req = _FileDeduperange()
+            req.src_offset = 0
+            req.src_length = size
+            req.dest_count = 1
+            req.reserved1 = 0
+            req.reserved2 = 0
+            req.info[0].dest_fd = dst_f.fileno()
+            req.info[0].dest_offset = 0
+            req.info[0].bytes_deduped = 0
+            req.info[0].status = 0
+            req.info[0].reserved = 0
+            fcntl.ioctl(src_f.fileno(), _LINUX_FIDEDUPERANGE, req)
+            return req.info[0].status == _FILE_DEDUPE_RANGE_SAME
+    except (OSError, IOError):
+        return False
+
+
 def _try_reflink(src_path, dst_path):
     """Try to create dst_path as a reflink/CoW clone of src_path.
 
