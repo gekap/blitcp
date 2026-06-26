@@ -4151,12 +4151,10 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     existing_hashed = 0   # candidates hashed from existing_index this run
 
     total_groups = len(hash_groups)
-    groups_done = 0
     print(f"  {C.DIM}Cross-referencing {total_groups} unique sizes/hashes against drive...{C.RESET}",
           end="", flush=True)
 
     for key, group in hash_groups.items():
-        groups_done += 1
         canonical = group[0]
 
         # ── Cross-run dedup: check if drive already has this content ──
