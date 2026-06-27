@@ -89,7 +89,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.7.5"
+GUI_VERSION = "3.7.6"
 GUI_REPO = "gekap/fast-copy"
 
 try:

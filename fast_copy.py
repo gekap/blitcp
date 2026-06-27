@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.7.5"
+__version__ = "3.7.6"
 GITHUB_REPO = "gekap/fast-copy"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -4060,6 +4060,19 @@ def create_links(link_map, dst_root, fs_strategy=None):
             dst_canonical = _long_path(target[1])
         else:
             dst_canonical = _long_path(os.path.join(dst_root, target))
+
+        # If the destination already IS the canonical file (same st_dev+st_ino),
+        # it is already correctly in place — leave it untouched. On an incremental
+        # re-copy the cross-run cache can match a file against its own existing
+        # copy; since reflink opens the target before cloning, re-linking a file
+        # onto itself must be skipped on CoW filesystems (btrfs / XFS / APFS).
+        try:
+            _sd = os.stat(_strip_long_path(dst_dup))
+            _sc = os.stat(_strip_long_path(dst_canonical))
+            if _sd.st_dev == _sc.st_dev and _sd.st_ino == _sc.st_ino:
+                continue
+        except OSError:
+            pass
 
         os.makedirs(os.path.dirname(dst_dup), exist_ok=True)
 
