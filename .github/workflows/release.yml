@@ -12,8 +12,49 @@ permissions:
   contents: read
 
 jobs:
+  # Create the release up front so every build job uploads its binaries straight
+  # to it as RELEASE ASSETS — which do NOT count against the Actions artifact-
+  # storage quota (the old upload-artifact flow did, and kept failing the release
+  # with "Artifact storage quota has been hit").
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Create release (if missing) + upload source script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            # Use the ANNOTATED tag's message as the release notes (rich,
+            # categorized). Read it via the API — checkout@v4 peels tags to
+            # lightweight, so `git for-each-ref` would return the commit message.
+            obj=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" --jq '.object')
+            typ=$(printf '%s' "$obj" | jq -r '.type')
+            sha=$(printf '%s' "$obj" | jq -r '.sha')
+            notes=""
+            if [ "$typ" = "tag" ]; then
+              notes=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.message')
+            fi
+            if [ -n "$notes" ]; then
+              printf '%s\n' "$notes" | gh release create "$tag" --title "$tag" --notes-file -
+            else
+              gh release create "$tag" --title "$tag" --generate-notes
+            fi
+          fi
+          gh release upload "$tag" fast_copy.py --clobber
+
   build:
+    needs: prepare
+    permissions:
+      contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -43,7 +84,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-cloud.txt
-          python -c "import boto3, azure.storage.blob, google.cloud.storage; print('cloud SDKs OK')"
+          python -c "import boto3, azure.storage.blob, google.cloud.storage, smbclient; print('cloud + SMB SDKs OK')"
+
+      - name: Embed private update token
+        # Inject the read-only update token (PRIVATE builds only) from the
+        # FC_EMBEDDED_UPDATE_TOKEN secret into fast_copy.py before freezing, so
+        # the binary self-updates without an env var. No secret → no token
+        # (public builds stay clean). base64 keeps it off a casual `strings`.
+        shell: bash
+        env:
+          FC_EMBEDDED_UPDATE_TOKEN: ${{ secrets.FC_EMBEDDED_UPDATE_TOKEN }}
+        run: |
+          if [ -n "$FC_EMBEDDED_UPDATE_TOKEN" ]; then
+            b64=$(printf '%s' "$FC_EMBEDDED_UPDATE_TOKEN" | base64 | tr -d '\n')
+            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" fast_copy.py
+            rm -f fast_copy.py.bak
+            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" fast_copy.py \
+              && echo "embedded update token (${#b64} b64 chars)" \
+              || { echo "::error::token injection failed"; exit 1; }
+          else
+            echo "no FC_EMBEDDED_UPDATE_TOKEN secret — building without embedded token"
+          fi
 
       - name: Build executable
         run: python build.py
@@ -106,16 +167,23 @@ jobs:
           Remove-Item $pfx -Force
           exit 0          # don't let verify's exit code fail the step
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fast_copy-${{ matrix.name }}
-          path: |
-            dist/fast_copy-${{ matrix.name }}*
-            dist/fast_copy_gui-${{ matrix.name }}*
+      - name: Upload binaries to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          shopt -s nullglob
+          for f in dist/fast_copy-${{ matrix.name }}* dist/fast_copy_gui-${{ matrix.name }}*; do
+            echo "Uploading $f ..."
+            gh release upload "$tag" "$f" --clobber
+          done
 
   build-macos-intel:
+    needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +198,22 @@ jobs:
           echo "X86_PYTHON=$X86_PYTHON" >> $GITHUB_ENV
           # Verify it works under x86_64
           arch -x86_64 "$X86_PYTHON" -c "import platform; print(f'Python arch: {platform.machine()}')"
+
+      - name: Embed private update token
+        shell: bash
+        env:
+          FC_EMBEDDED_UPDATE_TOKEN: ${{ secrets.FC_EMBEDDED_UPDATE_TOKEN }}
+        run: |
+          if [ -n "$FC_EMBEDDED_UPDATE_TOKEN" ]; then
+            b64=$(printf '%s' "$FC_EMBEDDED_UPDATE_TOKEN" | base64 | tr -d '\n')
+            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" fast_copy.py
+            rm -f fast_copy.py.bak
+            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" fast_copy.py \
+              && echo "embedded update token (${#b64} b64 chars)" \
+              || { echo "::error::token injection failed"; exit 1; }
+          else
+            echo "no FC_EMBEDDED_UPDATE_TOKEN secret — building without embedded token"
+          fi
 
       - name: Build x86_64 executable
         env:
@@ -156,7 +240,7 @@ jobs:
           # failure must not block the CLI release.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m pip install \
             --target "$PKGDIR" \
-            boto3 azure-storage-blob google-cloud-storage \
+            boto3 azure-storage-blob google-cloud-storage smbprotocol \
             || echo "::warning::cloud SDK install failed; binaries omit cloud"
           # Only collect cloud packages PyInstaller can actually find, else the
           # build errors out on a missing --collect-all target.
@@ -164,6 +248,9 @@ jobs:
           if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c \
               "import boto3, azure.storage.blob, google.cloud.storage" 2>/dev/null; then
             CLOUD_FLAGS="--collect-all=boto3 --collect-all=botocore --collect-all=s3transfer --collect-all=azure.storage.blob --collect-all=azure.core --collect-all=google.cloud.storage --collect-all=google.cloud --collect-all=google.api_core --collect-all=google.auth --collect-all=google.resumable_media"
+          fi
+          if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c "import smbclient" 2>/dev/null; then
+            CLOUD_FLAGS="$CLOUD_FLAGS --collect-all=smbprotocol --collect-all=smbclient --collect-all=spnego --collect-all=pyasn1"
           fi
           # Make the x86_64 deps importable by PyInstaller's analysis/hooks.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
@@ -189,37 +276,50 @@ jobs:
           fi
           ls -la dist/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fast_copy-macos-intel
-          path: |
-            dist/fast_copy-macos-intel*
-            dist/fast_copy_gui-macos-intel*
-
-  release:
-    needs: [build, build-macos-intel]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write          # uploads binaries + fast_copy.py to the GitHub release
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
       - name: Upload binaries to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          # Upload each binary
-          for f in artifacts/fast_copy-*/*; do
+          shopt -s nullglob
+          for f in dist/fast_copy-macos-intel* dist/fast_copy_gui-macos-intel*; do
             echo "Uploading $f ..."
             gh release upload "$tag" "$f" --clobber
           done
-          # Also upload the Python script
-          gh release upload "$tag" fast_copy.py --clobber
+
+  # Aggregation gate. The release is created up front by `prepare`, and each
+  # build leg uploads directly with fail-fast:false + nullglob — so on its own a
+  # failed leg (or one that produced no binary) would leave a PUBLISHED release
+  # silently missing a platform. This job restores the old all-or-nothing gate:
+  #   1. `needs:` both build jobs → if any leg fails, this job is skipped and the
+  #      whole workflow goes red (the old `release: needs: [...]` behavior).
+  #   2. it then checks every expected CLI binary is actually attached, catching
+  #      the nullglob "succeeded but uploaded nothing" case. (GUI stays
+  #      best-effort per the build steps, so it is NOT gated here.)
+  verify-release:
+    needs: [build, build-macos-intel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Ensure every platform binary is attached to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+                   --json assets --jq '.assets[].name')
+          echo "Release assets:"; echo "$assets"
+          missing=0
+          for expect in fast_copy-linux fast_copy-macos-arm64 \
+                        fast_copy-macos-intel fast_copy-windows.exe; do
+            if ! printf '%s\n' "$assets" | grep -qx "$expect"; then
+              echo "::error::missing release asset: $expect"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::release $tag is INCOMPLETE — a platform binary is missing"
+            exit 1
+          fi
+          echo "All expected platform binaries are present."

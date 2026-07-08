@@ -32,6 +32,7 @@ CLOUD_COLLECT = {
     "google.cloud.storage": ["google.cloud.storage", "google.cloud",
                              "google.api_core", "google.auth",
                              "google.resumable_media"],
+    "smbclient": ["smbprotocol", "smbclient", "spnego", "pyasn1"],
 }
 
 
@@ -143,8 +144,51 @@ def build_target(name, script, windowed=False, icon=None):
         return False
 
 
+def _find_signtool():
+    """Locate signtool.exe — PATH first, then the newest Windows SDK install."""
+    from shutil import which
+    found = which("signtool")
+    if found:
+        return found
+    import glob
+    cands = glob.glob(
+        r"C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe")
+    return sorted(cands)[-1] if cands else None
+
+
+def sign_binary(path, thumbprint):
+    """Authenticode-sign `path` with the cert whose SHA-1 thumbprint is given.
+    Timestamps the signature so it stays valid past the cert's expiry. Windows
+    only; best-effort (a sign failure never fails the build)."""
+    if platform.system() != "Windows":
+        print("  signing is Windows-only — skipped")
+        return False
+    tool = _find_signtool()
+    if not tool:
+        print("  signtool not found — install the Windows SDK (signtool)")
+        return False
+    thumb = thumbprint.replace(" ", "")
+    cmd = [tool, "sign", "/fd", "SHA256", "/sha1", thumb,
+           "/tr", "http://timestamp.digicert.com", "/td", "SHA256", path]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode == 0:
+        print(f"  signed: {path}")
+        return True
+    print(f"  sign FAILED for {path}: {(r.stderr or r.stdout).strip()}")
+    return False
+
+
 def main():
     clean = "--clean" in sys.argv
+    sign_thumb = None
+    if "--sign" in sys.argv:
+        i = sys.argv.index("--sign")
+        sign_thumb = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+        # Reject a missing thumbprint OR a following flag ("--sign --clean" must
+        # not treat "--clean" as the thumbprint and hand it to signtool /sha1).
+        if not sign_thumb or sign_thumb.startswith("-"):
+            print("  Error: --sign needs a certificate thumbprint")
+            sys.exit(1)
 
     print(f"Fast Copy Builder - {platform.system()} ({platform.machine()})")
     print("-" * 50)
@@ -187,6 +231,14 @@ def main():
         gui_built = build_target("fast_copy_gui", gui_src, windowed=True, icon=icon)
         if not gui_built:
             print("  WARNING: GUI build failed — continuing with CLI only.")
+
+    # Code-sign the built executables when a cert thumbprint was supplied.
+    if sign_thumb and success:
+        sext = ".exe" if platform.system() == "Windows" else ""
+        print("\nCode-signing...")
+        sign_binary(f"dist/fast_copy{sext}", sign_thumb)
+        if gui_built:
+            sign_binary(f"dist/fast_copy_gui{sext}", sign_thumb)
 
     # Summary
     ext = ".exe" if platform.system() == "Windows" else ""

@@ -1,5 +1,54 @@
 # Changelog
 
+## v3.12.3 — 2026-07-08
+
+A large consolidated release covering everything since the 3.7 line: new
+transports and dedup engines, full file **and** directory metadata
+preservation, and a substantial correctness/security hardening pass.
+
+### New Features
+
+- **SMB/CIFS (`smb://`, UNC)** — a native transport to and from Windows shares
+  and Azure Files, as both source and destination.
+- **`--index-existing`** — reflink-dedup a copy against files that **already
+  exist** at the destination, so unchanged data is shared instead of rewritten.
+- **`--dedup-existing`** — in-place reflink merge of duplicate files already on
+  disk, reclaiming space without copying.
+- **ReFS block cloning (Windows)** — real copy-on-write clones on ReFS volumes.
+- **Metadata preservation** — `--preserve mode/owner/times/xattr/acl` now
+  applies to **directories** as well as files (including setuid/setgid and the
+  remote→local pull path).
+- **GUI** — SMB credential management and an in-app self-update flow.
+
+### Improvements
+
+- **`--preserve acl` is ~3.5–4× faster** — an xattr fast-path skips the
+  `getfacl`/`setfacl` subprocess pair when a file has no ACL.
+- **Large dedup trees are dramatically faster** — cross-platform HDD-aware
+  hashing plus a persistent hash cache (a 147k-file tree dropped from ~38 min to
+  ~11 s on a warm cache).
+- **Full extent dedup for large files** — the `FIDEDUPERANGE` loop now shares an
+  entire file rather than a single kernel-clamped chunk, so reclaimed-space
+  reporting is accurate.
+- **Live progress everywhere** — per-phase timing, files/sec, and link / verify
+  / index progress.
+- **Verify explains the real cause** of a failure, and writes the cross-run
+  linked-file list to a log.
+- **Batched SQLite commits** reduce fsync overhead on the dedup database.
+- **Credential encryption hardening** — AES-GCM, no plaintext on disk.
+
+### Bug Fixes
+
+- **FAT32 / removable destinations** copy correctly, and an incomplete verify
+  now fails the run instead of exiting `0`.
+- **Cross-mount source** no longer crashes — the file is warned about and
+  skipped.
+- **`--index-existing` edge cases** — non-UTF-8 filenames, hash-algorithm
+  mismatch, and empty-file linking.
+- **`--ssh-no-sftp`** directory nesting.
+- **Security** — setuid/setgid privilege-escalation hardening, TOCTOU
+  mitigation via `O_NOFOLLOW`, and updated cryptography dependencies.
+
 ## v3.7.5 — 2026-06-24
 
 Bug-fix release.

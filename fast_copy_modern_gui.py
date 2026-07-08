@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import deque
 
 
 def _ensure_std_streams():
@@ -89,7 +90,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.7.6"
+GUI_VERSION = "3.12.3"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -111,8 +112,46 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QScrollArea,
     QDialog, QGraphicsOpacityEffect, QSizePolicy, QFrame, QFormLayout,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QCheckBox, QTextBrowser,
 )
+
+class _BoundedLog:
+    """Memory-bounded transcript for the on-failure diagnostic log.
+
+    The root cause of a failure is carried by the ENGINE'S STDERR lines (the GUI
+    feeds those in prefixed with "[stderr] "), which are low-volume — so we retain
+    ALL of them (bounded) regardless of WHERE in a million-line run they occur,
+    instead of a fixed head window that only ever captures startup banners. Plus
+    a tail of recent output for context. Memory stays bounded without dropping the
+    line that explains the failure."""
+
+    def __init__(self, errors=4000, tail=6000):
+        self._errors = deque(maxlen=errors)  # stderr lines — the root-cause carriers
+        self._tail = deque(maxlen=tail)       # recent output of any kind
+
+    def append(self, line):
+        self._tail.append(line)
+        if line.startswith("[stderr]"):
+            self._errors.append(line)
+
+    def extend(self, lines):
+        for ln in lines:
+            self.append(ln)
+
+    def lines(self):
+        tail = list(self._tail)
+        tail_set = set(tail)
+        # stderr/error lines that scrolled out of the tail window — the earliest
+        # (often root-cause) errors that a plain tail buffer would have lost.
+        earlier_errors = [e for e in self._errors if e not in tail_set]
+        out = []
+        if earlier_errors:
+            out.append("=== earlier error output (stderr) ===")
+            out.extend(earlier_errors)
+            out.append("=== recent output (tail) ===")
+        out.extend(tail)
+        return out
+
 
 # ─────────────────────────────────────────────────────────── icon font ──
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -841,10 +880,19 @@ FIELDSETS = {
         ("password", "Password — or passphrase if the key is encrypted", "", True),
         ("path", "Default remote path", "", False),
     ],
+    "smb": [
+        ("host", "Host (name or IP)", "", False),
+        ("user", "User", "", False),
+        ("password", "Password (blank = anonymous/guest)", "", True),
+        ("domain", "Domain (blank = none)", "", False),
+        ("port", "Port", "445", False),
+        ("share", "Default share", "", False),
+    ],
 }
 TYPE_LABELS = [
     ("s3", "Amazon S3 / compatible"), ("az", "Azure Blob"),
     ("gs", "Google Cloud Storage"), ("ssh", "SSH / SFTP"),
+    ("smb", "SMB / CIFS"),
 ]
 
 
@@ -862,7 +910,7 @@ class ConnectionDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         outer.addWidget(scroll)
-        body = QWidget()
+        self.body = body = QWidget()
         scroll.setWidget(body)
         lay = QVBoxLayout(body)
         lay.setContentsMargins(24, 22, 24, 22)
@@ -926,7 +974,20 @@ class ConnectionDialog(QDialog):
         row.addWidget(cancel)
         row.addWidget(save)
         lay.addLayout(row)
-        self.setMaximumHeight(600)
+        self._fit_height()
+
+    def _fit_height(self):
+        # Grow the dialog to show every field of the selected type PLUS the
+        # Cancel/Save buttons (no scrolling to reach them), capped at the
+        # available screen height — only a type taller than the screen scrolls.
+        self.body.layout().activate()
+        needed = self.body.sizeHint().height() + 6   # + scroll-area frame
+        avail = 1000
+        scr = self.screen()
+        if scr is not None:
+            avail = scr.availableGeometry().height() - 60
+        self.setMaximumHeight(avail)
+        self.resize(self.width(), min(needed, avail))
 
     def _lbl(self, text):
         l = QLabel(text)
@@ -947,7 +1008,8 @@ class ConnectionDialog(QDialog):
                     inp.setText("22")
                 continue
             if key == "port":
-                inp.setText(str(c.get("port", 22) or 22))
+                dp = 445 if ctype == "smb" else 22
+                inp.setText(str(c.get("port", dp) or dp))
             else:
                 inp.setText(str(c.get(key, "") or ""))
 
@@ -955,7 +1017,7 @@ class ConnectionDialog(QDialog):
         t = self.f_type.currentData()
         for key, box in self.fieldsets.items():
             box.setVisible(key == t)
-        self.adjustSize()
+        self._fit_height()
 
     def result_data(self):
         """Return (name, conn_dict) or (None, error_message)."""
@@ -1005,8 +1067,11 @@ class ConnectionDialog(QDialog):
                 return None, "SSH needs a host"
             put("host", "host")
             e["user"] = self.fields[(t, "user")].text().strip() or "root"
+            _pt = self.fields[(t, "port")].text().strip()
             try:
-                e["port"] = int(self.fields[(t, "port")].text()) or 22
+                # Default ONLY when the field is empty — a typed value (even 0)
+                # must pass through, not be silently rewritten by `or 22`.
+                e["port"] = int(_pt) if _pt else 22
             except ValueError:
                 e["port"] = 22
             if self.fields[(t, "key")].text().strip():
@@ -1014,6 +1079,21 @@ class ConnectionDialog(QDialog):
             elif self.fields[(t, "password")].text():
                 e["password"] = self.fields[(t, "password")].text()
             put("path", "path")
+        elif t == "smb":
+            if not self.fields[(t, "host")].text().strip():
+                return None, "SMB needs a host"
+            put("host", "host")
+            put("user", "user")
+            if self.fields[(t, "password")].text():
+                e["password"] = self.fields[(t, "password")].text()
+            put("domain", "domain")
+            put("share", "share")
+            _pt = self.fields[(t, "port")].text().strip()
+            try:
+                # Default ONLY when empty — a typed value (even 0) passes through.
+                e["port"] = int(_pt) if _pt else 445
+            except ValueError:
+                e["port"] = 445
         return name, e
 
 
@@ -1258,7 +1338,8 @@ class _UpdateCheckWorker(QThread):
                      fc._parse_version(r["tag_name"]) > cur]
             newer.sort(key=lambda r: fc._parse_version(r["tag_name"]), reverse=True)
             if newer:
-                self.done.emit({"latest": newer[0]["tag_name"], "current": fc.__version__})
+                self.done.emit({"latest": newer[0]["tag_name"],
+                                "current": fc.__version__, "releases": newer})
             else:
                 self.done.emit({"uptodate": fc.__version__})
         except Exception as e:
@@ -1267,18 +1348,30 @@ class _UpdateCheckWorker(QThread):
 
 
 class _DownloadWorker(QThread):
-    """Downloads a release asset off the UI thread. Emits done(ok, path_or_err)."""
+    """Downloads a release asset off the UI thread. Emits done(ok, path_or_err).
+
+    When expected_size is given, a size mismatch fails the download — the same
+    integrity guard the CLI self-update applies before replacing a binary."""
     done = Signal(bool, str)
 
-    def __init__(self, url, dest):
+    def __init__(self, url, dest, expected_size=None):
         super().__init__()
         self.url, self.dest = url, dest
+        self.expected_size = expected_size
 
     def run(self):
         import urllib.request
         try:
             ctx = fc._get_ssl_context() if (FC_OK and hasattr(fc, "_get_ssl_context")) else None
-            req = urllib.request.Request(self.url, headers={"User-Agent": "fast-copy-gui"})
+            # Accept: octet-stream => the API asset endpoint returns the binary
+            # (redirecting to the CDN) instead of the asset JSON metadata.
+            headers = {"User-Agent": "fast-copy-gui",
+                       "Accept": "application/octet-stream"}
+            tok = fc._update_token() if (FC_OK and hasattr(fc, "_update_token")) else ""
+            if tok:                       # private-repo release assets need auth
+                headers["Authorization"] = f"Bearer {tok}"
+            req = urllib.request.Request(self.url, headers=headers)
+            written = 0
             with urllib.request.urlopen(req, timeout=60, context=ctx) as r, \
                     open(self.dest, "wb") as f:
                 while True:
@@ -1286,6 +1379,10 @@ class _DownloadWorker(QThread):
                     if not chunk:
                         break
                     f.write(chunk)
+                    written += len(chunk)
+            if self.expected_size and written != self.expected_size:
+                raise OSError(f"size mismatch — expected {self.expected_size}, "
+                              f"got {written} bytes")
             self.done.emit(True, self.dest)
         except Exception as e:
             try:
@@ -1294,6 +1391,105 @@ class _DownloadWorker(QThread):
             except OSError:
                 pass
             self.done.emit(False, str(e).splitlines()[0] if str(e).strip() else e.__class__.__name__)
+
+
+class UpdateDialog(QDialog):
+    """Startup 'new version available' popup. Shows the categorized release notes
+    (the same sections the CLI's --check-update prints, via the engine's
+    _classify_release_sections), a 'don't show again for this version' checkbox,
+    and Close / Download only / Download & install."""
+    CLOSE, DOWNLOAD_ONLY, DOWNLOAD_INSTALL = 0, 1, 2
+
+    def __init__(self, parent, latest, current, releases, can_install, theme=None):
+        super().__init__(parent)
+        self._v = theme or DARK
+        self.setModal(True)
+        self.setWindowTitle("Update available")
+        self.setMinimumWidth(520)
+        self.action = self.CLOSE
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 20)
+        lay.setSpacing(0)
+
+        title = QLabel(f"fast-copy {latest} is available")
+        title.setObjectName("sheettitle")
+        lay.addWidget(title)
+        lay.addSpacing(4)
+        sub = QLabel(f"You're on v{current}. Here's what's new:")
+        sub.setObjectName("fieldlbl")
+        lay.addWidget(sub)
+        lay.addSpacing(12)
+
+        notes = QTextBrowser()
+        notes.setOpenExternalLinks(True)
+        notes.setMinimumHeight(230)
+        notes.setStyleSheet(
+            f"QTextBrowser{{background:{self._v['panel']};color:{self._v['txt']};"
+            f"border:1px solid {self._v['line']};border-radius:8px;padding:6px;}}")
+        notes.setHtml(self._build_html(releases, self._v))
+        lay.addWidget(notes, 1)
+        lay.addSpacing(12)
+
+        self.skip_cb = QCheckBox(f"Don't show this again for {latest}")
+        lay.addWidget(self.skip_cb)
+        lay.addSpacing(14)
+
+        row = QHBoxLayout()
+        close = textbtn("Close", oid="btn")
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        row.addStretch(1)
+        dlonly = textbtn("Download only", "arrow-down-circle", oid="btn")
+        dlonly.clicked.connect(lambda: self._choose(self.DOWNLOAD_ONLY))
+        row.addWidget(dlonly)
+        install = textbtn("Download & install", "arrow-down-circle", oid="btnprimary")
+        install.clicked.connect(lambda: self._choose(self.DOWNLOAD_INSTALL))
+        if not can_install:
+            install.setToolTip("In-place install needs a frozen Linux/Windows build "
+                               "— use Download only here.")
+        row.addWidget(install)
+        lay.addLayout(row)
+
+    def _choose(self, action):
+        self.action = action
+        self.accept()
+
+    @staticmethod
+    def _build_html(releases, v=None):
+        import html, re
+        v = v or DARK
+        def md(s):                       # escape + light markdown (bold / `code`)
+            s = html.escape(s)
+            s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+            s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+            return s
+        # Semantic theme colors so the sections read well in BOTH themes.
+        labels = [
+            ("security", "Security Fixes", v["danger"]),
+            ("new_features", "New Features", v["ok"]),
+            ("bug_fixes", "Bug Fixes", v["warn"]),
+            ("performance", "Performance", v["accent"]),
+            ("improvements", "Improvements", v["accenth"]),
+        ]
+        parts = []
+        for rel in releases:
+            tag = html.escape(rel.get("tag_name", ""))
+            body = rel.get("body", "") or ""
+            secs = fc._classify_release_sections(body) if FC_OK else {}
+            parts.append(f"<h3 style='margin:8px 0 2px'>{tag}</h3>")
+            shown = False
+            for key, label, color in labels:
+                if secs.get(key):
+                    shown = True
+                    parts.append(f"<p style='margin:7px 0 1px;color:{color};"
+                                 f"font-weight:600'>{label}</p><ul style='margin:0 0 4px 0'>")
+                    for bullet in secs[key]:
+                        parts.append("<li>" + md(bullet.lstrip("-").strip()) + "</li>")
+                    parts.append("</ul>")
+            if not shown:
+                raw = md(body.strip()[:800]) or "No release notes."
+                parts.append(f"<p style='white-space:pre-wrap'>{raw}</p>")
+        return "<div style='font-size:13px;line-height:1.4'>" + "".join(parts) + "</div>"
 
 
 class _ConfirmHostKeyPolicy:
@@ -1347,7 +1543,7 @@ class _ConfirmHostKeyPolicy:
 class FastCopyGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.dark = False
+        self.dark = True       # dark is the default theme
         self.setWindowTitle("fast-copy — " + GUI_VERSION)
         self.resize(1000, 780)
 
@@ -1370,6 +1566,7 @@ class FastCopyGUI(QWidget):
         self.conns = {}
         self.conn_state = {}
         self.exclude_patterns = [".venv", ".git*", "*.bat"]
+        self.index_existing_paths = []
         self.running = False
 
         # ── credentials.json state ──
@@ -1602,7 +1799,9 @@ class FastCopyGUI(QWidget):
         wrap1.addWidget(self.doc_btn)
         lay.addLayout(wrap1)
 
-        self.theme_btn = QPushButton("  " + ic("moon") + "   Dark mode")
+        self.theme_btn = QPushButton(
+            "  " + (ic("sun") + "   Light mode" if self.dark
+                    else ic("moon") + "   Dark mode"))
         self.theme_btn.setObjectName("themebtn")
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.theme_btn.clicked.connect(self.toggle_theme)
@@ -1644,6 +1843,10 @@ class FastCopyGUI(QWidget):
         self.multi_pill.hide()
         lblrow.addWidget(srclbl)
         lblrow.addSpacing(8)
+        srchint = QLabel("example — edit before running")
+        srchint.setObjectName("sub")
+        lblrow.addWidget(srchint)
+        lblrow.addSpacing(8)
         lblrow.addWidget(self.multi_pill)
         lblrow.addStretch(1)
         lay.addLayout(lblrow)
@@ -1677,6 +1880,10 @@ class FastCopyGUI(QWidget):
         drow.addWidget(dl)
         drow.addSpacing(8)
         drow.addWidget(dh)
+        drow.addSpacing(8)
+        dhint = QLabel("example — edit before running")
+        dhint.setObjectName("sub")
+        drow.addWidget(dhint)
         drow.addStretch(1)
         lay.addLayout(drow)
         lay.addSpacing(8)
@@ -1823,7 +2030,8 @@ class FastCopyGUI(QWidget):
         flags = QHBoxLayout()
         flags.setSpacing(8)
         self.flag_opts = {}
-        for name in ["overwrite all", "force", "no hash cache", "--use-sudo"]:
+        for name in ["overwrite all", "force", "no hash cache", "--use-sudo",
+                     "dedup existing", "include node_modules"]:
             o = self._opt(name, False)
             self.flag_opts[name] = o
             flags.addWidget(o)
@@ -1840,6 +2048,17 @@ class FastCopyGUI(QWidget):
         self.chips_lay.setSpacing(7)
         lay.addWidget(self.chips_frame)
         self.render_chips()
+        lay.addSpacing(15)
+
+        lay.addWidget(self._gl("INDEX EXISTING (reflink dedup vs pre-existing files)"))
+        lay.addSpacing(9)
+        self.idx_chips_frame = QFrame()
+        self.idx_chips_frame.setObjectName("chips")
+        self.idx_chips_lay = QHBoxLayout(self.idx_chips_frame)
+        self.idx_chips_lay.setContentsMargins(11, 9, 11, 9)
+        self.idx_chips_lay.setSpacing(7)
+        lay.addWidget(self.idx_chips_frame)
+        self.render_idx_chips()
         return adv
 
     def _gl(self, text):
@@ -1890,6 +2109,47 @@ class FastCopyGUI(QWidget):
             self.exclude_patterns.append(dlg.input.text().strip())
             self.render_chips()
 
+    def render_idx_chips(self):
+        while self.idx_chips_lay.count():
+            item = self.idx_chips_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for path in self.index_existing_paths:
+            chip = QFrame()
+            chip.setObjectName("chip")
+            cl = QHBoxLayout(chip)
+            cl.setContentsMargins(9, 4, 7, 4)
+            cl.setSpacing(5)
+            txt = QLabel(path)
+            txt.setObjectName("chiptext")
+            txt.setToolTip(path)
+            x = QPushButton(ic("x"))
+            x.setObjectName("chipx")
+            x.setCursor(Qt.PointingHandCursor)
+            x.clicked.connect(lambda _=False, p=path: self.remove_idx_path(p))
+            cl.addWidget(txt)
+            cl.addWidget(x)
+            self.idx_chips_lay.addWidget(chip)
+        add = QPushButton("+ add folder…")
+        add.setObjectName("chipadd")
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(self.add_idx_path)
+        self.idx_chips_lay.addWidget(add)
+        self.idx_chips_lay.addStretch(1)
+
+    def remove_idx_path(self, path):
+        if path in self.index_existing_paths:
+            self.index_existing_paths.remove(path)
+            self.render_idx_chips()
+
+    def add_idx_path(self):
+        # Must be a real directory on the destination filesystem; the engine
+        # warns and skips any path not under the destination mount.
+        d = QFileDialog.getExistingDirectory(self, "Index existing folder")
+        if d and d not in self.index_existing_paths:
+            self.index_existing_paths.append(d)
+            self.render_idx_chips()
+
     def _build_progress(self):
         prog = QFrame()
         prog.setObjectName("prog")
@@ -1918,6 +2178,13 @@ class FastCopyGUI(QWidget):
         self.barf.setFixedWidth(0)
         barlay.addWidget(self.barf)
         barlay.addStretch(1)
+        # Indeterminate "breathing" pulse for phases with no known total (the
+        # existing-files indexing walk doesn't know its file count up front, so
+        # a percentage bar would sit stuck at 0% — pulse instead of pretending).
+        self._pulse = QTimer(self)
+        self._pulse.setInterval(33)
+        self._pulse.timeout.connect(self._pulse_tick)
+        self._pulse_x = 0.0
         lay.addWidget(self.bar)
         lay.addSpacing(15)
 
@@ -1941,7 +2208,7 @@ class FastCopyGUI(QWidget):
         self.log_box.setObjectName("logbox")
         # Taller log so more copy lines + phase banners are visible; grows with
         # the window.
-        self.log_box.setMinimumHeight(300)
+        self.log_box.setMinimumHeight(500)
         self.log_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         logwrap = QVBoxLayout(self.log_box)
         logwrap.setContentsMargins(0, 0, 0, 0)
@@ -2545,6 +2812,12 @@ class FastCopyGUI(QWidget):
             argv.append("--no-cache")
         if self.flag_opts["--use-sudo"].property("active"):
             argv.append("--use-sudo")
+        for p in self.index_existing_paths:
+            argv += ["--index-existing", p]
+        if self.flag_opts["dedup existing"].property("active"):
+            argv.append("--dedup-existing")
+        if self.flag_opts["include node_modules"].property("active"):
+            argv.append("--include-node-modules")
         return argv
 
     def _ssh_auth_flags(self, path, which):
@@ -2652,13 +2925,19 @@ class FastCopyGUI(QWidget):
             "dry": dry, "cfg": self._current_config(), "last": None,
             "dedup_bytes": None, "files_total": None, "bytes_written": None,
             "speed_bps": None, "outbuf": "", "errtail": "", "in_tb": False,
+            # Memory-bounded transcript keeping head + tail (see _BoundedLog):
+            # bounds memory on huge runs without dropping the earliest lines,
+            # which is where the root-cause error usually is.
             "t0": time.monotonic(), "verified": None,
+            "fulllog": _BoundedLog(),
+            "skipped_unreadable": 0,
         }
         self.running = True
         self.start_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
         self.pstate.setText("Dry run…" if dry else "Copying…")
         self._clear_log()
+        self._stop_indeterminate()
         self.barf.setFixedWidth(0)
         self.stat_vals["Progress"].setText("0%")
         self.stat_vals["Speed"].setText("—")
@@ -2682,19 +2961,66 @@ class FastCopyGUI(QWidget):
         buf = self._run_meta["outbuf"] + data
         parts = buf.split("\n")
         self._run_meta["outbuf"] = parts.pop()
+        self._run_meta["fulllog"].extend(parts)   # raw, for the diagnostic log file
         for line in parts:
             self._handle_out_line(line)
 
     def _on_proc_stderr(self):
         data = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
         for line in data.splitlines():
+            self._run_meta["fulllog"].append("[stderr] " + line)  # raw, for the log file
             line = self._strip_ansi(line).rstrip()
             if line.strip():
                 self._add_log(line)
                 self._run_meta["errtail"] = line
 
+    _PHASE_LABELS = (
+        ("scanning", "Scanning…"), ("indexing", "Indexing…"),
+        ("dedup", "Hashing…"), ("incremental", "Checking…"),
+        ("mapping", "Mapping…"), ("block copy", "Copying…"),
+        ("verif", "Verifying…"),
+    )
+
+    def _phase_label(self, line):
+        """Map a 'Phase N — <name>' banner to a friendly active-state header label
+        (so it tracks the real work, e.g. 'Hashing…' during dedup). Returns None for
+        non-banner lines and for the end-of-run timing block (those carry a time)."""
+        m = re.search(r"Phase\s+[\w.]+\s*[—-]\s*(.+)", line)
+        if not m:
+            return None
+        name = m.group(1).strip().lower()
+        if any(c.isdigit() for c in name):   # skip the timing block ("… 6.6s")
+            return None
+        for key, label in self._PHASE_LABELS:
+            if key in name:
+                return label
+        return None
+
+    def _start_indeterminate(self):
+        if not self._pulse.isActive():
+            self._pulse_x = 0.0
+            self._pulse.start()
+
+    def _stop_indeterminate(self):
+        if self._pulse.isActive():
+            self._pulse.stop()
+
+    def _pulse_tick(self):
+        # Triangle wave 0→1→0 so the fill breathes between 12% and 100% width —
+        # a clear "working" signal without a fake percentage.
+        self._pulse_x = (self._pulse_x + 0.02) % 1.0
+        tri = 1.0 - abs(2.0 * self._pulse_x - 1.0)
+        self.barf.setFixedWidth(int(self.bar.width() * (0.12 + 0.88 * tri)))
+
     def _handle_out_line(self, line):
-        line = self._strip_ansi(line).rstrip("\r")
+        # A line can carry several \r-overwritten progress updates ("Scanning…
+        # 1000", "…2000", "…3000"); a terminal shows only the last. rstrip FIRST
+        # so a trailing \r (Windows \r\n line endings, after splitting on \n)
+        # is removed BEFORE we take the last \r-segment — otherwise every line
+        # collapses to "" and the log goes blank on Windows.
+        line = self._strip_ansi(line).rstrip()
+        if "\r" in line:
+            line = line.split("\r")[-1]
         if not line.strip():
             return
         if line.lstrip().startswith("{"):
@@ -2704,8 +3030,41 @@ class FastCopyGUI(QWidget):
             except ValueError:
                 self._add_log(line)
                 return
+            if ev.get("t") == "phase":
+                # pre-copy phase (hashing / mapping / indexing): label the header
+                # with the phase and show its live N/total so it never reads a
+                # stuck "Copying… 0/0".
+                self.pstate.setText((ev.get("phase") or "Working") + "…")
+                fd = int(ev.get("files_done", 0))
+                ft = int(ev.get("files_total", 0))
+                if ft:
+                    self._stop_indeterminate()
+                    pct = ev.get("pct", 0) or 0
+                    self.barf.setFixedWidth(int(self.bar.width() * min(pct, 100) / 100))
+                    self.stat_vals["Progress"].setText(f"{round(pct)}%")
+                    self.pfiles.setText(f"{fd:,} / {ft:,} files")
+                else:
+                    # Unknown total (discovery walk, e.g. indexing existing) —
+                    # pulse the bar and show the running count, not a stuck 0%.
+                    self._start_indeterminate()
+                    self.stat_vals["Progress"].setText("—")
+                    self.pfiles.setText(f"{fd:,} files")
+                # Prefer MB/s when the engine sends a byte rate (hashing large
+                # files) — "10 files/s" reads as slow while the disk is actually
+                # maxed out; the real throughput tells the true story.
+                brate = ev.get("bytes_rate", 0) or 0
+                rate = ev.get("rate", 0) or 0
+                if brate:
+                    self.stat_vals["Speed"].setText(fmt_size(brate) + "/s")
+                elif rate:
+                    self.stat_vals["Speed"].setText(f"{rate:,.0f} files/s")
+                else:
+                    self.stat_vals["Speed"].setText("—")
+                self.stat_vals["ETA"].setText("—")
+                return
             if ev.get("t") == "verify":
                 # verify phase: bar now shows how many files are verified
+                self._stop_indeterminate()
                 self.pstate.setText("Verifying…")
                 pct = ev.get("pct", 0) or 0
                 self.barf.setFixedWidth(int(self.bar.width() * min(pct, 100) / 100))
@@ -2715,6 +3074,7 @@ class FastCopyGUI(QWidget):
                 self.stat_vals["ETA"].setText("—")
                 return
             if ev.get("t") in ("progress", "done"):
+                self._stop_indeterminate()
                 pct = ev.get("pct", 0) or 0
                 self.barf.setFixedWidth(int(self.bar.width() * min(pct, 100) / 100))
                 self.stat_vals["Progress"].setText(f"{round(pct)}%")
@@ -2727,10 +3087,17 @@ class FastCopyGUI(QWidget):
             return
         # plain text → log (collapsing Python tracebacks to one clean line)
         self._emit_log(line)
-        if re.search(r"Verified\s+\d+\s+file", line):
+        ph = self._phase_label(line)
+        if ph:
+            self.pstate.setText(ph)
+        if re.search(r"Verified:?\s+(?:all\s+)?\d+\s+(?:files?|objects?)", line):
             self._run_meta["verified"] = True
-        elif "verify mismatch" in line:
+        elif re.search(r"Verification failed|verify mismatch|MISSING:|SIZE MISMATCH",
+                       line):
             self._run_meta["verified"] = False
+        ms = re.search(r"(\d+) file\(s\) could NOT be read", line)
+        if ms:
+            self._run_meta["skipped_unreadable"] = int(ms.group(1))
         m = re.search(r"saved:?\s+([\d.]+\s*[KMGTP]?i?B)", line)
         if m:
             self._run_meta["dedup_bytes"] = parse_size(m.group(1))
@@ -2817,18 +3184,23 @@ class FastCopyGUI(QWidget):
         rm = self._run_meta
         dry = rm["dry"]
         ok = (code == 0)
+        skipped = (code == 3)   # engine EXIT_SOURCE_UNREADABLE: only unreadable
+        n_skip = rm.get("skipped_unreadable", 0)   # source files skipped, rest OK
         last = rm["last"] or {}
         elapsed = time.monotonic() - rm.get("t0", time.monotonic())
         vtxt = (" · ✓ verified" if rm["verified"] is True
                 else " · ✗ verify failed" if rm["verified"] is False else "")
-        if ok:
+        self._stop_indeterminate()
+        if ok or skipped:
             self.barf.setFixedWidth(self.bar.width())
             self.stat_vals["Progress"].setText("100%")
             self.stat_vals["ETA"].setText("0s")
-            if dry:
-                self.pstate.setText("Plan ready")
-            else:
-                self.pstate.setText(f"Done · {fmt_time(elapsed)}{vtxt}")
+        if ok:
+            self.pstate.setText("Plan ready" if dry
+                                else f"Done · {fmt_time(elapsed)}{vtxt}")
+        elif skipped:
+            self.pstate.setText(f"Completed · {fmt_time(elapsed)} · "
+                                f"{n_skip} skipped (unreadable)")
         else:
             self.pstate.setText(f"Failed · {fmt_time(elapsed)}")
 
@@ -2843,8 +3215,10 @@ class FastCopyGUI(QWidget):
             speed = rm["speed_bps"] or (last.get("speed_bps", 0) or 0)
             self._write_history({
                 "config": rm["cfg"],
-                "status": "ok" if ok else "failed",
-                "error": None if ok else (rm["errtail"] or f"exit code {code}"),
+                "status": "ok" if ok else "partial" if skipped else "failed",
+                "error": (None if ok else
+                          f"{n_skip} source file(s) unreadable — skipped" if skipped
+                          else (rm["errtail"] or f"exit code {code}")),
                 "stats": {
                     "files": files, "bytes": nbytes,
                     "dedup_saved_bytes": rm["dedup_bytes"],
@@ -2859,9 +3233,29 @@ class FastCopyGUI(QWidget):
         elif ok:
             self.show_toast(f"Transfer complete in {fmt_time(elapsed)}"
                             + (" · verified" if rm["verified"] else ""))
+        elif skipped:
+            self.show_toast(f"Completed — {n_skip} file(s) unreadable, skipped "
+                            f"(everything else copied)")
         else:
+            logpath = self._write_transfer_log()
             tail = rm["errtail"]
-            self.show_toast("Transfer failed" + (": " + tail if tail else " — see log"))
+            msg = "Transfer failed" + (": " + tail if tail else f" (exit {code})")
+            self.show_toast(msg + ("  ·  full log saved for diagnosis" if logpath else ""))
+
+    def _write_transfer_log(self):
+        """Persist the full RAW engine output of the last run to a file, so a
+        failure stays diagnosable even though the UI keeps errors to one clean
+        line (no tracebacks). Returns the path, or None on error."""
+        try:
+            os.makedirs(self._config_dir(), exist_ok=True)
+            path = os.path.join(self._config_dir(), "last-transfer.log")
+            fl = self._run_meta.get("fulllog")
+            lines = fl.lines() if fl is not None else []
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            return path
+        except OSError:
+            return None
 
     def _clear_log(self):
         while self.log_lay.count() > 1:
@@ -2872,10 +3266,28 @@ class FastCopyGUI(QWidget):
     def _add_log(self, text, link=False):
         l = QLabel(text)
         l.setObjectName("logline")
+        v = DARK if self.dark else LIGHT
         if link:
-            v = DARK if self.dark else LIGHT
             l.setTextFormat(Qt.RichText)
             l.setText(f"<span style='color:{v['ok']}'>linked</span> 312 duplicates (8.3 GB saved)")
+        else:
+            # Colour like the terminal: dim rules, cyan phase banners, green ✓,
+            # red errors — so the GUI log reads like the CLI output, not flat grey.
+            s = text.strip()
+            color = None
+            if s and set(s) <= set("─—-=_ "):
+                color = v["faint"]
+            elif re.match(r"\s*Phase\b", text):
+                color = v["accent"]
+            elif "✓" in text:
+                color = v["ok"]
+            elif re.search(r"✗|\bError\b|\bFailed\b|FAILED|mismatch", text):
+                color = v["danger"]
+            if color:
+                from html import escape
+                l.setTextFormat(Qt.RichText)
+                l.setText(f"<span style='color:{color}; white-space:pre'>"
+                          f"{escape(text)}</span>")
         self.log_lay.insertWidget(self.log_lay.count() - 1, l)
         QTimer.singleShot(0, lambda: self.log_scroll.verticalScrollBar().setValue(
             self.log_scroll.verticalScrollBar().maximum()))
@@ -3460,19 +3872,28 @@ class FastCopyGUI(QWidget):
         ctype = conn.get("type")
         if not FC_OK:
             return None, "fast_copy.py is required for cloud browsing"
-        bucket = conn.get("container") or conn.get("bucket")
+        is_smb = ctype == "smb"
+        bucket = (conn.get("share") if is_smb
+                  else conn.get("container") or conn.get("bucket"))
         if not bucket:
-            return None, "no default bucket/container set on this connection"
+            kind = "share" if is_smb else "bucket/container"
+            return None, f"no default {kind} set on this connection"
         backend_cls = {"s3": fc.S3Backend, "az": fc.AzureBackend,
-                       "gs": fc.GCSBackend}.get(ctype)
+                       "gs": fc.GCSBackend, "smb": fc.SMBBackend}.get(ctype)
         if not backend_cls:
-            return None, f"unsupported cloud type {ctype!r}"
+            return None, f"unsupported connection type {ctype!r}"
         prefix = "" if cwd in ("/", "") else cwd.strip("/") + "/"
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
-                                connection=conn["name"])
             creds = {k: v for k, v in conn.items() if k not in ("type", "name")}
+            if is_smb:
+                spec = fc.SMBSpec(scheme="smb", container=bucket, prefix="",
+                                  connection=conn["name"], host=conn.get("host"),
+                                  port=int(conn.get("port", 445)),
+                                  user=conn.get("user"))
+            else:
+                spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
+                                    connection=conn["name"])
             backend = backend_cls(spec, types.SimpleNamespace(), creds=creds)
             objs = backend.list_objects(prefix)
         except SystemExit as e:
@@ -3511,6 +3932,12 @@ class FastCopyGUI(QWidget):
             sub = cwd
         if conn["type"] == "ssh":
             return f"{conn.get('user', 'user')}@{conn.get('host', conn['name'])}:{sub}"
+        if conn["type"] == "smb":
+            # Reference the saved connection by name so credentials resolve
+            # (the SMB analogue of the cloud name@bucket form); expands to
+            # smb://host/share/<rel> with its password via resolve_named_endpoint.
+            rel = sub.lstrip("/")
+            return f"{conn['name']}:{rel}" if rel else conn["name"]
         bucket = conn.get("container", "backups")
         scheme = "az" if conn["type"] == "az" else "gs" if conn["type"] == "gs" else "s3"
         return f"{scheme}://{conn['name']}@{bucket}{sub}"
@@ -3743,6 +4170,7 @@ class FastCopyGUI(QWidget):
             "preserve": [k for k, o in self.meta_opts.items() if o.property("active")],
             "flags": [k for k, o in self.flag_opts.items() if o.property("active")],
             "exclude": list(self.exclude_patterns),
+            "index_existing": list(self.index_existing_paths),
         }
 
     def _write_history(self, record):
@@ -3899,6 +4327,9 @@ class FastCopyGUI(QWidget):
         if "exclude" in cfg:
             self.exclude_patterns = list(cfg["exclude"])
             self.render_chips()
+        if "index_existing" in cfg:
+            self.index_existing_paths = list(cfg["index_existing"])
+            self.render_idx_chips()
         self.render_sources()
         self.render_dest()
         self.navigate("transfer")
@@ -3928,18 +4359,81 @@ class FastCopyGUI(QWidget):
 
     def _on_update_result(self, res):
         self.upd_btn.setEnabled(True)
+        startup = getattr(self, "_startup_check", False)
+        self._startup_check = False
         if res.get("err"):
             self.upd_btn.setText("Check for updates")
-            self.show_toast("Could not check for updates"
-                            + (": " + res["err"] if res["err"] != "network" else ""))
+            if not startup:
+                self.show_toast("Could not check for updates"
+                                + (": " + res["err"] if res["err"] != "network" else ""))
         elif res.get("uptodate"):
             self.upd_btn.setText("Up to date")
-            self.show_toast(f"fast-copy is up to date (v{res['uptodate']})")
+            if not startup:
+                self.show_toast(f"fast-copy is up to date (v{res['uptodate']})")
         elif res.get("latest"):
             self._update_tag = res["latest"]
+            self._update_releases = res.get("releases", [])
             self.upd_btn.setText("Download " + res["latest"])
-            self.show_toast(f"Update available: {res['latest']} "
-                            f"(you have v{res['current']}) — click to download")
+            if startup:
+                # Don't nag if the user dismissed this exact version before.
+                if res["latest"] in self._load_gui_settings().get("skip_versions", []):
+                    return
+                self._show_update_dialog(res["latest"], res["current"],
+                                         self._update_releases)
+            else:
+                self.show_toast(f"Update available: {res['latest']} "
+                                f"(you have v{res['current']}) — click to download")
+
+    # ── startup update popup ─────────────────────────────────────────────
+    def _gui_settings_path(self):
+        return os.path.join(self._config_dir(), "gui_settings.json")
+
+    def _load_gui_settings(self):
+        import json
+        try:
+            with open(self._gui_settings_path()) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_gui_settings(self, data):
+        import json
+        try:
+            os.makedirs(self._config_dir(), exist_ok=True)
+            with open(self._gui_settings_path(), "w") as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass
+
+    def _startup_update_check(self):
+        """Quietly check for a newer release at launch; if one exists (and the
+        user hasn't dismissed that version), pop the UpdateDialog. Silent on
+        errors / when running without the engine."""
+        if not FC_OK or not hasattr(fc, "_fetch_releases"):
+            return
+        if getattr(self, "_upd_running", False):
+            return
+        self._startup_check = True
+        self._upd_running = True
+        self._upd_thread = _UpdateCheckWorker()
+        self._upd_thread.done.connect(self._on_update_result)
+        self._upd_thread.finished.connect(self._upd_cleanup)
+        self._upd_thread.start()
+
+    def _show_update_dialog(self, latest, current, releases):
+        dlg = UpdateDialog(self, latest, current, releases, self._can_auto_install(),
+                           DARK if self.dark else LIGHT)
+        dlg.exec()
+        if dlg.skip_cb.isChecked():
+            s = self._load_gui_settings()
+            skip = set(s.get("skip_versions", []))
+            skip.add(latest)
+            s["skip_versions"] = sorted(skip)
+            self._save_gui_settings(s)
+        if dlg.action == UpdateDialog.DOWNLOAD_ONLY:
+            self.download_update(install=False)
+        elif dlg.action == UpdateDialog.DOWNLOAD_INSTALL:
+            self.download_update(install=True)
 
     def _update_btn_clicked(self):
         """One button: check first, then become a real downloader once an update
@@ -3960,22 +4454,47 @@ class FastCopyGUI(QWidget):
             return "fast_copy_gui-macos-arm64.app.zip"
         return "fast_copy_gui-linux"
 
-    def download_update(self):
-        """Download the matching GUI asset for the available release into the
-        user's Downloads folder, then offer to reveal it. (In-place replacement
-        of a running app — especially a macOS .app — isn't safe, so we download
-        and hand off to the user.)"""
+    def _can_auto_install(self):
+        """Whether the GUI can replace its own binary in place — like the CLI's
+        self-update. Supported only on frozen Linux/Windows builds with write
+        access to the binary's directory. A running-from-source (.py) launch has
+        no binary to swap, and a running macOS .app bundle can't be safely
+        replaced in place, so both fall back to a download + manual handoff."""
+        if not getattr(sys, "frozen", False):
+            return False
+        if sys.platform == "darwin":
+            return False
+        try:
+            return os.access(os.path.dirname(sys.executable), os.W_OK)
+        except OSError:
+            return False
+
+    def download_update(self, install=True):
+        """Fetch the matching GUI asset for the available release. With
+        install=True on a frozen Linux/Windows build the new binary replaces the
+        running one in place (mirroring the CLI self-update), then the GUI offers
+        to relaunch. install=False (Download only), macOS .app bundles, and
+        source runs download to ~/Downloads and hand off to the user. Never runs
+        while a copy is in progress."""
         tag = getattr(self, "_update_tag", None)
         if not tag or not FC_OK or getattr(self, "_dl_running", False):
             return
+        # Do not touch the binary while any copy/transfer is running: an
+        # in-place swap mid-job could destabilise the running engine.
+        if self.running:
+            self.show_toast("Finish or cancel the running copy before updating")
+            return
         asset = self._gui_asset_name()
-        url = None
+        url, size = None, None
         try:
             for rel in (fc._fetch_releases() or []):
                 if rel.get("tag_name") == tag:
                     for a in rel.get("assets", []):
                         if a.get("name") == asset:
-                            url = a.get("browser_download_url")
+                            # API asset url (a["url"]) works for PRIVATE repos with
+                            # a Bearer token; browser_download_url 404s there.
+                            url = a.get("url")
+                            size = a.get("size")
                             break
                     break
         except Exception:
@@ -3986,15 +4505,34 @@ class FastCopyGUI(QWidget):
                 f"Couldn't find {asset} in release {tag}.\n\nDownload manually:\n"
                 f"https://github.com/{GUI_REPO}/releases/tag/{tag}")
             return
-        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
-        if not os.path.isdir(downloads):
-            downloads = os.path.expanduser("~")
-        dest = os.path.join(downloads, asset)
+        # Defence in depth: only download from GitHub over HTTPS (the URL comes
+        # from the GitHub release API, but verify before replacing a binary).
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        allowed = {"api.github.com", "github.com", "objects.githubusercontent.com",
+                   "github-releases.githubusercontent.com",
+                   "release-assets.githubusercontent.com"}
+        if parsed.scheme != "https" or parsed.hostname not in allowed:
+            QMessageBox.critical(self, "Update",
+                                 "Unexpected download URL (not HTTPS GitHub):\n" + url)
+            return
+
+        if install and self._can_auto_install():
+            # Download beside the running binary so the swap is an atomic,
+            # same-filesystem replace.
+            dest = sys.executable + ".update_tmp"
+            self._update_inplace_target = sys.executable
+        else:
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            if not os.path.isdir(downloads):
+                downloads = os.path.expanduser("~")
+            dest = os.path.join(downloads, asset)
+            self._update_inplace_target = None
         self._dl_running = True
         self.upd_btn.setEnabled(False)
         self.upd_btn.setText("Downloading…")
         self.show_toast("Downloading " + asset + " …")
-        self._dl_thread = _DownloadWorker(url, dest)
+        self._dl_thread = _DownloadWorker(url, dest, expected_size=size)
         self._dl_thread.done.connect(self._on_download_done)
         self._dl_thread.finished.connect(lambda: setattr(self, "_dl_thread", None))
         self._dl_thread.start()
@@ -4003,11 +4541,41 @@ class FastCopyGUI(QWidget):
         self._dl_running = False
         self.upd_btn.setEnabled(True)
         self.upd_btn.setText("Download " + getattr(self, "_update_tag", "update"))
+        target = getattr(self, "_update_inplace_target", None)
         if not ok:
+            if target:                       # clean a partial .update_tmp
+                try:
+                    os.remove(target + ".update_tmp")
+                except OSError:
+                    pass
             QMessageBox.critical(self, "Download failed",
                                  "Could not download the update:\n" + info)
             return
         dest = info
+
+        # In-place install (frozen Linux/Windows): replace the running binary
+        # and offer to relaunch — the GUI equivalent of `fast_copy --update`.
+        if target:
+            if self.running:                 # a copy started during the download
+                self.show_toast("Copy in progress — update not applied")
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                return
+            ok2, msg = self._install_inplace(dest, target)
+            if not ok2:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                QMessageBox.critical(
+                    self, "Update failed",
+                    "Could not replace the application:\n" + msg)
+                return
+            self._prompt_relaunch()
+            return
+
         if dest.endswith(".app.zip"):
             hint = ("Quit fast-copy, unzip the file, and drag fast-copy.app into "
                     "Applications (replacing the old one).")
@@ -4027,6 +4595,61 @@ class FastCopyGUI(QWidget):
         m.exec()
         if m.clickedButton() is reveal:
             self._reveal(dest)
+
+    def _install_inplace(self, downloaded_path, target):
+        """Replace the running GUI binary with the freshly downloaded asset,
+        mirroring the CLI self-update swap: Windows renames the locked .exe out
+        of the way (current -> .old) then moves the new one in; Linux does an
+        atomic os.replace and restores the executable bit. Returns (ok, msg)."""
+        try:
+            if sys.platform.startswith("win"):
+                old = target + ".old"
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+                os.rename(target, old)
+                try:
+                    os.rename(downloaded_path, target)
+                except OSError:
+                    # Swap-in failed (AV/lock on the fresh temp). Restore the
+                    # original from .old so the app isn't left with NO binary at
+                    # its own path, then report the failure.
+                    try:
+                        os.rename(old, target)
+                    except OSError:
+                        pass
+                    raise
+            else:
+                try:
+                    mode = os.stat(target).st_mode
+                except OSError:
+                    mode = 0o755
+                os.replace(downloaded_path, target)
+                os.chmod(target, mode)
+            return True, target
+        except OSError as e:
+            return False, str(e)
+
+    def _prompt_relaunch(self):
+        """After an in-place update, offer to restart into the new binary."""
+        tag = getattr(self, "_update_tag", "update")
+        m = QMessageBox(self)
+        m.setWindowTitle("Update installed")
+        m.setIcon(QMessageBox.Information)
+        m.setText(f"fast-copy was updated to {tag}.")
+        m.setInformativeText("Restart now to use the new version?")
+        r = m.addButton("Restart now", QMessageBox.AcceptRole)
+        m.addButton("Later", QMessageBox.RejectRole)
+        m.exec()
+        # update is applied either way; reset the button out of "Download" state
+        self._update_tag = None
+        self._update_inplace_target = None
+        self.upd_btn.setText("Up to date")
+        if m.clickedButton() is r:
+            args = [] if getattr(sys, "frozen", False) else [os.path.abspath(__file__)]
+            QProcess.startDetached(sys.executable, args)
+            self.close()
 
     def _reveal(self, path):
         try:
@@ -4066,6 +4689,16 @@ def main():
     # Windows: give the app its own taskbar identity so it uses OUR icon
     # instead of grouping under the python/pythonw launcher icon.
     if sys.platform.startswith("win"):
+        # Clean up the .old binary left by a previous in-place update — the
+        # running .exe can't be deleted during the swap, only renamed, so we
+        # remove it on the next launch (mirrors the CLI's cli_entry cleanup).
+        if getattr(sys, "frozen", False):
+            try:
+                old = sys.executable + ".old"
+                if os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                pass
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
@@ -4094,6 +4727,9 @@ def main():
     w.show()
     # If fast_copy.py isn't next to the GUI, offer to fetch the matching version.
     QTimer.singleShot(300, w._ensure_core)
+    # Quietly check for a new release shortly after launch; pops a popup with the
+    # release notes + Download only / Download & install if one is available.
+    QTimer.singleShot(1800, w._startup_update_check)
     sys.exit(app.exec())
 
 
