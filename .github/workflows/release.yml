@@ -57,7 +57,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The binary's glibc floor is the runner's glibc. ubuntu-latest (2.39)
+          # locks out Debian 12, RHEL 9 and anything older; 22.04 gives 2.35.
+          - os: ubuntu-22.04
             name: linux
             artifact: fast_copy
           - os: macos-latest
@@ -105,6 +107,16 @@ jobs:
           else
             echo "no FC_EMBEDDED_UPDATE_TOKEN secret — building without embedded token"
           fi
+
+      # Belt and braces for the GUI's keymap libraries. build.py already keeps
+      # libxkbcommon out of the Linux bundle (HOST_LIBS), so the host always
+      # supplies a matched libxkbcommon / libxkbcommon-x11 pair. Installing the
+      # -x11 half here means that even if the bundle ever picks libxkbcommon up
+      # again, it collects BOTH halves rather than the mismatched half that made
+      # the GUI segfault in xkb_state_key_get_layout on the first key press.
+      - name: Install GUI keymap libs (Linux)
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-0
 
       - name: Build executable
         run: python build.py
