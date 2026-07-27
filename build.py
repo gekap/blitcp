@@ -92,6 +92,28 @@ def install_deps():
                     sys.executable, "-m", "pip", "install", pip_name, "--quiet",
                     "--disable-pip-version-check", "--break-system-packages",
                 ])
+    # pywin32 is Windows-only and required for NTFS owner/ACL preservation;
+    # without it the ACL copy silently no-ops in the frozen binary. Installed
+    # from requirements-win.txt (same file CI uses) so the version pin has a
+    # single source of truth.
+    if platform.system() == "Windows":
+        try:
+            __import__("win32security")
+            print("  OK: pywin32")
+        except ImportError:
+            print("  Installing pywin32 (requirements-win.txt)...")
+            try:
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "-r",
+                    "requirements-win.txt", "--quiet",
+                    "--disable-pip-version-check",
+                ])
+            except subprocess.CalledProcessError:
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "-r",
+                    "requirements-win.txt", "--quiet",
+                    "--disable-pip-version-check", "--break-system-packages",
+                ])
     # Optional cloud SDKs — best-effort so the binary ships with cloud support.
     # A failure here is non-fatal: the build proceeds and simply omits cloud.
     if os.path.exists("requirements-cloud.txt"):
@@ -172,6 +194,18 @@ def build_target(name, script, windowed=False, icon=None):
             "--hidden-import=xxhash",
             "--hidden-import=paramiko",
         ]
+        # pywin32 powers NTFS owner+DACL preservation (fast_copy imports
+        # win32security / pywintypes lazily, so PyInstaller's static scan
+        # needs them named explicitly or the ACL copy silently no-ops).
+        # NOTE: pip's pywin32 exposes win32* modules as top-level names via
+        # pywin32.pth — site-packages/win32 is not an importable package, so
+        # --collect-submodules=win32 would collect nothing useful; any new
+        # lazy win32 import needs its own --hidden-import here.
+        if platform.system() == "Windows":
+            cmd += [
+                "--hidden-import=win32security",
+                "--hidden-import=pywintypes",
+            ]
         cmd += cloud_collect_flags()
         if icon and os.path.exists(icon):
             cmd += ["--icon", icon]

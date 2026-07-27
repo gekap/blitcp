@@ -88,6 +88,17 @@ jobs:
           python -m pip install -r requirements-cloud.txt
           python -c "import boto3, azure.storage.blob, google.cloud.storage, smbclient; print('cloud + SMB SDKs OK')"
 
+      - name: Install pywin32 (NTFS owner/ACL preservation, bundled into the binary)
+        # Windows-only. fast_copy.py imports win32security / pywintypes lazily, so
+        # without pywin32 present at build time the frozen .exe silently no-ops
+        # NTFS owner+DACL copy on --preserve=acl/all. This proves the BUILD env
+        # has pywin32; the bundle-verify step after the build proves PyInstaller
+        # actually put it inside the frozen exe.
+        if: matrix.name == 'windows'
+        run: |
+          python -m pip install -r requirements-win.txt
+          python -c "import win32security, pywintypes; print('pywin32 OK')"
+
       - name: Embed private update token
         # Inject the read-only update token (PRIVATE builds only) from the
         # FC_EMBEDDED_UPDATE_TOKEN secret into fast_copy.py before freezing, so
@@ -122,6 +133,24 @@ jobs:
         run: python build.py
         env:
           MACOSX_DEPLOYMENT_TARGET: '10.13'
+
+      - name: Verify pywin32 is inside the frozen exe
+        # The install step above only proves the build env had pywin32; the exact
+        # regression being guarded against is PyInstaller NOT bundling it (hook
+        # breakage, dropped hidden-imports). Inspect the onefile archive itself —
+        # if win32security or pywintypes is missing, fail the release instead of
+        # shipping an exe whose ACL copy silently no-ops.
+        if: matrix.name == 'windows'
+        shell: bash
+        run: |
+          listing=$(python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b dist/fast_copy.exe)
+          for mod in win32security pywintypes; do
+            if ! grep -qi "$mod" <<< "$listing"; then
+              echo "::error::$mod is not bundled in dist/fast_copy.exe — NTFS ACL preservation would silently no-op"
+              exit 1
+            fi
+          done
+          echo "frozen exe bundles win32security + pywintypes"
 
       - name: Rename binaries with platform suffix
         shell: bash

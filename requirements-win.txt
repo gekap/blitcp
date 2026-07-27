@@ -1,0 +1,5 @@
+# Windows-only — needed to preserve NTFS Security Descriptors (owner + group +
+# DACL / ACLs) on `--preserve=acl` / `--preserve=all`. fast_copy.py imports
+# win32security / pywintypes lazily; without pywin32 the ACL/owner copy silently
+# no-ops (ADS/xattr still works — it uses ctypes, not pywin32).
+pywin32>=306

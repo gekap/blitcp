@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.12.6 — 2026-07-27
+
+### GUI (Linux)
+- **Fixed a crash (segfault) on the first key press** on some distributions.
+  The binary bundled half of the libxkbcommon library pair; the GUI now always
+  uses the host's matched pair, eliminating the crash in
+  `xkb_state_key_get_layout`.
+- A saved SSH port `0` is no longer silently rewritten to `22` at connect time.
+
+### Compatibility
+- Linux binaries are now built against glibc 2.35 — they run on
+  RHEL/Rocky/AlmaLinux 9, Debian 12 and other distributions the previous
+  builds refused to start on (`GLIBC_2.38 not found`).
+
+### Release pipeline (Windows NTFS ACL support)
+- CI verifies pywin32 both in the build environment **and inside the frozen
+  .exe**, so a release can no longer ship a Windows binary whose NTFS
+  owner/DACL preservation silently no-ops.
+- pywin32 installs from the tracked `requirements-win.txt` (one source of
+  truth for the version pin); removed the ineffective
+  `--collect-submodules=win32`.
+
 ## v3.12.3 — 2026-07-08
 
 A large consolidated release covering everything since the 3.7 line: new

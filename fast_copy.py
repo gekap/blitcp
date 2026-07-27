@@ -110,7 +110,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.12.3"
+__version__ = "3.12.6"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,

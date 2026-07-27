@@ -90,7 +90,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.12.3"
+GUI_VERSION = "3.12.6"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -2837,7 +2837,10 @@ class FastCopyGUI(QWidget):
                 env[var] = str(c["password"])
                 extra += [prefix + "-password-env", var]
             try:
-                port = int(c.get("port", 22) or 22)
+                # Default ONLY when the saved value is missing/empty — a stored
+                # port (even 0) must pass through, not be rewritten by `or 22`.
+                _pt = c.get("port", 22)
+                port = int(_pt) if _pt not in (None, "") else 22
             except (ValueError, TypeError):
                 port = 22
             if port != 22:
@@ -3767,7 +3770,14 @@ class FastCopyGUI(QWidget):
         except (OSError, IOError):
             pass
         cli.set_missing_host_key_policy(_ConfirmHostKeyPolicy(self, known))
-        kw = dict(hostname=conn.get("host"), port=int(conn.get("port", 22) or 22),
+        # Default ONLY when the saved value is missing/empty — a stored port
+        # (even 0) must pass through, not be rewritten by `or 22`.
+        _pt = conn.get("port", 22)
+        try:
+            _port = int(_pt) if _pt not in (None, "") else 22
+        except (ValueError, TypeError):
+            _port = 22
+        kw = dict(hostname=conn.get("host"), port=_port,
                   username=conn.get("user") or None,
                   timeout=8, banner_timeout=8, auth_timeout=8)
         if conn.get("key"):
