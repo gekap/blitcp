@@ -102,6 +102,63 @@ FastCopy.exe /cmd=force_copy /auto_close /no_confirm_stop /verify=FALSE /error_s
 
 ---
 
+## Windows — fast-copy vs TeraCopy: combined small + large (real-world mix)
+
+**Hardware:** 13th Gen Intel Core, 16 GB RAM · Source: HDD over USB 2.0 →
+Destination: internal SSD (NTFS) · Windows 11 ·
+fast-copy **v3.12.3** · TeraCopy **4.0.3.2**.
+
+**Workload:** 11,878 files / 11.4 GB, **2 source folders → 1 destination in a
+single copy job**. Deliberately bimodal: `test_doc12` contributes 9,578 small
+files (890 MB, avg ~95 KB); `test16` contributes 2,300 large files (10.5 GB,
+avg ~4.7 MB) — 92% of the total bytes. Both regimes are exercised in the same run.
+
+| Tool | Configuration | Verification | Time | Avg speed |
+|------|---------------|--------------|-----:|----------:|
+| **fast-copy** | 4 threads, 64 MB buffer | **ON** (xxh128) | **19m 06s** | 10.2 MB/s |
+| TeraCopy 4 | 4 threads, 8×2 MB buffer, xxHash3-64 | off | 25m 20s | 7.7 MB/s |
+
+```
+fast-copy (verify ON)   ####################......  19:06   1.33x vs TeraCopy
+TeraCopy 4 (verify off) ##########################  25:20
+```
+
+**fast-copy is 1.33× faster — while also verifying every file.** (fast-copy
+performs post-copy verification on every run by design; it cannot be disabled.
+TeraCopy was measured with verification off.)
+
+**Methodology** — every published number follows the same protocol:
+
+- Destination folder deleted before each run
+- Full system reboot, then 5–10 min idle until background disk I/O settles
+- Cold cache verified (RAMMap: standby list + system working set empty)
+- Single timed run per cell under identical conditions; wall-clock time
+- No other significant I/O or workloads running
+
+Both tools copied the identical source set in a single invocation/transfer job.
+File counts shown are files only; folder counts noted where tools display them
+(e.g. TeraCopy reports files + folders combined).
+
+**Why fast-copy always verifies:** verification is not optional in fast-copy —
+every copy is hashed and checked by design. Competitor times shown here were
+measured without verification where the tool allows disabling it. The comparison
+therefore favors the competitors; fast-copy is faster anyway.
+
+**Reproduce it:** run the same protocol on your own hardware and open an issue
+with your results. Benchmark scripts and raw run reports are being added to
+this repository.
+
+**Notes**
+
+- Source on USB 2.0 deliberately: many-small-file transfers from external
+  spinning disks are the worst case for every copy tool and the workload
+  fast-copy targets. On fast NVMe-to-NVMe transfers, differences between
+  tools shrink.
+- These are seek-bound small-file results; sparse-file savings are a separate
+  feature and are not part of these numbers.
+
+---
+
 ## Honest notes & caveats
 
 - **Dataset shape matters.** These are many-small-files workloads — where copy
