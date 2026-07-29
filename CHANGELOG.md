@@ -71,6 +71,12 @@ preservation, and a substantial correctness/security hardening pass.
 - **Security** — setuid/setgid privilege-escalation hardening, TOCTOU
   mitigation via `O_NOFOLLOW`, and updated cryptography dependencies.
 
+### Credits
+
+- `--index-existing` / `--dedup-existing` were proposed and first prototyped by
+  [@YoSiJo](https://github.com/YoSiJo) in
+  [#3](https://github.com/gekap/fast-copy/pull/3).
+
 ## v3.7.5 — 2026-06-24
 
 Bug-fix release.
