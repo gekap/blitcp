@@ -703,6 +703,10 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 - **Self-update** — `--check-update` shows available versions with categorized release notes; `--update [VERSION]` installs the latest or a specific version
 - **Standalone binary** — Build with PyInstaller for a single-file executable
 
+## Acknowledgments
+
+- [@YoSiJo](https://github.com/YoSiJo) — proposed and prototyped the `--index-existing` / `--dedup-existing` dedup-against-existing-files concept ([#3](https://github.com/gekap/fast-copy/pull/3)).
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
