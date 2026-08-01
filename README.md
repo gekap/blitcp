@@ -705,7 +705,7 @@ Data relayed between two SSH servers via tar pipe. Source and destination did no
 
 ## Acknowledgments
 
-- [@YoSiJo](https://github.com/YoSiJo) — proposed and prototyped the `--index-existing` / `--dedup-existing` dedup-against-existing-files concept ([#3](https://github.com/gekap/fast-copy/pull/3)).
+- [@YoSiJo](https://github.com/YoSiJo) — contributed the `--index-existing` / `--dedup-existing` dedup-against-existing-files features ([#3](https://github.com/gekap/fast-copy/pull/3)).
 
 ## License
 

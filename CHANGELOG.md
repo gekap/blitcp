@@ -73,7 +73,7 @@ preservation, and a substantial correctness/security hardening pass.
 
 ### Credits
 
-- `--index-existing` / `--dedup-existing` were proposed and first prototyped by
+- `--index-existing` / `--dedup-existing` were contributed by
   [@YoSiJo](https://github.com/YoSiJo) in
   [#3](https://github.com/gekap/fast-copy/pull/3).
 

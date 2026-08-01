@@ -18,9 +18,9 @@ and attribution notices intact in the source files, and state any
 significant changes you made. You may add your own copyright for your
 modifications, but you may not remove the above attribution.
 
-Portions of the deduplication features (--index-existing / --dedup-existing)
-originate from a design and prototype contributed by York-Simon Johannsen
-(https://github.com/YoSiJo) in pull request #3.
+The deduplication features --index-existing and --dedup-existing were
+contributed by York-Simon Johannsen (https://github.com/YoSiJo) in pull
+request #3.
 
 ---
 
