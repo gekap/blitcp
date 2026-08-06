@@ -110,7 +110,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "3.12.6"
+__version__ = "3.12.7"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,
@@ -8052,19 +8052,24 @@ def _get_self_path():
     return os.path.realpath(__file__)
 
 
-def _get_asset_name():
-    """Determine which release asset to download for this platform."""
+def _get_asset_names():
+    """Candidate release-asset names for this platform, newest naming first.
+
+    v4.0.0 renames the project to blitcp and its release assets with it
+    (blitcp-linux, blitcp-windows.exe, blitcp.py, …). Accepting BOTH naming
+    eras is the whole point of this bridge build: a v3.12.x install can find
+    and download a v4.x release, and --update to an older 3.12.x still works."""
     if _is_frozen():
         if _system == "Linux":
-            return "fast_copy-linux"
+            return ("blitcp-linux", "fast_copy-linux")
         elif _system == "Darwin":
             machine = platform.machine().lower()
             if machine in ("x86_64", "i386"):
-                return "fast_copy-macos-intel"
-            return "fast_copy-macos-arm64"
+                return ("blitcp-macos-intel", "fast_copy-macos-intel")
+            return ("blitcp-macos-arm64", "fast_copy-macos-arm64")
         elif _system == "Windows":
-            return "fast_copy-windows.exe"
-    return "fast_copy.py"
+            return ("blitcp-windows.exe", "fast_copy-windows.exe")
+    return ("blitcp.py", "fast_copy.py")
 
 
 def _parse_version(tag):
@@ -8257,16 +8262,17 @@ def check_for_update():
     latest = newer[0]
     latest_tag = latest["tag_name"]
 
-    # Find the right asset for this platform
-    asset_name = _get_asset_name()
+    # Find the right asset for this platform (either naming era)
+    asset_names = _get_asset_names()
     for asset in latest.get("assets", []):
-        if asset["name"] == asset_name:
+        if asset["name"] in asset_names:
             # asset["url"] is the API asset endpoint (works for PRIVATE repos with
             # a Bearer token + Accept: application/octet-stream); browser_download_url
             # 404s for private repos even with the token.
             return latest_tag, asset["url"], asset["size"], newer
 
-    print(f"  {C.RED}No asset '{asset_name}' found in release {latest_tag}{C.RESET}")
+    print(f"  {C.RED}No asset '{'/'.join(asset_names)}' found in release "
+          f"{latest_tag}{C.RESET}")
     return None
 
 
@@ -8275,15 +8281,16 @@ def _find_release_asset(releases, target_tag):
 
     Returns (tag, asset_url, asset_size) or None.
     """
-    asset_name = _get_asset_name()
+    asset_names = _get_asset_names()
     target_tag_norm = target_tag.lstrip("vV")
     for rel in releases:
         tag = rel.get("tag_name", "")
         if tag.lstrip("vV") == target_tag_norm:
             for asset in rel.get("assets", []):
-                if asset["name"] == asset_name:
+                if asset["name"] in asset_names:
                     return tag, asset["url"], asset["size"]   # API url (private-repo auth)
-            print(f"  {C.RED}No asset '{asset_name}' found in release {tag}{C.RESET}")
+            print(f"  {C.RED}No asset '{'/'.join(asset_names)}' found in "
+                  f"release {tag}{C.RESET}")
             return None
     print(f"  {C.RED}Release '{target_tag}' not found on GitHub{C.RESET}")
     available = [r["tag_name"] for r in releases[:10]]
@@ -8485,7 +8492,7 @@ def self_update(target_version=None, expected_sha256=None):
     _print_release_notes(notes_releases, current_ver)
 
     self_path = _get_self_path()
-    asset_name = _get_asset_name()
+    asset_name = "/".join(_get_asset_names())
 
     print(f"\n  {C.GREEN}Updating to: {C.BOLD}{latest_tag}{C.RESET}")
     print(f"  Asset:   {asset_name} ({fmt_size(expected_size)})")

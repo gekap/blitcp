@@ -90,7 +90,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with fast_copy.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "3.12.6"
+GUI_VERSION = "3.12.7"
 GUI_REPO = "gekap/fast-copy"
 
 try:
@@ -4453,16 +4453,20 @@ class FastCopyGUI(QWidget):
         else:
             self.check_update()
 
-    def _gui_asset_name(self):
-        """The release asset for THIS GUI build/platform."""
+    def _gui_asset_names(self):
+        """Candidate release assets for THIS GUI build/platform, newest naming
+        first — a future release may rename the assets; accepting both eras
+        lets this build update across the rename."""
         import platform as _pf
         if sys.platform.startswith("win"):
-            return "fast_copy_gui-windows.exe"
+            return ("blitcp_gui-windows.exe", "fast_copy_gui-windows.exe")
         if sys.platform == "darwin":
             if _pf.machine().lower() in ("x86_64", "i386"):
-                return "fast_copy_gui-macos-intel.app.zip"
-            return "fast_copy_gui-macos-arm64.app.zip"
-        return "fast_copy_gui-linux"
+                return ("blitcp_gui-macos-intel.app.zip",
+                        "fast_copy_gui-macos-intel.app.zip")
+            return ("blitcp_gui-macos-arm64.app.zip",
+                    "fast_copy_gui-macos-arm64.app.zip")
+        return ("blitcp_gui-linux", "fast_copy_gui-linux")
 
     def _can_auto_install(self):
         """Whether the GUI can replace its own binary in place — like the CLI's
@@ -4494,13 +4498,15 @@ class FastCopyGUI(QWidget):
         if self.running:
             self.show_toast("Finish or cancel the running copy before updating")
             return
-        asset = self._gui_asset_name()
+        assets = self._gui_asset_names()
+        matched = assets[-1]          # fallback: this build's own-era name
         url, size = None, None
         try:
             for rel in (fc._fetch_releases() or []):
                 if rel.get("tag_name") == tag:
                     for a in rel.get("assets", []):
-                        if a.get("name") == asset:
+                        if a.get("name") in assets:
+                            matched = a.get("name")
                             # API asset url (a["url"]) works for PRIVATE repos with
                             # a Bearer token; browser_download_url 404s there.
                             url = a.get("url")
@@ -4512,7 +4518,7 @@ class FastCopyGUI(QWidget):
         if not url:
             QMessageBox.warning(
                 self, "Update",
-                f"Couldn't find {asset} in release {tag}.\n\nDownload manually:\n"
+                f"Couldn't find {'/'.join(assets)} in release {tag}.\n\nDownload manually:\n"
                 f"https://github.com/{GUI_REPO}/releases/tag/{tag}")
             return
         # Defence in depth: only download from GitHub over HTTPS (the URL comes
@@ -4536,12 +4542,12 @@ class FastCopyGUI(QWidget):
             downloads = os.path.join(os.path.expanduser("~"), "Downloads")
             if not os.path.isdir(downloads):
                 downloads = os.path.expanduser("~")
-            dest = os.path.join(downloads, asset)
+            dest = os.path.join(downloads, matched)
             self._update_inplace_target = None
         self._dl_running = True
         self.upd_btn.setEnabled(False)
         self.upd_btn.setText("Downloading…")
-        self.show_toast("Downloading " + asset + " …")
+        self.show_toast("Downloading " + matched + " …")
         self._dl_thread = _DownloadWorker(url, dest, expected_size=size)
         self._dl_thread.done.connect(self._on_download_done)
         self._dl_thread.finished.connect(lambda: setattr(self, "_dl_thread", None))

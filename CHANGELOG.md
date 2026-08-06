@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.12.7 — 2026-08-06
+
+Bug fixes and an improvement of the update process.
+
+### Improved
+
+- **Update process** — the update checker (CLI and GUI) now recognises
+  release assets under both current and future naming schemes, so
+  `--update` and the GUI update flow keep working seamlessly across
+  upcoming releases. Clearer message when no matching asset is found.
+
 ## v3.12.6 — 2026-07-27
 
 ### GUI (Linux)
