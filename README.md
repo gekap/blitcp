@@ -1,35 +1,20 @@
 # blitcp — High-Speed File Copier with Deduplication & SSH Streaming
 
+[![Release](https://img.shields.io/github/v/release/gekap/blitcp?color=00b37e&label=release)](https://github.com/gekap/blitcp/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/gekap/blitcp/total?color=00b37e&label=downloads)](https://github.com/gekap/blitcp/releases)
+[![License](https://img.shields.io/github/license/gekap/blitcp?color=00b37e)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-00b37e)](https://github.com/gekap/blitcp/releases/latest)
+[![Website](https://img.shields.io/badge/website-blitcp.dev-00b37e)](https://blitcp.dev)
+
 > **blitcp is the new name of fast-copy** (renamed in v4.0.0 — "blit" as in
 > [bit-block transfer](https://en.wikipedia.org/wiki/Bit_blit), which is what
 > the block-order engine does). Existing installs upgrade in place via
 > `--update`; on-disk state and `FAST_COPY_*` environment variables keep
-> working. See the CHANGELOG.
+> working. See the [CHANGELOG](CHANGELOG.md).
 
-A fast, cross-platform command-line tool for copying files and directories at maximum sequential disk speed. Designed for USB drives, external HDDs, NAS backups, and large SSH transfers.
-
-## Downloads
-
-Prebuilt CLI and GUI binaries for Windows, macOS and Linux are on the [Releases page](https://github.com/gekap/blitcp/releases).
-
-**Key capabilities:**
-- **Reflink-based copy on btrfs / XFS / APFS / ReFS** — metadata-only CoW clones (`FICLONE` on Linux, `clonefile(2)` on macOS) make a 10 GB copy on the same volume complete in milliseconds
-- **Sparse-file awareness** *(v3.1.0+)* — VM disk images and Longhorn replicas are copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk (2.3 TB logical → 12 GB on disk on real backups)
-- **Multiple sources per command** *(v3.1.0+)* — `blitcp /var/lib/longhorn/replicas/pvc-* /mnt/backup` accepts N source trees and preserves each by basename, `cp -r` style
-- **`--use-sudo` self-elevation + tamper-resistant audit log** *(v3.1.0+)* — re-execs under sudo for root-only paths and writes a `chattr +i` JSONL audit trail of who ran what
-- **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` everywhere, audit file in `~$SUDO_USER`, script-perm preflight, `--update` refused under sudo
-- Reads files in **physical disk order** (eliminates random seeks on HDDs)
-- **Content-aware deduplication** — copies each unique file once, hard-links or reflinks duplicates
-- **Automatic filesystem detection** — detects reflink/hardlink/symlink/none capability on the destination and picks the safest dedup strategy
-- **Honest dedup accounting** — on link-incapable destinations (FAT32, exFAT) reports "Bandwidth saved" separately from disk usage
-- **Cross-run dedup database** — SQLite cache remembers hashes across runs
-- **Explicit hash algorithm selection** — `--hash=auto|xxh128|sha256` with `auto` preferring the fast `xxh128` if available
-- **SSH remote transfers** — local↔remote and remote↔remote with tar pipe streaming
-- **Chunked streaming** — 100 MB tar batches with streaming extraction (no temp files)
-- **Pre-flight space check** and **post-copy verification**
-- **Synology NAS compatible** — busybox / non-standard OSes are supported via portable tar stdin handling
-- **File-path destination for single-file copies** — `blitcp host:file.tar.gz /local/renamed.tar.gz` works like `scp`/`cp`
-- Works on **Linux**, **macOS**, and **Windows** (including long paths >260 chars)
+A fast, cross-platform tool for copying files and directories at maximum
+sequential disk speed — built for USB drives, external HDDs, NAS backups and
+large SSH transfers. CLI + desktop GUI, in 7 languages.
 
 ## Why blitcp?
 
@@ -37,687 +22,81 @@ Prebuilt CLI and GUI binaries for Windows, macOS and Linux are on the [Releases 
 |---------|----------|
 | `cp -r` is slow on HDDs due to random seeks | Reads files in **physical disk order** for sequential throughput |
 | Thousands of small files copy painfully slow | **Bundles small files** into tar stream batches |
-| Duplicate files waste space and time | **Content-aware dedup** — copies once, hard-links the rest |
+| Duplicate files waste space and time | **Content-aware dedup** — copies once, hard-links or reflinks the rest |
 | No space check until copy fails mid-way | **Pre-flight space check** before any data is written |
 | Silent corruption on cheap USB drives | **Post-copy verification** confirms integrity |
-| Need it on multiple OSes | **Cross-platform** — Linux, macOS, Windows with native I/O optimizations |
 | Copying between two servers is painful | **Remote-to-remote relay** via SSH tar pipe streaming |
-| SFTP is slow (~1-2 MB/s) | **Raw SSH tar streaming** bypasses SFTP overhead (5-10 MB/s on LAN) |
+| SFTP is slow | **Raw SSH tar streaming** bypasses SFTP overhead — 3–5× faster |
 
-## How It Works
+## Quickstart
 
-### Local-to-Local Copy
-
-Files are copied in 5 phases:
-
-1. **Scan** — Walks the source tree, indexes every file with its size
-2. **Dedup** — Hashes files (xxHash-128 or SHA-256) to find identical content. Each unique file is copied once; duplicates become hard links
-3. **Space check** — Verifies the destination has enough free space for the deduplicated data
-4. **Physical layout** — Resolves on-disk physical offsets (`FIEMAP` on Linux, `fcntl` on macOS, `FSCTL` on Windows) and sorts files by block order
-5. **Block copy** — Large files (≥1 MB) are copied with 64 MB buffers. Small files are streamed via tar pipe (producer→consumer, no temp file on disk). Duplicates are recreated as hard links
-
-After copying, all files are verified against source hashes.
-
-### SSH Remote Transfers
-
-Three remote copy modes are supported:
-
-| Mode | How it works |
-|------|-------------|
-| **Local → Remote** | Files are streamed as chunked tar batches over SSH. Remote runs `tar xf -` to extract on the fly |
-| **Remote → Local** | Remote runs `tar cf -`, local extracts with streaming extraction — files appear on disk as data arrives (no temp file) |
-| **Remote → Remote** | Data relays through your machine: source `tar cf` → SSH → local relay buffer → SSH → dest `tar xf` |
-
-**Chunked tar streaming:** Files are split into ~100 MB batches. Each batch is a separate tar stream over SSH. This provides:
-- Progress updates per batch
-- Error recovery (partial batches don't lose completed work)
-- No temp files — streaming extraction writes files directly to disk
-- Large files (≥1 MB) get per-chunk progress updates during extraction
-
-**Deduplication on remote sources:** File hashing runs on the remote server via `python3` or `sha256sum` over SSH, in batches of 5,000 files to avoid timeouts.
-
-**SFTP-free operation:** When the remote server has `tar` available, all transfers use raw SSH channels instead of SFTP. This avoids SFTP protocol overhead and works even on servers with SFTP disabled (e.g., Synology NAS). Manifests are read/written via exec commands with SFTP as fallback.
-
-### How the Buffer Works
-
-The buffer is a fixed-size transfer window. Even a 500 GB file only holds 64 MB in RAM at a time:
-
-```
-Source (500GB file)          Buffer (64MB)         Destination file
-┌──────────────────┐        ┌─────────┐           ┌──────────────────┐
-│ chunk 1 (64MB)   │──read──│ 64MB    │──write──▶ │ chunk 1 (64MB)   │
-│ chunk 2 (64MB)   │──read──│ 64MB    │──write──▶ │ chunk 2 (64MB)   │
-│ ...              │        │ (reused)│           │ ...              │
-│ chunk 7813       │──read──│ 64MB    │──write──▶ │ chunk 7813       │
-└──────────────────┘        └─────────┘           └──────────────────┘
-                                                   = 500GB complete
-```
-
-Adjust with `--buffer`: `--buffer 8` for low-memory systems, `--buffer 128` for fast SSDs.
-
-### How Remote-to-Remote Works
-
-When both source and destination are remote SSH servers, data relays through your local machine:
-
-```
-┌─────────────┐        ┌───────────────┐        ┌─────────────┐
-│  Source SSH  │  tar   │ Your machine  │  tar   │  Dest SSH   │
-│   server    │ ─────▶ │   (relay)     │ ─────▶ │   server    │
-└─────────────┘ cf -   └───────────────┘ xf -   └─────────────┘
-```
-
-The two servers do not need to reach each other directly. Data streams through in ~100 MB tar batches — your machine never stores the full dataset.
-
-### Filesystem detection and dedup strategy
-
-Before Phase 2, blitcp detects the destination filesystem and probes its actual capabilities (hardlink, symlink, reflink CoW clones, case-sensitivity). Detection is ~5 ms on warm cache and uses cheap per-OS APIs (`/proc/self/mountinfo` on Linux, `statfs(2)` on macOS, `GetVolumeInformationW` on Windows) with targeted probes only for ambiguous filesystems (XFS reflink, NTFS Dev Drive, network mounts, FUSE).
-
-The detected strategy is shown in the banner alongside the `Dedup:` line and determines how dedup links AND how unique files are copied:
-
-| Destination filesystem | Strategy | Copy mechanism | Dedup link mechanism |
-|---|---|---|---|
-| btrfs, XFS (reflink=1), APFS, bcachefs | **reflink** | `FICLONE`/`clonefile` (metadata-only, instant) | reflinks (CoW; modifying one peer leaves others untouched) |
-| ext4, tmpfs, NTFS, HFS+, f2fs, NFS, SMB, most others | **hardlink** | byte stream copy with large buffers | `os.link()` hardlinks (shared inode) |
-| FAT32, exFAT, some FUSE mounts | **none** | byte stream copy | full copies (no links possible) |
-
-### Reflink-based copy (v3.1.0+)
-
-On btrfs / XFS-with-reflinks / APFS / bcachefs, blitcp uses the kernel's CoW clone primitive instead of reading and writing bytes:
-
-- **Linux**: `ioctl(FICLONE)` on btrfs, XFS (`reflink=1`), bcachefs
-- **macOS**: `clonefile(2)` on APFS — same primitive `cp` uses internally on macOS Big Sur+
-- **Windows**: ReFS reflinks via `FSCTL_DUPLICATE_EXTENTS_TO_FILE` (deferred — future release)
-
-This means:
-
-- A **10 GB copy** on the same btrfs volume completes in **milliseconds** instead of minutes
-- A backup of `/home` to `/mnt/btrfs/backup` is essentially **free** until you start modifying files
-- Synology DS720+ users (btrfs at `/volume1`) get near-instant local backups
-- macOS users get the same speed `cp` already provides — blitcp was previously slower on APFS for the same operation
-
-When the source and destination are on **different filesystems** (e.g. copying from `/home` ext4 to `/mnt/btrfs`), reflink isn't possible and blitcp automatically falls back to the byte-stream copy. The same-filesystem check via `st_dev` happens before any syscall.
-
-**Important architectural property**: Reflinks are **CoW**. If you modify one of two reflinked files, the kernel allocates new blocks for that file only — the other peer is untouched. This is **fundamentally safer** than hardlinks for any incremental update workflow:
-
-```
-Hardlinks:                    Reflinks:
-  fileA  ┐                      fileA  → blocks 1-100
-         ├→ inode 12345         fileB  → blocks 1-100 (shared)
-  fileB  ┘                      
-                                After modifying fileB:
-  After modifying fileA:        fileA  → blocks 1-100 (unchanged)
-  fileA  ┐                      fileB  → blocks 1-100 (CoW: new alloc only for changes)
-         ├→ inode 12345 (NEW)
-  fileB  ┘  ← also changed!
-```
-
-Run output on a reflink-capable destination:
-
-```
-Phase 5 — Block copy
-  Strategy: reflink (CoW) for 5 files, 12.0 MB
-    Metadata-only clone — no data is read or written.
-
-  ██████████████████████████████ 100%  12.0 MB in 0.1s  avg 209.1 MB/s
-
-  Duplicate handling:
-    ✓ Reflinks:           4 (CoW shared blocks; modifying one does not affect peers)
-    → all reflinked (CoW; safe to modify peers)
-```
-
-On link-incapable filesystems (`strategy: none`), the dedup summary **honestly reports what happened**:
-
-```
-Dedup complete:
-  Unique files:    44718
-  Total duplicates: 46951 (51.2% of files)
-  Bandwidth saved: 378.5 MB (transfer only)
-  Disk usage:      888.2 MB (full copies — FS does not support links)
-```
-
-And the Phase 3 space check uses the full undeduplicated size so you never hit `ENOSPC` mid-copy because of misleading dedup accounting.
-
-For verbose output including FS type, capability matrix, and detection/probe timings, pass `-v` / `--verbose`:
-
-```
-FS:          xfs → reflink
-             hardlink=y symlink=y reflink=y case=sens
-             detect=4.3ms probe=1.1ms (4 probes)
-```
-
-### Bulk-backup workflow for VM images and Longhorn replicas (v3.1.0+)
-
-v3.1.0 added a set of features that together make blitcp practical for sysadmin-style bulk backups: copying many sparse VM disks or Longhorn replicas from system paths that require root, with a tamper-evident audit trail.
-
-**Multiple sources per command.** Pass any number of source paths followed by the destination — each source is copied as its own subtree under the destination, preserving its basename:
+Prebuilt CLI and GUI binaries for Linux, macOS and Windows are on the
+[Releases page](https://github.com/gekap/blitcp/releases) — no install needed.
+Or run from source:
 
 ```bash
-# Shell glob expands to N source paths
-blitcp /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
+pip install paramiko          # SSH support; xxhash optional (~10× faster hashing)
 
-# Or list them explicitly
-blitcp /etc /var/log /home/operator /mnt/incident_snapshot/
+blitcp /data /media/usb/data                # local → local
+blitcp /data user@host:/backup              # local → remote over SSH
+blitcp user@host:/data s3://bucket/backup   # any combination of local/SSH/cloud
+blitcp --help                               # everything else
 ```
 
-Existing single-source `blitcp SRC DST` invocations are unaffected.
+## Key features
 
-**Sparse-file awareness (Linux/macOS).** Files where `st_blocks * 512 < st_size` are auto-detected and copied with `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. The Phase 3 space check uses the **allocated** byte count on sparse-capable destinations, so a 2.3 TB sparse tree holding 12 GB of real data no longer rejects a 900 GB destination. Scan output reports the summary up front:
+- **Block-order reads** — files are read in physical disk order (`FIEMAP`/`fcntl`/`FSCTL`), eliminating random seeks on HDDs
+- **Reflink copies** on btrfs / XFS / APFS / bcachefs — metadata-only CoW clones make a 10 GB same-volume copy complete in milliseconds
+- **Content-aware deduplication** — xxHash-128/SHA-256; each unique file is copied once, duplicates become hard links or reflinks, with a cross-run SQLite cache
+- **SSH transfers without SFTP** — chunked ~100 MB tar batches over raw SSH channels, local↔remote and remote↔remote relay
+- **Cloud object storage** — `s3://`, `az://`, `gs://` as source or destination, with encrypted saved connections and a built-in passphrase generator
+- **SMB / UNC shares** — copy straight to `\\server\share` with saved credentials
+- **Sparse-file awareness** — VM images copied via `SEEK_DATA`/`SEEK_HOLE`; holes never hit the wire
+- **Faithful metadata** — permissions, timestamps, owner, xattrs and POSIX ACLs / NTFS DACLs+ADS, matching `cp -a`
+- **Safety rails** — pre-flight space check, post-copy verification with proper exit codes, honest dedup accounting on FAT32/exFAT
+- **`--use-sudo` self-elevation** with a tamper-resistant (`chattr +i`) JSONL audit log
+- **Interface in 7 languages** — English, Ελληνικά, 中文, Deutsch, Italiano, Español, 日本語
+- **Multiple sources, globs, single-file renames** — `cp -r`-style ergonomics across every mode
+- Works on **Linux, macOS, Windows** (long paths included) · **Synology/busybox-friendly** · self-updating
 
-```
-Sparse:  346 sparse files — 2.3 TB logical, 12.2 GB on disk
-Data to write: 12.2 GB (after sparse holes skipped 2.2 TB)
-```
+## Measured, not marketed
 
-Falls back to dense copy on Windows and on filesystems without hole support (FAT32, exFAT). The wire format for SSH transfers is still dense — sparse-aware copy applies to local→local destinations only.
+| Scenario | Result |
+|---|---|
+| Linux, 12,347 small files, cold HDD → SSD | **2.5× faster than `cp -ar`** (5.9s vs 15.0s, dedup+verify ON) |
+| Windows, 9,578 files off USB 2.0 | **1.3× faster than robocopy** — with verification ON |
+| SSH, many small files over LAN | **3–5× faster than scp/SFTP** via tar streaming |
 
-**`--use-sudo` self-elevation.** Saves typing `sudo python blitcp.py …` for the common case where the source or destination requires root (Longhorn replicas, container volumes, system paths). blitcp re-execs itself under sudo and lets sudo prompt for the password on the terminal as usual. Linux/macOS only.
-
-```bash
-blitcp --use-sudo /var/lib/longhorn/replicas/pvc-x123 /mnt/backup/
-```
-
-**Tamper-resistant audit log.** When running under sudo (detected via `$SUDO_USER`), blitcp writes a hidden `.blitcp_audit.jsonl` to `~$SUDO_USER/` — one JSON record per run capturing the pre-elevation username, the full command, source/destination, the per-file copy list, and run summary. After each write the file is `chattr +i` (immutable) so even root cannot edit or delete it without first running `chattr -i`. The next sudo run clears the flag, appends its record, and re-immutables. Degrades gracefully (writes the record unprotected, with a warning) on tmpfs/FAT32/NFS where immutability isn't supported.
-
-To inspect: `sudo cat ~/.blitcp_audit.jsonl` (reads work on immutable files). To remove: `sudo chattr -i <path> && sudo rm <path>`.
-
-### Security model for `--use-sudo` (v3.1.1+)
-
-The convenience flag re-execs the tool under sudo, so anything blitcp does while elevated runs as root. v3.1.1 closes seven local-privilege-escalation paths in that flow against a non-root attacker on the same host who can write the source tree, the destination tree, or the script's directory:
-
-- **`O_NOFOLLOW` on every destination open** (block-stream / sparse / individual / SFTP / tar-extract paths). A planted symlink like `<dst>/file -> /root/.bashrc` no longer redirects root-privileged writes.
-- **Audit file moved to `~$SUDO_USER`** with `O_NOFOLLOW`, `fchmod` via fd, and a `st_nlink > 1` refusal so a pre-planted symlink or hardlink at the audit path cannot trick root into `chattr +i` / `chmod 0600` / appending on a sensitive file.
-- **Source walk uses `followlinks=False` on POSIX** and `lstat`-checks each entry: under sudo, all symlinks are refused with a visible "Skipped N symlinks" warning; without sudo, only symlinks whose realpath escapes the source root are skipped.
-- **TOCTOU-safe source reads under sudo.** All five file-read producers route through a shared opener that adds `O_NOFOLLOW` when elevated, so an attacker who races the scan→copy window cannot swap a regular file for a symlink and exfiltrate `/etc/shadow`.
-- **`--update` is refused under sudo.** A compromised release publisher can no longer auto-trojan root — the user has to explicitly re-elevate after updating. Optional `--update-sha256 <hex>` (64-char hex from the release page) adds out-of-band integrity pinning.
-- **`--use-sudo` preflight on script + interpreter.** Refuses to elevate if `blitcp.py`, its directory, or `sys.executable` is owned by someone other than root/invoker, or is group/world-writable. Closes the "edit the script and wait" trojan path.
-- **SSH `known_hosts` routed to `~$SUDO_USER`** so accepted TOFU keys persist for the human operator rather than disappearing into `/root/.ssh/`.
-
-No CLI change for non-elevated copies of regular files. Under sudo, the only behavior change is that symlinks in the source are skipped (with a visible warning) rather than silently followed.
-
-### Hash algorithm selection
-
-blitcp uses a content hash to detect duplicates during dedup and to verify files after copy. Choose the algorithm with `--hash`:
-
-| Flag | Algorithm | When to use |
-|---|---|---|
-| `--hash=auto` *(default)* | `xxh128` if the `xxhash` package is installed, else `sha256` | General use — fastest available |
-| `--hash=xxh128` | xxh128 (128-bit, ~10× faster) | Force the fast non-cryptographic hash. Errors with a clear install hint if `xxhash` is missing. |
-| `--hash=sha256` | SHA-256 (cryptographic) | Force collision-resistant hashing — recommended for adversarial environments or when you want strong guarantees against crafted collisions |
-
-The selected algorithm is shown in the banner upfront so the trust boundary is visible:
-
-```
-  Hash:        xxh128 (non-cryptographic; default)
-```
-
-or
-
-```
-  Hash:        sha256 (cryptographic; forced)
-```
-
-### Duplicate-handling summary
-
-After Phase 5, blitcp prints a per-type breakdown of how the duplicates were actually handled on the destination:
-
-```
-Duplicate handling:
-  ✓ Hardlinks:          46951 (shared inode; zero extra disk)
-  → all disk savings realized
-```
-
-On FAT32, where links aren't available:
-
-```
-Duplicate handling:
-  ✗ Full copies:            2 (FS does not support links — no disk savings)
-  → no disk savings (bandwidth only)
-```
-
-Mixed cases (rare — some filesystems fall back to symlinks):
-
-```
-Duplicate handling:
-  ✓ Hardlinks:             45 (shared inode; zero extra disk)
-  ~ Symlinks:               3 (pointer to canonical; canonical must not be deleted)
-  ✗ Full copies:            2 (FS does not support links — no disk savings)
-  → 48/50 linked, 2 copied
-```
-
-## Platform Requirements
-
-| Platform | Minimum Version | Notes |
-|----------|----------------|-------|
-| **Windows** | Windows 7 SP1 | Pre-built binary compatible from **v2.4.5+** (built with Python 3.8). Releases v2.2.0–v2.4.4 require Windows 8.1+ |
-| **macOS** | macOS 10.13 (High Sierra) | Both ARM64 (Apple Silicon) and Intel x86_64 binaries provided |
-| **Linux** | Any with glibc 2.17+ | x86_64 binary; or run the Python script on any architecture |
-
-When running the Python script directly, Python 3.8 or later is required on all platforms.
-
-## Installation
-
-```bash
-# Run directly with Python 3.8+
-python blitcp.py <source> <destination>
-
-# SSH support requires paramiko
-python -m pip install paramiko
-
-# Optional: ~10x faster hashing
-python -m pip install xxhash
-```
-
-### Platform-specific xxHash installation
-
-| Platform | Command |
-|----------|---------|
-| Debian/Ubuntu | `sudo apt install python3-xxhash` |
-| Fedora/RHEL | `sudo dnf install python3-xxhash` |
-| Arch | `sudo pacman -S python-xxhash` |
-| macOS | `brew install python-xxhash` |
-| Windows | `python -m pip install xxhash` |
-
-If xxHash is not installed, blitcp silently falls back to SHA-256.
+Full methodology and more scenarios: [blitcp.dev/benchmarks](https://blitcp.dev/benchmarks/) · [DOCUMENTATION.md](DOCUMENTATION.md#real-world-benchmarks)
 
 ## Desktop GUI
 
-An optional native desktop GUI (`blitcp_gui_qt.py`) exposes **every** CLI feature
-— all four transfer modes (L2L / L2R / R2L / R2R), dedup, metadata preservation,
-SSH, exclude patterns, and tuning — in an attractive dark-themed window. It is a thin
-shell: it builds the command line and runs `blitcp.py` as a subprocess, so the
-proven copy engine does the work unchanged.
+[![blitcp GUI](https://blitcp.dev/screenshots/transfer.png)](https://blitcp.dev/#screenshots)
 
 ```bash
-# Install the GUI dependency (the engine itself stays stdlib-only)
-python -m pip install -r requirements-gui.txt   # PySide6
-
-# Launch
-python blitcp_gui_qt.py
+pip install PySide6 && python blitcp_gui.py
 ```
 
-Features:
-
-- **Multiple sources** — add rows to copy several sources side-by-side under one
-  destination (cp -r style). SSH sources are disabled while more than one source is
-  listed, matching the engine.
-- **Live progress** — real progress bar with speed, ETA, file count, and bytes,
-  plus a scrolling log of the engine's output. A read-only **command preview** shows
-  the exact command that will run.
-- **Dry run / Start / Cancel** — Cancel sends an interrupt so the engine stops
-  cleanly (the same `Interrupted.` path as Ctrl-C on the CLI).
-
-### SSH from the GUI
-
-- **Key-based auth is the recommended path** and works with no caveats: type
-  `user@host:/path` in a source or destination field, expand the **SSH** panel, and
-  point it at your private key (or rely on your SSH agent / default keys).
-- **Password auth** is supported by passing the password through the environment to
-  the child process (never on the command line, so it never appears in `ps` or the
-  command preview). This requires a current engine build (`--ssh-src-password-env` /
-  `--ssh-dst-password-env`); the GUI detects support automatically and prompts you to
-  use key auth otherwise.
-
-### Running as root from the GUI
-
-Tick **Run as root** to elevate via **pkexec** (a graphical PolicyKit prompt) on
-Linux. Where pkexec is unavailable (macOS, minimal installs), the option is disabled —
-run the CLI with `--use-sudo` in a terminal for root copies. Because pkexec scrubs the
-environment, SSH passwords can't be combined with **Run as root**; use key auth for
-remote endpoints in that case.
-
-## Object storage — S3, Azure Blob, Google Cloud Storage (v3.6.0+)
-
-Cloud URLs work as **both source and destination**, in every direction:
-
-```bash
-# Install the cloud SDKs you need (all optional, lazily imported)
-python -m pip install -r requirements-cloud.txt
-
-blitcp.py /data s3://bucket/backups/         # upload
-blitcp.py s3://bucket/backups/ /restore/     # download
-blitcp.py s3://bucket/a/ s3://bucket/b/       # bucket-to-bucket (server-side)
-blitcp.py /data az://container/backups/       # Azure Blob
-blitcp.py /data gs://bucket/backups/          # Google Cloud Storage
-```
-
-Supported schemes: **`s3://`** (AWS + S3-compatible: MinIO, Cloudflare R2,
-Wasabi, Backblaze B2), **`az://`** (Azure Blob), **`gs://`** (native GCS).
-
-Highlights:
-
-- **Round-trip fidelity** — each object stores blitcp metadata
-  (`fc_relpath`, `fc_mtime`, `fc_mode`, `fc_hash`, …); a download restores
-  timestamps and mode and re-hashes to verify integrity.
-- **Dedup** — within a run, duplicate files are server-side-copied
-  (S3 CopyObject / Azure Copy Blob / GCS rewrite) so the bytes never leave the
-  cloud; across runs, an unchanged tree is skipped via a manifest object.
-  Bandwidth saved is reported separately from storage used.
-- **Verification** — uploads are HEAD-sampled against the stored hash;
-  downloads are re-hashed and compared (a mismatch exits non-zero).
-
-### Credentials
-
-| Provider | Flags | Environment / default chain |
-|----------|-------|------------------------------|
-| S3 | `--endpoint-url`, `--s3-region`, `--s3-profile` | `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `~/.aws`, instance profile |
-| Azure | `--az-connection-string`, `--az-account`, `--az-key` | `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` |
-| GCS | `--gcs-project`, `--gcs-credentials` | Application Default Credentials |
-
-In the **GUI**, type a cloud URL into a Source/Destination field and fill in
-**Settings → Cloud credentials**; secrets are passed to the engine through the
-environment, never on the command line.
-
-#### Named connections (multiple accounts / S3 vendors)
-
-For more than one S3 endpoint (e.g. Artesca, Qumulo, MinIO, AWS) plus Azure and
-GCS, save each as a **named connection** and reference it in the URL as
-`scheme://name@bucket/key`:
-
-```bash
-# Create/manage connections interactively (secrets prompted hidden, file is 0600)
-blitcp.py creds add artesca       # type=s3, endpoint, key/secret …
-blitcp.py creds add aws
-blitcp.py creds list              # names/types/endpoints, secrets masked
-blitcp.py creds test artesca      # live connection check
-
-# Then select per endpoint — source and destination can use different vendors:
-blitcp.py s3://minio@data/   s3://aws@backups/
-blitcp.py s3://artesca@vol1/ az://azureprod@container/
-```
-
-Connections live in **`credentials.json` next to `blitcp.py`** (its own
-directory), which the engine auto-loads. This is predictable, travels with the
-script, and avoids the Microsoft-Store Python `%APPDATA%` sandbox that silently
-virtualizes writes. Override with the `BLITCP_CREDENTIALS` env var, an
-explicit path argument to `creds`, or `--credentials-file PATH`. The schema is a
-`{"connections": {name: {type, …}}}` map (`type` is `s3`/`az`/`gs`). The GUI's
-**Cloud credentials** panel reads/writes the same file via its *Saved
-connections* dropdown. A connection named `default` (matching the URL scheme) is
-used when no `name@` is given.
-
-#### Encryption at rest
-
-The file can be **encrypted** so secrets aren't stored in plaintext:
-
-```bash
-blitcp.py creds encrypt        # AES-256-GCM; prompts for a passphrase
-blitcp.py creds decrypt        # back to plaintext
-blitcp.py creds rekey          # re-bind after updating blitcp.py
-blitcp.py creds lock | unlock  # set/clear OS immutability (needs root)
-```
-
-Design (and honest limits):
-
-- **Confidentiality comes from your passphrase** (`scrypt` → AES-256-GCM), supplied
-  via a hidden prompt or `BLITCP_CREDS_PASSPHRASE`. The GUI has a matching
-  *Creds passphrase* field, passed to the engine through the environment.
-- The file is **bound to this `blitcp.py`** (its SHA-256 is the cipher's
-  associated data) for **tamper-evidence** — a swapped binary is detected. Because
-  the *key* is your passphrase, a normal update never locks you out; it just warns
-  and `creds rekey` re-binds.
-- `creds lock` is **tamper-resistance, not secrecy, and not absolute** — setting it
-  needs root, and root can always reverse it. It is unavailable/weak off Linux.
-
-> Object-storage transfers take a **single source** per run.
+Transfers, saved connections, file browser, history and settings — same engine,
+point and click. [More screenshots →](https://blitcp.dev/#screenshots)
 
 ## Documentation
 
-Every CLI flag and GUI control is documented in **[DOCUMENTATION.md](DOCUMENTATION.md)** — what each option does, defaults, and when to change it. The same content is shown inside the GUI under **Help → Documentation**.
-
-## Usage
-
-```
-usage: blitcp.py [-h] [--buffer BUFFER] [--threads THREADS] [--dry-run]
-                    [-v] [--no-verify] [--no-dedup] [--hash {auto,xxh128,sha256}]
-                    [--no-cache] [--force] [--overwrite] [--exclude EXCLUDE]
-                    [--log-file LOG_FILE] [--use-sudo]
-                    [--ssh-src-port PORT] [--ssh-src-key PATH] [--ssh-src-password]
-                    [--ssh-dst-port PORT] [--ssh-dst-key PATH] [--ssh-dst-password]
-                    [-z]
-                    source [source ...] destination
-
-positional arguments:
-  source               One or more source folders, files, globs, or remote
-                       (user@host:/path). When two or more positionals are given,
-                       the last is the destination and earlier ones are sources.
-  destination          Destination path or remote (user@host:/path)
-
-options:
-  -h, --help              Show help message and exit
-  --version, -V           Show version and exit
-  --check-update          Show available updates and release notes
-  --update [VERSION]      Download and install latest (or a specific version).
-                          Refused under sudo (v3.1.1+).
-  --update-sha256 HEX     Verify the downloaded binary against a 64-char SHA-256
-                          obtained out-of-band from the GitHub release page (v3.1.1+).
-  --buffer BUFFER         Buffer size in MB (default: 64)
-  --threads THREADS       Threads for hashing/layout (default: 4)
-  --dry-run               Show copy plan without copying
-  -v, --verbose           Verbose output (full FS detection details, etc.)
-  --no-verify             Skip post-copy verification
-  --log-file LOG_FILE     Write structured JSON log to file
-  --no-dedup              Disable deduplication
-  --hash ALGO             Hash algorithm: auto (default), xxh128, or sha256
-                          auto  = xxh128 if installed, else sha256
-                          xxh128= 10× faster, non-cryptographic
-                          sha256= cryptographic, collision-resistant
-  --no-cache              Disable persistent hash cache (cross-run dedup database)
-  --force                 Skip space check, copy even if not enough space
-  --overwrite             Overwrite all files, skip identical-file detection
-  --exclude EXCLUDE       Exclude files/dirs by name (can use multiple times)
-  --use-sudo              Re-exec self under sudo if not already root (v3.1.0+).
-                          Useful when source or destination needs root, e.g.
-                          /var/lib/longhorn/replicas. Linux/macOS only. Refuses
-                          to elevate if the script or its directory is
-                          group/world-writable (v3.1.1+).
-
-SSH source options:
-  --ssh-src-port PORT     SSH port for remote source (default: 22)
-  --ssh-src-key PATH      Path to SSH private key for remote source
-  --ssh-src-password      Prompt for SSH password for remote source
-
-SSH destination options:
-  --ssh-dst-port PORT     SSH port for remote destination (default: 22)
-  --ssh-dst-key PATH      Path to SSH private key for remote destination
-  --ssh-dst-password      Prompt for SSH password for remote destination
-
-General SSH options:
-  -z, --compress          Enable SSH compression (good for slow links)
-```
-
-## Examples
-
-### Local copy
-
-```bash
-# Copy a folder to USB drive
-python blitcp.py /home/kai/my-app /mnt/usb/my-app
-
-# Copy a single file
-python blitcp.py ~/Downloads/Rocky-10.0-x86_64-dvd1.iso /mnt/usb/
-
-# Glob pattern
-python blitcp.py "~/Downloads/*.zip" /mnt/usb/zips/
-
-# Windows
-python blitcp.py "C:\Projects\my-app" "E:\Backup\my-app"
-```
-
-### SSH remote transfers
-
-```bash
-# Local to remote
-python blitcp.py /data user@server:/backup/data --ssh-dst-password
-
-# Remote to local
-python blitcp.py user@server:/data /local/backup --ssh-src-password
-
-# Remote to remote (relay through your machine)
-python blitcp.py user@src-host:/data admin@dst-host:/backup/data \
-    --ssh-src-password --ssh-dst-password
-
-# Custom ports and keys
-python blitcp.py user@host:/data /local \
-    --ssh-src-port 2222 --ssh-src-key ~/.ssh/id_ed25519
-
-# Destination on non-standard port (e.g., Synology NAS)
-python blitcp.py /local/data "user@nas:/volume1/Shared Folder/backup" \
-    --ssh-dst-port 2205 --ssh-dst-password
-```
-
-### Bulk-backup workflow (v3.1.0+)
-
-```bash
-# Multiple sources at once (cp -r style)
-blitcp /var/lib/longhorn/replicas/pvc-* /mnt/backup_pvc/
-
-# Sparse VM disks — only the allocated bytes are read and written
-blitcp --use-sudo /var/lib/libvirt/images /mnt/backup/
-
-# Auto-elevate under sudo; writes an immutable audit log to ~/.blitcp_audit.jsonl
-blitcp --use-sudo /etc /var/log /home/operator /mnt/incident_snapshot/
-
-# Verify a self-update against a hash from the release page
-blitcp --update --update-sha256 <paste-64-char-hex-from-release-page>
-```
-
-### Other options
-
-```bash
-# Dry run (preview without copying)
-python blitcp.py /data /mnt/usb/data --dry-run
-
-# Verbose output with full FS detection details
-python blitcp.py /data /mnt/usb/data -v
-
-# Force SHA-256 (cryptographic, collision-resistant) for dedup hashing
-python blitcp.py /data /mnt/usb/data --hash=sha256
-
-# Force xxh128 (fastest) — errors if xxhash not installed
-python blitcp.py /data /mnt/usb/data --hash=xxh128
-
-# Copy a single file with a new name at the destination (like cp/scp)
-python blitcp.py user@host:/data/archive.tar.gz /backup/renamed.tar.gz
-
-# Skip deduplication (faster for known-unique files)
-python blitcp.py /data /mnt/usb/data --no-dedup
-
-# Exclude files/directories by name
-python blitcp.py /project /mnt/usb/project --exclude node_modules --exclude .git
-
-# Write structured JSON log of all actions
-python blitcp.py /data /mnt/usb/data --log-file copy.json
-```
-
-### Structured JSON log
-
-The `--log-file` option writes a machine-readable JSON log with:
-- **Summary** — source, destination, mode, files copied/linked/skipped/errored, bytes written, speed, dedup savings
-- **Per-file entries** — action (`copied`, `linked`, `skipped`, `error`), path, size, method, link target, error message
-
-```json
-{
-  "timestamp": "2026-04-04T13:25:48.680170+00:00",
-  "summary": {
-    "source": "/data", "destination": "/mnt/usb/data",
-    "mode": "local_to_local", "total_files": 3,
-    "copied": 2, "linked": 1, "skipped": 0, "errors": 0,
-    "total_bytes": 18, "bytes_written": 12, "dedup_saved": 6,
-    "elapsed_sec": 0.03, "avg_speed_bps": 400, "hash_algo": "xxh128"
-  },
-  "files": [
-    {"action": "copied", "path": "data.bin", "size": 6, "method": "block_stream"},
-    {"action": "linked", "path": "data_copy.bin", "size": 6, "method": "hardlink", "link_target": "data.bin"}
-  ]
-}
-```
-
-## Real-World Benchmarks
-
-### Local-to-Local: 59,925 files (593 MB) to HDD
-
-```
-  Files:   59925 total (44454 unique + 15471 linked)
-  Data:    500.7 MB written (92.5 MB saved by dedup)
-  Time:    12.1s
-  Speed:   41.2 MB/s
-```
-
-Dedup detected 15,471 duplicate files (25.8%), saving 92.5 MB. Files were read in physical disk order and small files bundled into block streams.
-
-### Remote-to-Local: 91,669 files (888 MB) over 100 Mbps LAN
-
-```
-  Files:   91669 total (44718 copied + 46951 linked)
-  Data:    509.8 MB downloaded (378.5 MB saved by dedup)
-  Time:    14m 2s
-  Speed:   619.5 KB/s
-```
-
-Dedup found 46,951 duplicates (51.2%), saving 378.5 MB of transfer. Files streamed in 6 tar batches of ~100 MB each with streaming extraction (no temp files). All 91,669 files verified after copy.
-
-### Local-to-Remote: 91,663 files (888 MB) over 100 Mbps LAN
-
-```
-  Files:   91663 total (44712 copied + 46951 linked)
-  Data:    509.8 MB uploaded
-  Time:    2m 7s
-  Speed:   4.0 MB/s
-```
-
-Uploaded in 6 tar batches. Remote hard links created via batched Python script over SSH (5,000 links per batch). 3x faster than SFTP-based transfer.
-
-### Remote-to-Remote: 3 files (1.7 GB) relay through local machine
-
-```
-  Files:   3 total
-  Data:    1.7 GB relayed
-  Time:    5m 30s
-  Speed:   5.2 MB/s
-```
-
-Data relayed between two SSH servers via tar pipe. Source and destination did not need direct connectivity. Verified on destination after transfer.
-
-## Key Features
-
-- **Sparse-file awareness** *(v3.1.0+)* — VM disk images, Longhorn replicas, and other sparse files are auto-detected (`st_blocks * 512 < st_size`) and copied via `SEEK_DATA` / `SEEK_HOLE` so unallocated holes never hit the wire or the destination disk. Phase 3 space check uses allocated bytes on sparse-capable destinations.
-- **Multiple sources per command** *(v3.1.0+)* — `blitcp SRC1 SRC2 … DST/` accepts N source paths; each is copied as its own subtree under the destination, preserving its basename (cp -r style).
-- **`--use-sudo` self-elevation** *(v3.1.0+)* — Re-execs under sudo for paths that need root (Longhorn replicas, container volumes). Linux/macOS only.
-- **Tamper-resistant audit log** *(v3.1.0+, hardened in v3.1.1+)* — Under sudo, writes an immutable (`chattr +i`) JSONL of every run to `~$SUDO_USER/.blitcp_audit.jsonl` — captures invoking user, command, source/dest, per-file copy list, summary. Even root can't quietly delete a record.
-- **Security-hardened sudo flow** *(v3.1.1+)* — `O_NOFOLLOW` on every destination open and on source reads under sudo; audit file moved out of attacker-controllable destination paths; `--update` refused under sudo (with optional `--update-sha256` integrity pin); script-perm preflight refuses to elevate if `blitcp.py` or its directory is group/world-writable.
-- **Reflink-based copy** *(v3.1.0+)* — On btrfs / XFS reflink / APFS / bcachefs, files are cloned via `FICLONE`/`clonefile` (metadata-only, instant) instead of byte-by-byte copy. CoW semantics make modified peers independent.
-- **Block-order reads** — Files read in physical disk order, eliminating random seeks
-- **Content deduplication** — xxHash-128 or SHA-256 hashing; copies once, hard-links or reflinks duplicates
-- **Automatic filesystem detection** *(v3.0.0+)* — Detects destination FS type (ext4, btrfs, XFS, APFS, NTFS, FAT32, etc.) and probes capabilities (hardlink, symlink, reflink, case-sensitivity) to pick the safest dedup strategy
-- **Honest dedup accounting** *(v3.0.0+)* — On FAT32/exFAT, reports "Bandwidth saved" separately from "Disk usage" and uses the correct full size for the space check
-- **Explicit hash algorithm selection** *(v3.0.0+)* — `--hash=auto|xxh128|sha256` lets users force a specific algorithm; the choice is displayed in the banner
-- **Per-type duplicate-handling summary** *(v3.0.0+)* — Phase 6 shows exactly how many duplicates became hardlinks / symlinks / full copies on the destination
-- **File-path destination for single files** *(v2.4.8+)* — `blitcp host:file.tar.gz /local/renamed.tar.gz` works across all copy modes
-- **Cross-run dedup database** — SQLite cache at drive root; re-runs skip already-copied content
-- **Streaming tar pipe** — Producer→consumer pipe for local copies (no temp file); chunked 100 MB batches for SSH
-- **SFTP-free SSH transfers** — Uses raw SSH channels with tar; works on servers with SFTP disabled
-- **Synology NAS compatible** *(v3.0.0+)* — Uses portable tar stdin handling; tested against DS720+ with DSM 7.x
-- **Flexible source** — Directories, single files, or glob patterns (`*.zip`, `*.iso`)
-- **Pre-flight space check** — Verifies space before writing; walks parent directories for remote paths
-- **Post-copy verification** — Every file verified against source hash
-- **Structured JSON logging** — `--log-file` records every action (copied, linked, skipped, error) with summary stats
-- **Permission preservation** — Copies file permissions on local and remote transfers
-- **Windows long path support** — Handles paths exceeding 260 characters via `\\?\` prefix
-- **Interactive SSH host key verification** — TOFU prompt with MD5 + SHA-256 fingerprints; rejects changed keys (MITM defense)
-- **Authentication retry** — Prompts for password up to 3 times on auth failure; handles Ctrl+C gracefully
-- **Cross-platform** — Linux, macOS, and Windows with native I/O optimizations
-- **Self-update** — `--check-update` shows available versions with categorized release notes; `--update [VERSION]` installs the latest or a specific version
-- **Standalone binary** — Build with PyInstaller for a single-file executable
+- **[blitcp.dev/docs](https://blitcp.dev/docs/)** — guides: local copies, SSH transfers, cloud storage, sparse files, everyday options
+- **[DOCUMENTATION.md](DOCUMENTATION.md)** — the full manual: every option, how it works internally, examples, benchmarks
+- **[CHANGELOG.md](CHANGELOG.md)** — release history
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE). The `--index-existing` /
+`--dedup-existing` features were contributed by
+[York-Simon Johannsen](https://github.com/YoSiJo) (#3).
 
 ## Support
 
 blitcp is free and open source — the best way to support it is to help it grow:
 
-- ⭐ **Star the repository** and **spread the word** — share it with anyone who moves a lot of data.
-- 🐛 **Report bugs and ideas** via [issues](https://github.com/gekap/blitcp/issues) or pull requests.
+- ⭐ **Star the repository** and share it with anyone who moves a lot of data
+- 🐛 **Report bugs and ideas** via [issues](https://github.com/gekap/blitcp/issues) or pull requests
 
 If you'd like to make a donation, please [get in touch](https://blitcp.dev/#contact).
