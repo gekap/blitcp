@@ -2,8 +2,9 @@
 
 > **blitcp is the new name of fast-copy** (renamed in v4.0.0 — "blit" as in
 > [bit-block transfer](https://en.wikipedia.org/wiki/Bit_blit), which is what
-> the block-order engine does). Old commands, imports, sidecar files and
-> `FAST_COPY_*` environment variables keep working; see the CHANGELOG.
+> the block-order engine does). Existing installs upgrade in place via
+> `--update`; on-disk state and `FAST_COPY_*` environment variables keep
+> working. See the CHANGELOG.
 
 A fast, cross-platform command-line tool for copying files and directories at maximum sequential disk speed. Designed for USB drives, external HDDs, NAS backups, and large SSH transfers.
 

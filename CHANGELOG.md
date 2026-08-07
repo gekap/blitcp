@@ -19,8 +19,9 @@ domain redirects).
 ### Renamed — with full backward compatibility
 
 - CLI `blitcp` (was `fast_copy.py`), GUI `blitcp_gui` (was `fast_copy_gui`).
-  A `fast_copy.py` import/launcher shim ships for 1–2 releases: old imports
-  and commands keep working with a one-line deprecation note.
+  Existing `fast_copy.py` installs upgrade in place — the self-updater
+  replaces the file with the blitcp engine, so old entry points keep
+  working without a separate shim.
 - Release assets: `blitcp-linux`, `blitcp-macos-intel`, `blitcp-macos-arm64`,
   `blitcp-windows.exe`, `blitcp_gui-*`.
 - Environment variables: `BLITCP_LANG`, `BLITCP_CREDENTIALS`,
