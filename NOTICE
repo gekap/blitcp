@@ -1,6 +1,6 @@
-fast-copy
+blitcp (formerly fast-copy)
 Copyright 2026 George Kapellakis
-https://fast-copy.dev
+https://blitcp.dev
 
 This product is licensed under the Apache License, Version 2.0 (see the
 LICENSE file). You may obtain a copy of the License at
@@ -21,6 +21,12 @@ modifications, but you may not remove the above attribution.
 The deduplication features --index-existing and --dedup-existing were
 contributed by York-Simon Johannsen (https://github.com/YoSiJo) in pull
 request #3.
+
+The embedded passphrase wordlist is the EFF Large Wordlist for Passphrases
+(https://www.eff.org/dice), (c) Electronic Frontier Foundation, licensed
+under Creative Commons Attribution 3.0 US
+(https://creativecommons.org/licenses/by/3.0/us/). It is embedded in
+compressed form in blitcp.py and used unmodified.
 
 ---
 

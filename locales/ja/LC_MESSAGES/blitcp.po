@@ -1,0 +1,951 @@
+# blitcp translations — ja
+# GLOSSARY (keep in English inside translations): dedup, hard link, reflink,
+# sparse, tar pipe, SSH, SFTP, xxHash, FIEMAP, block-order, manifest.
+# First pass is machine-generated — native-speaker review welcome (PRs!).
+msgid ""
+msgstr ""
+"Project-Id-Version: blitcp\n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "+ add folder…"
+msgstr "+ フォルダーを追加…"
+
+msgid "+ add…"
+msgstr "+ 追加…"
+
+msgid "--force: proceeding anyway"
+msgstr "--force：続行します"
+
+msgid "--force: proceeding anyway (copy may fail mid-way)"
+msgstr "--force：続行します（途中で失敗する可能性あり）"
+
+msgid "0 / 0 files"
+msgstr "0 / 0 ファイル"
+
+msgid "AWS named profile from ~/.aws/credentials"
+msgstr "~/.aws/credentials の名前付き AWS プロファイル"
+
+msgid "AWS region for s3:// (default: us-east-1)"
+msgstr "s3:// の AWS リージョン（既定：us-east-1）"
+
+msgid "Add"
+msgstr "追加"
+
+msgid "Add connection"
+msgstr "接続を追加"
+
+msgid "Azure Blob connection string (or env AZURE_STORAGE_CONNECTION_STRING)"
+msgstr "Azure Blob 接続文字列（または環境変数 AZURE_STORAGE_CONNECTION_STRING）"
+
+msgid "Azure storage account key. WARNING: a key passed on the command line is visible to other users via `ps` and is saved in shell history. Prefer a saved connection (blitcp creds add) or the AZURE_STORAGE_CONNECTION_STRING env var."
+msgstr "Azure ストレージアカウントキー。警告：コマンドラインのキーは他ユーザーから見えます。AZURE_STORAGE_KEY 環境変数か接続文字列を推奨。"
+
+msgid "Azure storage account name (with --az-key)"
+msgstr "Azure ストレージアカウント名（--az-key と併用）"
+
+msgid "Block-order fast copy with dedup — reads files in physical disk order, deduplicates identical files. Copies between local paths, SSH hosts (user@host:/path), and cloud object storage (s3:// / az:// / gs://)."
+msgstr "重複排除付きブロック順高速コピー — ファイルをディスクの物理順で読み取り、同一ファイルを重複排除。ローカルパス、SSH ホスト（user@host:/path）、クラウドオブジェクトストレージ（s3:// / az:// / gs://）間でコピーします。"
+
+msgid "Browse…"
+msgstr "参照…"
+
+msgid "Buffer size in MB (default: {n})"
+msgstr "バッファサイズ（MB、既定：{n}）"
+
+msgid "CLOUD"
+msgstr "クラウド"
+
+msgid "Can't install into the packaged app"
+msgstr "パッケージ済みアプリにはインストールできません"
+
+msgid "Cancel"
+msgstr "キャンセル"
+
+msgid "Check for updates"
+msgstr "更新を確認"
+
+msgid "Checking…"
+msgstr "確認中…"
+
+msgid "Close"
+msgstr "閉じる"
+
+msgid "CoW shared blocks; modifying one does not affect peers"
+msgstr "CoW 共有ブロック。1 つを変更しても他に影響しません"
+
+msgid "Comma-separated metadata kinds to preserve on the destination: mode,times (default), owner, xattr, acl. Special tokens: all, none. Examples: --preserve=owner,xattr  --preserve=all. Under --use-sudo, --preserve=all is implicit unless you pass --preserve explicitly. Destination filesystems that can't store some metadata (FAT32 for xattrs, etc.) drop those attributes; a one-line summary reports what was preserved vs dropped."
+msgstr "宛先で保持するメタデータ種別（カンマ区切り）：mode,times（既定）、owner、xattr、acl、または all / none。"
+
+msgid "Concurrent uploads/downloads for object storage (s3/az/gs). Small-file transfers are latency-bound, so this defaults higher than --threads (default: {n})"
+msgstr "オブジェクトストレージ（s3/az/gs）の同時アップロード/ダウンロード数。小ファイル転送はレイテンシ律速のため、既定は --threads より高め（既定：{n}）"
+
+msgid "Confirm"
+msgstr "確認"
+
+msgid "Confirm passphrase"
+msgstr "パスフレーズの確認"
+
+msgid "Core engine installed"
+msgstr "エンジンをインストールしました"
+
+msgid "Core engine missing"
+msgstr "エンジンが見つかりません"
+
+msgid "Could not check destination free space — continuing"
+msgstr "宛先の空き容量を確認できません — 続行します"
+
+msgid "Could not check remote space — continuing anyway"
+msgstr "リモートの空き容量を確認できません — 続行します"
+
+msgid "Could not download blitcp.py:"
+msgstr "blitcp をダウンロードできませんでした："
+
+msgid "Could not download the update:"
+msgstr "更新をダウンロードできませんでした："
+
+msgid "Could not replace the application:"
+msgstr "アプリケーションを置き換えられませんでした："
+
+msgid "Couldn't find {asset} in release {tag}."
+msgstr "リリース {tag} に {asset} が見つかりません。"
+
+msgid "Custom S3-compatible endpoint (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+msgstr "カスタム S3 互換エンドポイント（MinIO、Cloudflare R2、Wasabi、Backblaze B2）。"
+
+msgid "DEPENDENCIES"
+msgstr "依存関係"
+
+msgid "DESTINATION"
+msgstr "宛先"
+
+msgid "DONE"
+msgstr "完了"
+
+msgid "DONE — Nothing to copy"
+msgstr "完了 — コピーするものはありません"
+
+msgid "Data:"
+msgstr "データ："
+
+msgid "Dest:"
+msgstr "宛先："
+
+msgid "Destination disk:"
+msgstr "宛先ディスク："
+
+msgid "Disable SMB3 transport encryption (on by default)"
+msgstr "SMB3 転送暗号化を無効化（既定で有効）"
+
+msgid "Disable deduplication"
+msgstr "重複排除を無効化"
+
+msgid "Disable persistent hash cache (cross-run dedup database)"
+msgstr "永続ハッシュキャッシュを無効化（実行間の重複排除 DB）"
+
+msgid "Disk layout resolved: {n}/{total} files mapped"
+msgstr "ディスクレイアウト解決：{n}/{total} ファイルをマッピング"
+
+msgid "Download & install"
+msgstr "ダウンロードしてインストール"
+
+msgid "Download and install latest (or a specific version)"
+msgstr "最新版（または指定バージョン）をダウンロードしてインストール"
+
+msgid "Download failed"
+msgstr "ダウンロード失敗"
+
+msgid "Download manually:"
+msgstr "手動でダウンロード："
+
+msgid "Download only"
+msgstr "ダウンロードのみ"
+
+msgid "Downloading…"
+msgstr "ダウンロード中…"
+
+msgid "Duplicate handling:"
+msgstr "重複の処理："
+
+msgid "Enable SSH compression (good for slow links)"
+msgstr "SSH 圧縮を有効化（低速回線向け）"
+
+msgid "Enough space"
+msgstr "十分な空き容量"
+
+msgid "Error copying {name}: {err}"
+msgstr "{name} のコピーでエラー：{err}"
+
+msgid "Errors:"
+msgstr "エラー："
+
+msgid "Exclude files/dirs by name or glob (e.g. .venv, *.bat, .git*). Matching directories are pruned. Repeatable."
+msgstr "名前または glob でファイル/ディレクトリを除外（例：.venv、*.bat、.git*）。一致したディレクトリは丸ごと除外。"
+
+msgid "FAILED"
+msgstr "失敗"
+
+msgid "FAST BLOCK-ORDER COPY"
+msgstr "高速ブロック順コピー（block-order）"
+
+msgid "FAST-COPY"
+msgstr "FAST-COPY"
+
+msgid "FS does not support links — no disk savings"
+msgstr "FS がリンク非対応 — ディスク節約なし"
+
+msgid "Failed"
+msgstr "失敗"
+
+msgid "Failed to check for updates: {err}"
+msgstr "更新確認に失敗：{err}"
+
+msgid "Failed to replace binary: {err}"
+msgstr "バイナリの置換に失敗：{err}"
+
+msgid "Files:"
+msgstr "ファイル："
+
+msgid "Free:"
+msgstr "空き："
+
+msgid "Full copies:"
+msgstr "完全コピー："
+
+msgid "Google Cloud project for gs://"
+msgstr "gs:// 用の Google Cloud プロジェクト"
+
+msgid "Hardlinks:"
+msgstr "ハードリンク："
+
+msgid "Hash algorithm for dedup/verify. auto (default): xxh128 if installed, else sha256. xxh128: force xxh128 (10x faster, non-cryptographic). sha256: force sha256 (cryptographic; collision-resistant)."
+msgstr "重複排除/検証用ハッシュ。auto（既定）：xxh128 があれば使用、なければ sha256。xxh128：xxHash-128 を強制。sha256：SHA-256 を強制。"
+
+msgid "Hashing {n} existing files ({done} already hashed)..."
+msgstr "既存 {n} ファイルをハッシュ中（{done} 件は完了）..."
+
+msgid "Hashing {n} files on remote source..."
+msgstr "リモートソースの {n} ファイルをハッシュ中..."
+
+msgid "Hashing {n} files on remote..."
+msgstr "リモートの {n} ファイルをハッシュ中..."
+
+msgid "Hashing {n} files to check for changes..."
+msgstr "変更確認のため {n} ファイルをハッシュ中..."
+
+msgid "Hashing {n} files..."
+msgstr "{n} ファイルをハッシュ中..."
+
+msgid "Hashing..."
+msgstr "ハッシュ中..."
+
+msgid "Headroom:"
+msgstr "余裕："
+
+msgid "Install"
+msgstr "インストール"
+
+msgid "Language saved — restart to apply everywhere"
+msgstr "言語を保存しました — 完全に反映するには再起動してください"
+
+msgid "Links:"
+msgstr "リンク："
+
+msgid "Message language: "
+msgstr "メッセージの言語："
+
+msgid "NOT ENOUGH SPACE — need {size} more"
+msgstr "空き容量不足 — あと {size} 必要です"
+
+msgid "Named-connection file for cloud credentials. Reference a connection by name (e.g. aws-dev, aws-dev:folder) or in a URL as s3://name@bucket/key. Defaults to credentials.json next to blitcp (override with this flag or $BLITCP_CREDENTIALS). Manage it with: blitcp creds add/list/edit/remove/test."
+msgstr "クラウド資格情報の名前付き接続ファイル。接続を名前で参照できます（例：aws-dev）。"
+
+msgid "One or more sources, followed by the destination. A source can be a folder, file, or glob pattern (e.g. *.zip). Multiple sources are copied side-by-side under destination, preserving their basenames (cp -r style). Glob in the basename also works for SSH sources, e.g. user@host:/data/*.tar.gz"
+msgstr "1 つ以上のソースの後に宛先。ソースはフォルダー、ファイル、glob（例：*.zip）。複数ソースは basename を保ったまま宛先の下に並べてコピーされます（cp -r 方式）。SSH ソースでも basename の glob が使えます（例：user@host:/data/*.tar.gz）"
+
+msgid "Overwrite all files, skip identical-file detection"
+msgstr "全ファイルを上書きし、同一ファイル検出をスキップ"
+
+msgid "Path to SSH private key for remote destination"
+msgstr "リモート宛先用 SSH 秘密鍵のパス"
+
+msgid "Path to SSH private key for remote source"
+msgstr "リモートソース用 SSH 秘密鍵のパス"
+
+msgid "Path to a GCS service-account JSON key file"
+msgstr "GCS サービスアカウント JSON キーのパス"
+
+msgid "Permission denied — click to unlock with sudo"
+msgstr "権限がありません — クリックして sudo で解除"
+
+msgid "Phase 1 — Scanning source"
+msgstr "フェーズ 1 — ソースをスキャン中"
+
+msgid "Phase 1b — Indexing existing files"
+msgstr "フェーズ 1b — 既存ファイルのインデックス作成"
+
+msgid "Phase 2 — Deduplication"
+msgstr "フェーズ 2 — 重複排除（dedup）"
+
+msgid "Phase 2b — Incremental check"
+msgstr "フェーズ 2b — 増分チェック"
+
+msgid "Phase 2b — Remote incremental check"
+msgstr "フェーズ 2b — リモート増分チェック"
+
+msgid "Phase 3 — Space check"
+msgstr "フェーズ 3 — 空き容量チェック"
+
+msgid "Phase 3 — Space check (remote destination)"
+msgstr "フェーズ 3 — 空き容量チェック（リモート先）"
+
+msgid "Phase 3 — Space check (remote)"
+msgstr "フェーズ 3 — 空き容量チェック（リモート）"
+
+msgid "Phase 4 — Local-to-remote copy"
+msgstr "フェーズ 4 — ローカル → リモートコピー"
+
+msgid "Phase 4 — Mapping physical disk layout"
+msgstr "フェーズ 4 — ディスク物理レイアウトのマッピング"
+
+msgid "Phase 4 — Remote-to-local copy"
+msgstr "フェーズ 4 — リモート → ローカルコピー"
+
+msgid "Phase 4 — Remote-to-remote copy"
+msgstr "フェーズ 4 — リモート → リモートコピー"
+
+msgid "Phase 5 — Block copy"
+msgstr "フェーズ 5 — ブロックコピー"
+
+msgid "Phase 5 — Remote copy"
+msgstr "フェーズ 5 — リモートコピー"
+
+msgid "Phase 5 — Remote-to-local copy"
+msgstr "フェーズ 5 — リモート → ローカルコピー"
+
+msgid "Phase 5 — Remote-to-remote copy (relay)"
+msgstr "フェーズ 5 — リモート → リモートコピー（リレー）"
+
+msgid "Phase 6 — Verification"
+msgstr "フェーズ 6 — 検証"
+
+msgid "Preview plan"
+msgstr "プランをプレビュー"
+
+msgid "Prompt for SSH password for remote destination"
+msgstr "リモート宛先の SSH パスワードを求める"
+
+msgid "Prompt for SSH password for remote source"
+msgstr "リモートソースの SSH パスワードを求める"
+
+msgid "Prompt for the SMB password"
+msgstr "SMB パスワードの入力を求める"
+
+msgid "Re-exec self under sudo if not already root. sudo will prompt for the password on the terminal. Useful when source or destination needs root (e.g. /var/lib/longhorn/replicas). Linux/macOS only."
+msgstr "root でなければ sudo で再実行します。sudo が端末でパスワードを求めます。"
+
+msgid "Ready"
+msgstr "準備完了"
+
+msgid "Reflinks:"
+msgstr "Reflink："
+
+msgid "Reject SSH host keys not already in known_hosts instead of the interactive trust-on-first-use prompt. Use for CI/automated runs to prevent first-connection MITM."
+msgstr "known_hosts にない SSH ホストキーを、対話的な初回信頼ではなく拒否します。"
+
+msgid "Rekey"
+msgstr "キー再設定"
+
+msgid "Reload"
+msgstr "再読み込み"
+
+msgid "Remote incremental check complete:"
+msgstr "リモート増分チェック完了："
+
+msgid "Required:"
+msgstr "必要："
+
+msgid "Run again"
+msgstr "再実行"
+
+msgid "SMB port (default: 445)"
+msgstr "SMB ポート（既定：445）"
+
+msgid "SOURCES"
+msgstr "ソース"
+
+msgid "SSH"
+msgstr "SSH"
+
+msgid "SSH (--ssh-no-sftp) tar batch size in MB (default: 100). Bigger = fewer round-trips; smaller = finer resume granularity. This is NOT --buffer (that's the block-copy I/O buffer)."
+msgstr "SSH（--ssh-no-sftp）の tar バッチサイズ（MB、既定：100）。大きいほど往復が減り、小さいほど進捗表示が頻繁になります。"
+
+msgid "SSH (no SFTP) — local → remote  [dedup · incremental · verify]"
+msgstr "SSH（SFTP なし）— ローカル → リモート  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → local  [dedup · incremental · verify]"
+msgstr "SSH（SFTP なし）— リモート → ローカル  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → remote  [dedup · incremental · verify]"
+msgstr "SSH（SFTP なし）— リモート → リモート  [dedup · incremental · verify]"
+
+msgid "SSH port for remote destination (default: 22)"
+msgstr "リモート宛先の SSH ポート（既定：22）"
+
+msgid "SSH port for remote source (default: 22)"
+msgstr "リモートソースの SSH ポート（既定：22）"
+
+msgid "SSH — Connecting"
+msgstr "SSH — 接続中"
+
+msgid "SSH — Connecting to destination"
+msgstr "SSH — 接続先へ接続中"
+
+msgid "SSH — Connecting to source"
+msgstr "SSH — ソースへ接続中"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "PATH をスキャンし、サイズで重複排除インデックスに登録。同期時、同サイズのファイルは遅延ハッシュされ、コピーの代わりに reflink されます。"
+
+msgid "Scanning existing files in {path} ..."
+msgstr "{path} の既存ファイルをスキャン中 ..."
+
+msgid "Scanning files..."
+msgstr "ファイルをスキャン中..."
+
+msgid "Scanning remote source..."
+msgstr "リモートソースをスキャン中..."
+
+msgid "Scanning... {n} files"
+msgstr "スキャン中... {n} ファイル"
+
+msgid "Select this path"
+msgstr "このパスを選択"
+
+msgid "Set as destination"
+msgstr "宛先に設定"
+
+msgid "Set as source"
+msgstr "ソースに設定"
+
+msgid "Show available updates and release notes"
+msgstr "利用可能な更新とリリースノートを表示"
+
+msgid "Show copy plan without copying"
+msgstr "コピーせずにコピープランを表示"
+
+msgid "Show version and exit"
+msgstr "バージョンを表示して終了"
+
+msgid "Skip post-copy verification"
+msgstr "コピー後の検証をスキップ"
+
+msgid "Skip space check, copy even if not enough space"
+msgstr "空き容量チェックをスキップし、不足していてもコピー"
+
+msgid "Skipped {n} entries with unsafe paths"
+msgstr "安全でないパスの {n} 件をスキップ"
+
+msgid "Skipped {n} problematic entries"
+msgstr "問題のある {n} 件をスキップ"
+
+msgid "Skipped {n} symlinks ({reason}):"
+msgstr "{n} 件のシンボリックリンクをスキップ（{reason}）："
+
+msgid "Skipped {n} unreadable files:"
+msgstr "読み取れない {n} ファイルをスキップ："
+
+msgid "Skipped:"
+msgstr "スキップ："
+
+msgid "Source:"
+msgstr "ソース："
+
+msgid "Source: {src} > Free: {free}"
+msgstr "ソース：{src} > 空き：{free}"
+
+msgid "Speed:"
+msgstr "速度："
+
+msgid "Start transfer"
+msgstr "転送を開始"
+
+msgid "Symlinks:"
+msgstr "シンボリックリンク："
+
+msgid "Threads for hashing/layout (default: {n})"
+msgstr "ハッシュ/レイアウトのスレッド数（既定：{n}）"
+
+msgid "Time:"
+msgstr "時間："
+
+msgid "To copy:"
+msgstr "コピー対象："
+
+msgid "Total:"
+msgstr "合計："
+
+msgid "Transfer over plain SSH using tar (no SFTP subsystem). For servers with SSH enabled but SFTP disabled (e.g. some NAS). Supports dedup/incremental/verify."
+msgstr "tar による素の SSH 転送（SFTP サブシステム不使用）。SSH は有効だが SFTP が無効なサーバー向け（例：Synology NAS）。"
+
+msgid "Unexpected download URL (not HTTPS GitHub):"
+msgstr "予期しないダウンロード URL（HTTPS の GitHub ではありません）："
+
+msgid "Unknown SSH host"
+msgstr "未知の SSH ホスト"
+
+msgid "Unlock"
+msgstr "ロック解除"
+
+msgid "Up to date"
+msgstr "最新です"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "Update available"
+msgstr "更新があります"
+
+msgid "Update downloaded"
+msgstr "更新をダウンロードしました"
+
+msgid "Update failed"
+msgstr "更新に失敗しました"
+
+msgid "Update installed"
+msgstr "更新をインストールしました"
+
+msgid "Use --force to attempt anyway, or free up space on the destination."
+msgstr "--force で強行するか、宛先の空き容量を確保してください。"
+
+msgid "Use --force to skip this check."
+msgstr "このチェックをスキップするには --force を使用してください。"
+
+msgid "Username for smb:// / UNC shares (overrides any user in the URL)"
+msgstr "smb:// / UNC 共有のユーザー名（URL 内のユーザーより優先）"
+
+msgid "VERSION"
+msgstr "バージョン"
+
+msgid "Verbose output (full FS detection details, etc.)"
+msgstr "詳細出力（FS 検出の全詳細など）"
+
+msgid "Verification failed:"
+msgstr "検証に失敗しました："
+
+msgid "Verification failures: {n}"
+msgstr "検証失敗：{n} 件"
+
+msgid "Verify:"
+msgstr "検証："
+
+msgid "Verifying"
+msgstr "検証中"
+
+msgid "Verifying…"
+msgstr "検証中…"
+
+msgid "Warning: Could not check free space: {err}"
+msgstr "警告：空き容量を確認できません：{err}"
+
+msgid "While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."
+msgstr "--index-existing でドライブをハッシュする際、ドライブ上で互いに重複しているファイルからも容量を回収（インプレース reflink マージ）。"
+
+msgid "Windows/AD domain for SMB authentication"
+msgstr "SMB 認証用の Windows/AD ドメイン"
+
+msgid "Write structured JSON log to file"
+msgstr "構造化 JSON ログをファイルに書き込む"
+
+msgid "already exist,"
+msgstr "既に存在、"
+
+msgid "copy options"
+msgstr "コピーオプション"
+
+msgid "credentials.json is locked"
+msgstr "credentials.json はロックされています"
+
+msgid "example — edit before running"
+msgstr "例 — 実行前に編集してください"
+
+msgid "blitcp.py (the copy engine) was not found next to the GUI."
+msgstr "GUI の隣に blitcp（コピーエンジン）が見つかりませんでした。"
+
+msgid "files"
+msgstr "ファイル"
+
+msgid "files unchanged"
+msgstr "ファイルは未変更"
+
+msgid "free"
+msgstr "空き"
+
+msgid "hash"
+msgstr "ハッシュ"
+
+msgid "info & self-update"
+msgstr "情報とセルフアップデート"
+
+msgid "language"
+msgstr "言語"
+
+msgid "locked"
+msgstr "ロック中"
+
+msgid "node_modules is excluded by default from BOTH the copy and --index-existing (huge, regenerable, and full of tiny identical files). Pass this to include it."
+msgstr "node_modules は既定でコピーと --index-existing の両方から除外されます（巨大で再生成可能）。このフラグで含めます。"
+
+msgid "not installed"
+msgstr "未インストール"
+
+msgid "passed"
+msgstr "合格"
+
+msgid "pointer to canonical; canonical must not be deleted"
+msgstr "正規ファイルへのポインター。正規ファイルは削除不可"
+
+msgid "shared inode; zero extra disk"
+msgstr "inode 共有。追加ディスクゼロ"
+
+msgid "single · local / SSH / cloud"
+msgstr "単一 · ローカル / SSH / クラウド"
+
+msgid "ssh options (remote source / destination)"
+msgstr "ssh オプション（リモートソース / 宛先）"
+
+msgid "testing…"
+msgstr "テスト中…"
+
+msgid "threads"
+msgstr "スレッド"
+
+msgid "to create"
+msgstr "作成予定"
+
+msgid "total"
+msgstr "合計"
+
+msgid "untested"
+msgstr "未テスト"
+
+msgid "verify mismatch: {name}"
+msgstr "検証不一致：{name}"
+
+msgid "{n} copied"
+msgstr "{n} 件コピー"
+
+msgid "{n} linked"
+msgstr "{n} 件リンク"
+
+msgid "{n} skipped"
+msgstr "{n} 件スキップ"
+
+msgid "{size} saved by dedup"
+msgstr "重複排除で {size} 節約"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "subcommands:\n  creds <sub>      credentials ファイルに保存されたクラウド/SSH 接続プロファイルを管理：\n                   add、list、edit、remove、test、encrypt/decrypt、lock。\n                   ヘルプは 'blitcp creds' を実行。\n  ls <target>      クラウドの場所（保存済み接続名または s3:// / az:// / gs:// URL）\n                   またはリモート SSH ディレクトリ（SFTP 経由）を一覧表示。\n                   別名：list-objects。ヘルプは 'blitcp ls -h'。\n\n例:\n  blitcp /data /media/usb/data           ローカル → ローカル\n  blitcp /data user@host:/backup         ローカル → リモート（SSH）\n  blitcp user@host:/data /local/backup   リモート → ローカル\n  blitcp /data s3://bucket/backup        ローカル → クラウド\n  blitcp creds add aws-dev               接続プロファイルを保存\n  blitcp ls aws-dev                      保存済みクラウド接続を一覧\n  blitcp ls user@host:/var/log           リモート SSH ディレクトリを一覧\n"
+
+msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
+msgstr "メッセージの言語：{langs}。BLITCP_LANG とシステム locale より優先。マシン出力（--log-file）は英語のまま。"
+
+
+# GUI deep-path strings + Settings/language section (2026-08-06)
+msgid "Access denied — run as Administrator to browse this folder"
+msgstr "アクセスが拒否されました — このフォルダーを参照するには管理者として実行してください"
+
+msgid "Add at least one source"
+msgstr "少なくとも1つのソースを追加してください"
+
+msgid "Added {0} as source"
+msgstr "{0} をソースとして追加しました"
+
+msgid "BLITCP"
+msgstr "BLITCP"
+
+msgid "Browse SSH"
+msgstr "SSH を参照"
+
+msgid "Browse SSH server"
+msgstr "SSH サーバーを参照"
+
+msgid "Browse cloud"
+msgstr "クラウドを参照"
+
+msgid "Browse cloud storage"
+msgstr "クラウドストレージを参照"
+
+msgid "Browse files"
+msgstr "ファイルを参照"
+
+msgid "Connections"
+msgstr "接続"
+
+msgid "Copy in progress — update not applied"
+msgstr "コピー実行中 — 更新は適用されませんでした"
+
+msgid "Could not check for updates"
+msgstr "更新を確認できませんでした"
+
+msgid "Could not read credentials:"
+msgstr "資格情報を読み取れませんでした："
+
+msgid "Could not save history:"
+msgstr "履歴を保存できませんでした："
+
+msgid "Could not save:"
+msgstr "保存できませんでした："
+
+msgid "Could not start blitcp.py"
+msgstr "blitcp.py を起動できませんでした"
+
+msgid "Dark mode"
+msgstr "ダークモード"
+
+msgid "Dedup saved"
+msgstr "重複排除の節約"
+
+msgid "Documentation"
+msgstr "ドキュメント"
+
+msgid "Downloading"
+msgstr "ダウンロード中："
+
+msgid "Downloading blitcp.py"
+msgstr "blitcp.py をダウンロード中"
+
+msgid "Dry run complete"
+msgstr "ドライラン完了"
+
+msgid "Dry run failed — see log"
+msgstr "ドライラン失敗 — ログを確認してください"
+
+msgid "ETA"
+msgstr "残り時間"
+
+msgid "Enter passphrase"
+msgstr "パスフレーズを入力"
+
+msgid "Fill in a random 6-word passphrase (~77 bits)"
+msgstr "ランダムな6語のパスフレーズを入力（約77ビット）"
+
+msgid "Finish or cancel the running copy before updating"
+msgstr "更新の前に実行中のコピーを完了または中止してください"
+
+msgid "Folder = navigate · file = click to select · double-click = set as source."
+msgstr "フォルダー = 移動 · ファイル = クリックで選択 · ダブルクリック = ソースに設定。"
+
+msgid "Generate"
+msgstr "生成"
+
+msgid "Generated ({0} bits). Save it in your password manager now — it is shown only here."
+msgstr "生成されました（{0} ビット）。今すぐパスワードマネージャーに保存してください — 表示されるのはここだけです。"
+
+msgid "History"
+msgstr "履歴"
+
+msgid "Install already running…"
+msgstr "インストールは既に実行中です…"
+
+msgid "Install failed — see terminal"
+msgstr "インストール失敗 — ターミナルを確認してください"
+
+msgid "Installed ✓"
+msgstr "インストール済み ✓"
+
+msgid "Installing"
+msgstr "インストール中:"
+
+msgid "Interface language"
+msgstr "インターフェースの言語"
+
+msgid "LANGUAGE"
+msgstr "言語"
+
+msgid "Language, dependencies, version, updates."
+msgstr "言語、依存関係、バージョン、更新。"
+
+msgid "Light mode"
+msgstr "ライトモード"
+
+msgid "Loaded transfer — review and Start"
+msgstr "転送を読み込みました — 確認して開始してください"
+
+msgid "Many sources → one destination. With more than one source, local only."
+msgstr "複数のソース → 1つの宛先。ソースが複数の場合はローカルのみ。"
+
+msgid "Name already exists"
+msgstr "その名前は既に存在します"
+
+msgid "New transfer"
+msgstr "新規転送"
+
+msgid "Past transfers from the saved JSON logs."
+msgstr "保存された JSON ログからの過去の転送。"
+
+msgid "Progress"
+msgstr "進行状況"
+
+msgid "Re-bound credentials.json to this blitcp.py"
+msgstr "credentials.json をこの blitcp.py に再バインドしました"
+
+msgid "Read from / saved to credentials.json. Double-click to edit."
+msgstr "credentials.json から読み込み/保存。ダブルクリックで編集。"
+
+msgid "Rekey failed:"
+msgstr "再キー化に失敗しました："
+
+msgid "Rekey needs blitcp.py"
+msgstr "再キー化には blitcp.py が必要です"
+
+msgid "Removed"
+msgstr "削除しました"
+
+msgid "Set a destination"
+msgstr "宛先を設定してください"
+
+msgid "Settings"
+msgstr "設定"
+
+msgid "Speed"
+msgstr "速度"
+
+msgid "This <b>credentials.json</b> was bound to a different blitcp.py (tamper check). If you just updated blitcp, press <b>Rekey</b> to re-bind it."
+msgstr "この <b>credentials.json</b> は別の blitcp.py にバインドされていました（改ざんチェック）。blitcp を更新した直後なら、<b>Rekey</b> を押して再バインドしてください。"
+
+msgid "This PC · local files"
+msgstr "この PC · ローカルファイル"
+
+msgid "Transfer"
+msgstr "転送"
+
+msgid "Unlock credentials.json"
+msgstr "credentials.json のロックを解除"
+
+msgid "Unlock credentials.json first"
+msgstr "先に credentials.json のロックを解除してください"
+
+msgid "Update check needs blitcp.py"
+msgstr "更新の確認には blitcp.py が必要です"
+
+msgid "blitcp.py not found next to the GUI"
+msgstr "GUI の隣に blitcp.py が見つかりません"
+
+msgid "credentials.json is not encrypted — nothing to rekey"
+msgstr "credentials.json は暗号化されていません — 再キー化は不要です"
+
+msgid "drive"
+msgstr "ドライブ"
+
+msgid "failed"
+msgstr "失敗"
+
+msgid "folder"
+msgstr "フォルダー"
+
+msgid "local only when multiple"
+msgstr "複数の場合はローカルのみ"
+
+msgid "sudo authenticated"
+msgstr "sudo 認証成功"
+
+msgid "sudo: authentication failed"
+msgstr "sudo：認証に失敗しました"
+
+msgid "Language"
+msgstr "言語"
+
+msgid "Later"
+msgstr "後で"
+
+msgid "Restart blitcp to apply the new language everywhere?"
+msgstr "新しい言語をすべてに適用するため blitcp を再起動しますか？"
+
+msgid "Restart now"
+msgstr "今すぐ再起動"
+
+msgid "Add source"
+msgstr "ソースを追加"
+
+msgid "Advanced"
+msgstr "詳細設定"
+
+msgid "Cloud"
+msgstr "クラウド"
+
+msgid "Local"
+msgstr "ローカル"
+
+msgid "dedup"
+msgstr "重複排除"
+
+msgid "verify"
+msgstr "検証"
+
+msgid "--use-sudo"
+msgstr "--use-sudo"
+
+msgid "Buffer (MB)"
+msgstr "バッファ (MB)"
+
+msgid "COPY"
+msgstr "コピー"
+
+msgid "Cloud concurrency"
+msgstr "クラウド並列数"
+
+msgid "EXCLUDE PATTERNS"
+msgstr "除外パターン"
+
+msgid "FLAGS"
+msgstr "フラグ"
+
+msgid "INDEX EXISTING (reflink dedup vs pre-existing files)"
+msgstr "既存のインデックス（既存ファイルとの reflink 重複排除）"
+
+msgid "PRESERVE METADATA"
+msgstr "メタデータを保持"
+
+msgid "SSH chunk (MB)"
+msgstr "SSH チャンク (MB)"
+
+msgid "Tar batch size for SSH (--ssh-no-sftp) transfers. Not the same as Buffer."
+msgstr "SSH（--ssh-no-sftp）転送の tar バッチサイズ。バッファとは異なります。"
+
+msgid "acl"
+msgstr "acl"
+
+msgid "dedup existing"
+msgstr "既存を重複排除"
+
+msgid "force"
+msgstr "強制"
+
+msgid "include node_modules"
+msgstr "node_modules を含める"
+
+msgid "mode"
+msgstr "権限"
+
+msgid "no hash cache"
+msgstr "ハッシュキャッシュなし"
+
+msgid "overwrite all"
+msgstr "すべて上書き"
+
+msgid "owner"
+msgstr "所有者"
+
+msgid "times"
+msgstr "タイムスタンプ"
+
+msgid "xattr"
+msgstr "xattr"
+

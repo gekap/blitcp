@@ -1,0 +1,951 @@
+# blitcp translations — de
+# GLOSSARY (keep in English inside translations): dedup, hard link, reflink,
+# sparse, tar pipe, SSH, SFTP, xxHash, FIEMAP, block-order, manifest.
+# First pass is machine-generated — native-speaker review welcome (PRs!).
+msgid ""
+msgstr ""
+"Project-Id-Version: blitcp\n"
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "+ add folder…"
+msgstr "+ Ordner hinzufügen…"
+
+msgid "+ add…"
+msgstr "+ hinzufügen…"
+
+msgid "--force: proceeding anyway"
+msgstr "--force: fahre trotzdem fort"
+
+msgid "--force: proceeding anyway (copy may fail mid-way)"
+msgstr "--force: fahre trotzdem fort (Kopie kann mittendrin fehlschlagen)"
+
+msgid "0 / 0 files"
+msgstr "0 / 0 Dateien"
+
+msgid "AWS named profile from ~/.aws/credentials"
+msgstr "Benanntes AWS-Profil aus ~/.aws/credentials"
+
+msgid "AWS region for s3:// (default: us-east-1)"
+msgstr "AWS-Region für s3:// (Standard: us-east-1)"
+
+msgid "Add"
+msgstr "Hinzufügen"
+
+msgid "Add connection"
+msgstr "Verbindung hinzufügen"
+
+msgid "Azure Blob connection string (or env AZURE_STORAGE_CONNECTION_STRING)"
+msgstr "Azure-Blob-Connection-String (oder env AZURE_STORAGE_CONNECTION_STRING)"
+
+msgid "Azure storage account key. WARNING: a key passed on the command line is visible to other users via `ps` and is saved in shell history. Prefer a saved connection (blitcp creds add) or the AZURE_STORAGE_CONNECTION_STRING env var."
+msgstr "Azure-Storage-Kontoschlüssel. WARNUNG: Ein Schlüssel auf der Kommandozeile ist für andere Benutzer sichtbar; besser AZURE_STORAGE_KEY-Env oder Connection-String verwenden."
+
+msgid "Azure storage account name (with --az-key)"
+msgstr "Azure-Storage-Kontoname (mit --az-key)"
+
+msgid "Block-order fast copy with dedup — reads files in physical disk order, deduplicates identical files. Copies between local paths, SSH hosts (user@host:/path), and cloud object storage (s3:// / az:// / gs://)."
+msgstr "Schnelles Block-Order-Kopieren mit Dedup — liest Dateien in physischer Disk-Reihenfolge und dedupliziert identische Dateien. Kopiert zwischen lokalen Pfaden, SSH-Hosts (user@host:/pfad) und Cloud-Object-Storage (s3:// / az:// / gs://)."
+
+msgid "Browse…"
+msgstr "Durchsuchen…"
+
+msgid "Buffer size in MB (default: {n})"
+msgstr "Puffergröße in MB (Standard: {n})"
+
+msgid "CLOUD"
+msgstr "CLOUD"
+
+msgid "Can't install into the packaged app"
+msgstr "Installation in die paketierte App nicht möglich"
+
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgid "Check for updates"
+msgstr "Nach Updates suchen"
+
+msgid "Checking…"
+msgstr "Prüfe…"
+
+msgid "Close"
+msgstr "Schließen"
+
+msgid "CoW shared blocks; modifying one does not affect peers"
+msgstr "gemeinsame CoW-Blöcke; Änderung eines beeinflusst die anderen nicht"
+
+msgid "Comma-separated metadata kinds to preserve on the destination: mode,times (default), owner, xattr, acl. Special tokens: all, none. Examples: --preserve=owner,xattr  --preserve=all. Under --use-sudo, --preserve=all is implicit unless you pass --preserve explicitly. Destination filesystems that can't store some metadata (FAT32 for xattrs, etc.) drop those attributes; a one-line summary reports what was preserved vs dropped."
+msgstr "Kommagetrennte Metadaten-Arten, die am Ziel erhalten bleiben: mode,times (Standard), owner, xattr, acl, oder all / none."
+
+msgid "Concurrent uploads/downloads for object storage (s3/az/gs). Small-file transfers are latency-bound, so this defaults higher than --threads (default: {n})"
+msgstr "Parallele Up-/Downloads für Object Storage (s3/az/gs). Kleine Dateien sind latenzgebunden, daher höherer Standard als --threads (Standard: {n})"
+
+msgid "Confirm"
+msgstr "Bestätigen"
+
+msgid "Confirm passphrase"
+msgstr "Passphrase bestätigen"
+
+msgid "Core engine installed"
+msgstr "Engine installiert"
+
+msgid "Core engine missing"
+msgstr "Engine fehlt"
+
+msgid "Could not check destination free space — continuing"
+msgstr "Freier Speicher am Ziel nicht prüfbar — fahre fort"
+
+msgid "Could not check remote space — continuing anyway"
+msgstr "Remote-Speicher nicht prüfbar — fahre trotzdem fort"
+
+msgid "Could not download blitcp.py:"
+msgstr "blitcp konnte nicht heruntergeladen werden:"
+
+msgid "Could not download the update:"
+msgstr "Update konnte nicht heruntergeladen werden:"
+
+msgid "Could not replace the application:"
+msgstr "Anwendung konnte nicht ersetzt werden:"
+
+msgid "Couldn't find {asset} in release {tag}."
+msgstr "{asset} in Release {tag} nicht gefunden."
+
+msgid "Custom S3-compatible endpoint (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+msgstr "Eigener S3-kompatibler Endpunkt (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+
+msgid "DEPENDENCIES"
+msgstr "ABHÄNGIGKEITEN"
+
+msgid "DESTINATION"
+msgstr "ZIEL"
+
+msgid "DONE"
+msgstr "FERTIG"
+
+msgid "DONE — Nothing to copy"
+msgstr "FERTIG — Nichts zu kopieren"
+
+msgid "Data:"
+msgstr "Daten:"
+
+msgid "Dest:"
+msgstr "Ziel:"
+
+msgid "Destination disk:"
+msgstr "Ziellaufwerk:"
+
+msgid "Disable SMB3 transport encryption (on by default)"
+msgstr "SMB3-Transportverschlüsselung deaktivieren (standardmäßig an)"
+
+msgid "Disable deduplication"
+msgstr "Deduplizierung deaktivieren"
+
+msgid "Disable persistent hash cache (cross-run dedup database)"
+msgstr "Persistenten Hash-Cache deaktivieren (laufübergreifende Dedup-Datenbank)"
+
+msgid "Disk layout resolved: {n}/{total} files mapped"
+msgstr "Disk-Layout ermittelt: {n}/{total} Dateien zugeordnet"
+
+msgid "Download & install"
+msgstr "Herunterladen & installieren"
+
+msgid "Download and install latest (or a specific version)"
+msgstr "Neueste (oder bestimmte) Version herunterladen und installieren"
+
+msgid "Download failed"
+msgstr "Download fehlgeschlagen"
+
+msgid "Download manually:"
+msgstr "Manuell herunterladen:"
+
+msgid "Download only"
+msgstr "Nur herunterladen"
+
+msgid "Downloading…"
+msgstr "Lade herunter…"
+
+msgid "Duplicate handling:"
+msgstr "Duplikat-Behandlung:"
+
+msgid "Enable SSH compression (good for slow links)"
+msgstr "SSH-Kompression aktivieren (gut für langsame Verbindungen)"
+
+msgid "Enough space"
+msgstr "Genug Speicherplatz"
+
+msgid "Error copying {name}: {err}"
+msgstr "Fehler beim Kopieren von {name}: {err}"
+
+msgid "Errors:"
+msgstr "Fehler:"
+
+msgid "Exclude files/dirs by name or glob (e.g. .venv, *.bat, .git*). Matching directories are pruned. Repeatable."
+msgstr "Dateien/Ordner per Name oder Glob ausschließen (z. B. .venv, *.bat, .git*). Passende Ordner werden komplett übersprungen."
+
+msgid "FAILED"
+msgstr "FEHLGESCHLAGEN"
+
+msgid "FAST BLOCK-ORDER COPY"
+msgstr "SCHNELLES BLOCK-ORDER-KOPIEREN"
+
+msgid "FAST-COPY"
+msgstr "FAST-COPY"
+
+msgid "FS does not support links — no disk savings"
+msgstr "Dateisystem unterstützt keine Links — keine Platzersparnis"
+
+msgid "Failed"
+msgstr "Fehlgeschlagen"
+
+msgid "Failed to check for updates: {err}"
+msgstr "Update-Prüfung fehlgeschlagen: {err}"
+
+msgid "Failed to replace binary: {err}"
+msgstr "Binary konnte nicht ersetzt werden: {err}"
+
+msgid "Files:"
+msgstr "Dateien:"
+
+msgid "Free:"
+msgstr "Frei:"
+
+msgid "Full copies:"
+msgstr "Vollkopien:"
+
+msgid "Google Cloud project for gs://"
+msgstr "Google-Cloud-Projekt für gs://"
+
+msgid "Hardlinks:"
+msgstr "Hardlinks:"
+
+msgid "Hash algorithm for dedup/verify. auto (default): xxh128 if installed, else sha256. xxh128: force xxh128 (10x faster, non-cryptographic). sha256: force sha256 (cryptographic; collision-resistant)."
+msgstr "Hash-Algorithmus für Dedup/Verifizierung. auto (Standard): xxh128 falls installiert, sonst sha256. xxh128: xxHash-128 erzwingen. sha256: SHA-256 erzwingen."
+
+msgid "Hashing {n} existing files ({done} already hashed)..."
+msgstr "Hashe {n} vorhandene Dateien ({done} bereits gehasht)..."
+
+msgid "Hashing {n} files on remote source..."
+msgstr "Hashe {n} Dateien auf der Remote-Quelle..."
+
+msgid "Hashing {n} files on remote..."
+msgstr "Hashe {n} Dateien remote..."
+
+msgid "Hashing {n} files to check for changes..."
+msgstr "Hashe {n} Dateien zur Änderungsprüfung..."
+
+msgid "Hashing {n} files..."
+msgstr "Hashe {n} Dateien..."
+
+msgid "Hashing..."
+msgstr "Hashe..."
+
+msgid "Headroom:"
+msgstr "Reserve:"
+
+msgid "Install"
+msgstr "Installieren"
+
+msgid "Language saved — restart to apply everywhere"
+msgstr "Sprache gespeichert — Neustart zur vollständigen Übernahme"
+
+msgid "Links:"
+msgstr "Links:"
+
+msgid "Message language: "
+msgstr "Sprache der Meldungen: "
+
+msgid "NOT ENOUGH SPACE — need {size} more"
+msgstr "NICHT GENUG SPEICHERPLATZ — {size} fehlen"
+
+msgid "Named-connection file for cloud credentials. Reference a connection by name (e.g. aws-dev, aws-dev:folder) or in a URL as s3://name@bucket/key. Defaults to credentials.json next to blitcp (override with this flag or $BLITCP_CREDENTIALS). Manage it with: blitcp creds add/list/edit/remove/test."
+msgstr "Datei mit benannten Verbindungen für Cloud-Zugangsdaten. Verbindung per Name referenzieren (z. B. aws-dev)."
+
+msgid "One or more sources, followed by the destination. A source can be a folder, file, or glob pattern (e.g. *.zip). Multiple sources are copied side-by-side under destination, preserving their basenames (cp -r style). Glob in the basename also works for SSH sources, e.g. user@host:/data/*.tar.gz"
+msgstr "Eine oder mehrere Quellen, gefolgt vom Ziel. Quelle = Ordner, Datei oder Glob (z. B. *.zip). Mehrere Quellen werden nebeneinander unter dem Ziel kopiert, Basenames bleiben erhalten (wie cp -r). Glob im Basename funktioniert auch bei SSH-Quellen, z. B. user@host:/data/*.tar.gz"
+
+msgid "Overwrite all files, skip identical-file detection"
+msgstr "Alle Dateien überschreiben, Erkennung identischer Dateien überspringen"
+
+msgid "Path to SSH private key for remote destination"
+msgstr "Pfad zum SSH-Private-Key für das Remote-Ziel"
+
+msgid "Path to SSH private key for remote source"
+msgstr "Pfad zum SSH-Private-Key für die Remote-Quelle"
+
+msgid "Path to a GCS service-account JSON key file"
+msgstr "Pfad zu einer GCS-Service-Account-JSON-Schlüsseldatei"
+
+msgid "Permission denied — click to unlock with sudo"
+msgstr "Zugriff verweigert — klicken zum Entsperren mit sudo"
+
+msgid "Phase 1 — Scanning source"
+msgstr "Phase 1 — Quelle wird gescannt"
+
+msgid "Phase 1b — Indexing existing files"
+msgstr "Phase 1b — Indizierung vorhandener Dateien"
+
+msgid "Phase 2 — Deduplication"
+msgstr "Phase 2 — Deduplizierung"
+
+msgid "Phase 2b — Incremental check"
+msgstr "Phase 2b — Inkrementelle Prüfung"
+
+msgid "Phase 2b — Remote incremental check"
+msgstr "Phase 2b — Inkrementelle Prüfung (remote)"
+
+msgid "Phase 3 — Space check"
+msgstr "Phase 3 — Speicherplatzprüfung"
+
+msgid "Phase 3 — Space check (remote destination)"
+msgstr "Phase 3 — Speicherplatzprüfung (Remote-Ziel)"
+
+msgid "Phase 3 — Space check (remote)"
+msgstr "Phase 3 — Speicherplatzprüfung (remote)"
+
+msgid "Phase 4 — Local-to-remote copy"
+msgstr "Phase 4 — Kopieren lokal → remote"
+
+msgid "Phase 4 — Mapping physical disk layout"
+msgstr "Phase 4 — Physisches Disk-Layout wird ermittelt"
+
+msgid "Phase 4 — Remote-to-local copy"
+msgstr "Phase 4 — Kopieren remote → lokal"
+
+msgid "Phase 4 — Remote-to-remote copy"
+msgstr "Phase 4 — Kopieren remote → remote"
+
+msgid "Phase 5 — Block copy"
+msgstr "Phase 5 — Blockweises Kopieren"
+
+msgid "Phase 5 — Remote copy"
+msgstr "Phase 5 — Remote-Kopie"
+
+msgid "Phase 5 — Remote-to-local copy"
+msgstr "Phase 5 — Kopieren remote → lokal"
+
+msgid "Phase 5 — Remote-to-remote copy (relay)"
+msgstr "Phase 5 — Kopieren remote → remote (Relay)"
+
+msgid "Phase 6 — Verification"
+msgstr "Phase 6 — Verifizierung"
+
+msgid "Preview plan"
+msgstr "Plan-Vorschau"
+
+msgid "Prompt for SSH password for remote destination"
+msgstr "SSH-Passwort für Remote-Ziel abfragen"
+
+msgid "Prompt for SSH password for remote source"
+msgstr "SSH-Passwort für Remote-Quelle abfragen"
+
+msgid "Prompt for the SMB password"
+msgstr "SMB-Passwort abfragen"
+
+msgid "Re-exec self under sudo if not already root. sudo will prompt for the password on the terminal. Useful when source or destination needs root (e.g. /var/lib/longhorn/replicas). Linux/macOS only."
+msgstr "Neustart unter sudo, falls nicht bereits root. sudo fragt das Passwort im Terminal ab."
+
+msgid "Ready"
+msgstr "Bereit"
+
+msgid "Reflinks:"
+msgstr "Reflinks:"
+
+msgid "Reject SSH host keys not already in known_hosts instead of the interactive trust-on-first-use prompt. Use for CI/automated runs to prevent first-connection MITM."
+msgstr "SSH-Host-Keys ablehnen, die nicht bereits in known_hosts stehen, statt interaktivem Trust-on-first-use."
+
+msgid "Rekey"
+msgstr "Rekey"
+
+msgid "Reload"
+msgstr "Neu laden"
+
+msgid "Remote incremental check complete:"
+msgstr "Inkrementelle Remote-Prüfung abgeschlossen:"
+
+msgid "Required:"
+msgstr "Benötigt:"
+
+msgid "Run again"
+msgstr "Erneut ausführen"
+
+msgid "SMB port (default: 445)"
+msgstr "SMB-Port (Standard: 445)"
+
+msgid "SOURCES"
+msgstr "QUELLEN"
+
+msgid "SSH"
+msgstr "SSH"
+
+msgid "SSH (--ssh-no-sftp) tar batch size in MB (default: 100). Bigger = fewer round-trips; smaller = finer resume granularity. This is NOT --buffer (that's the block-copy I/O buffer)."
+msgstr "Tar-Batch-Größe in MB für SSH (--ssh-no-sftp) (Standard: 100). Größer = weniger Round-Trips; kleiner = häufigerer Fortschritt."
+
+msgid "SSH (no SFTP) — local → remote  [dedup · incremental · verify]"
+msgstr "SSH (ohne SFTP) — lokal → remote  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → local  [dedup · incremental · verify]"
+msgstr "SSH (ohne SFTP) — remote → lokal  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → remote  [dedup · incremental · verify]"
+msgstr "SSH (ohne SFTP) — remote → remote  [dedup · incremental · verify]"
+
+msgid "SSH port for remote destination (default: 22)"
+msgstr "SSH-Port für Remote-Ziel (Standard: 22)"
+
+msgid "SSH port for remote source (default: 22)"
+msgstr "SSH-Port für Remote-Quelle (Standard: 22)"
+
+msgid "SSH — Connecting"
+msgstr "SSH — Verbindung wird aufgebaut"
+
+msgid "SSH — Connecting to destination"
+msgstr "SSH — Verbindung zum Ziel"
+
+msgid "SSH — Connecting to source"
+msgstr "SSH — Verbindung zur Quelle"
+
+msgid "Save"
+msgstr "Speichern"
+
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "PATH scannen und Dateien nach Größe im Dedup-Index registrieren. Beim Sync werden größengleiche Dateien lazy-gehasht und reflinkt statt kopiert."
+
+msgid "Scanning existing files in {path} ..."
+msgstr "Scanne vorhandene Dateien in {path} ..."
+
+msgid "Scanning files..."
+msgstr "Scanne Dateien..."
+
+msgid "Scanning remote source..."
+msgstr "Scanne Remote-Quelle..."
+
+msgid "Scanning... {n} files"
+msgstr "Scanne... {n} Dateien"
+
+msgid "Select this path"
+msgstr "Diesen Pfad auswählen"
+
+msgid "Set as destination"
+msgstr "Als Ziel setzen"
+
+msgid "Set as source"
+msgstr "Als Quelle setzen"
+
+msgid "Show available updates and release notes"
+msgstr "Verfügbare Updates und Release Notes anzeigen"
+
+msgid "Show copy plan without copying"
+msgstr "Kopierplan anzeigen ohne zu kopieren"
+
+msgid "Show version and exit"
+msgstr "Version anzeigen und beenden"
+
+msgid "Skip post-copy verification"
+msgstr "Verifizierung nach dem Kopieren überspringen"
+
+msgid "Skip space check, copy even if not enough space"
+msgstr "Speicherplatzprüfung überspringen; auch bei zu wenig Platz kopieren"
+
+msgid "Skipped {n} entries with unsafe paths"
+msgstr "{n} Einträge mit unsicheren Pfaden übersprungen"
+
+msgid "Skipped {n} problematic entries"
+msgstr "{n} problematische Einträge übersprungen"
+
+msgid "Skipped {n} symlinks ({reason}):"
+msgstr "{n} Symlinks übersprungen ({reason}):"
+
+msgid "Skipped {n} unreadable files:"
+msgstr "{n} nicht lesbare Dateien übersprungen:"
+
+msgid "Skipped:"
+msgstr "Übersprungen:"
+
+msgid "Source:"
+msgstr "Quelle:"
+
+msgid "Source: {src} > Free: {free}"
+msgstr "Quelle: {src} > Frei: {free}"
+
+msgid "Speed:"
+msgstr "Tempo:"
+
+msgid "Start transfer"
+msgstr "Übertragung starten"
+
+msgid "Symlinks:"
+msgstr "Symlinks:"
+
+msgid "Threads for hashing/layout (default: {n})"
+msgstr "Threads für Hashing/Layout (Standard: {n})"
+
+msgid "Time:"
+msgstr "Zeit:"
+
+msgid "To copy:"
+msgstr "Zu kopieren:"
+
+msgid "Total:"
+msgstr "Gesamt:"
+
+msgid "Transfer over plain SSH using tar (no SFTP subsystem). For servers with SSH enabled but SFTP disabled (e.g. some NAS). Supports dedup/incremental/verify."
+msgstr "Übertragung über einfaches SSH mit tar (kein SFTP-Subsystem). Für Server mit SSH, aber deaktiviertem SFTP (z. B. Synology NAS)."
+
+msgid "Unexpected download URL (not HTTPS GitHub):"
+msgstr "Unerwartete Download-URL (nicht HTTPS GitHub):"
+
+msgid "Unknown SSH host"
+msgstr "Unbekannter SSH-Host"
+
+msgid "Unlock"
+msgstr "Entsperren"
+
+msgid "Up to date"
+msgstr "Aktuell"
+
+msgid "Update"
+msgstr "Update"
+
+msgid "Update available"
+msgstr "Update verfügbar"
+
+msgid "Update downloaded"
+msgstr "Update heruntergeladen"
+
+msgid "Update failed"
+msgstr "Update fehlgeschlagen"
+
+msgid "Update installed"
+msgstr "Update installiert"
+
+msgid "Use --force to attempt anyway, or free up space on the destination."
+msgstr "Mit --force trotzdem versuchen oder Platz am Ziel freigeben."
+
+msgid "Use --force to skip this check."
+msgstr "Mit --force diese Prüfung überspringen."
+
+msgid "Username for smb:// / UNC shares (overrides any user in the URL)"
+msgstr "Benutzername für smb:// / UNC-Freigaben (überschreibt Benutzer in der URL)"
+
+msgid "VERSION"
+msgstr "VERSION"
+
+msgid "Verbose output (full FS detection details, etc.)"
+msgstr "Ausführliche Ausgabe (volle FS-Erkennungsdetails usw.)"
+
+msgid "Verification failed:"
+msgstr "Verifizierung fehlgeschlagen:"
+
+msgid "Verification failures: {n}"
+msgstr "Verifizierungsfehler: {n}"
+
+msgid "Verify:"
+msgstr "Verif.:"
+
+msgid "Verifying"
+msgstr "Verifizierung läuft"
+
+msgid "Verifying…"
+msgstr "Verifiziere…"
+
+msgid "Warning: Could not check free space: {err}"
+msgstr "Warnung: Freier Speicher nicht prüfbar: {err}"
+
+msgid "While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."
+msgstr "Beim Hashen des Laufwerks mit --index-existing auch Platz von Dateien zurückgewinnen, die BEREITS auf dem Laufwerk doppelt sind (In-Place-Reflink-Merge)."
+
+msgid "Windows/AD domain for SMB authentication"
+msgstr "Windows/AD-Domäne für SMB-Authentifizierung"
+
+msgid "Write structured JSON log to file"
+msgstr "Strukturiertes JSON-Log in Datei schreiben"
+
+msgid "already exist,"
+msgstr "existieren bereits,"
+
+msgid "copy options"
+msgstr "Kopieroptionen"
+
+msgid "credentials.json is locked"
+msgstr "credentials.json ist gesperrt"
+
+msgid "example — edit before running"
+msgstr "Beispiel — vor dem Ausführen bearbeiten"
+
+msgid "blitcp.py (the copy engine) was not found next to the GUI."
+msgstr "blitcp (die Engine) wurde nicht neben der GUI gefunden."
+
+msgid "files"
+msgstr "Dateien"
+
+msgid "files unchanged"
+msgstr "Dateien unverändert"
+
+msgid "free"
+msgstr "frei"
+
+msgid "hash"
+msgstr "Hash"
+
+msgid "info & self-update"
+msgstr "Info & Selbst-Update"
+
+msgid "language"
+msgstr "Sprache"
+
+msgid "locked"
+msgstr "gesperrt"
+
+msgid "node_modules is excluded by default from BOTH the copy and --index-existing (huge, regenerable, and full of tiny identical files). Pass this to include it."
+msgstr "node_modules ist standardmäßig von Kopie UND --index-existing ausgeschlossen (riesig, regenerierbar); dieses Flag nimmt es wieder auf."
+
+msgid "not installed"
+msgstr "nicht installiert"
+
+msgid "passed"
+msgstr "bestanden"
+
+msgid "pointer to canonical; canonical must not be deleted"
+msgstr "Zeiger auf das Original; Original darf nicht gelöscht werden"
+
+msgid "shared inode; zero extra disk"
+msgstr "gemeinsamer Inode; kein zusätzlicher Platz"
+
+msgid "single · local / SSH / cloud"
+msgstr "einzeln · lokal / SSH / Cloud"
+
+msgid "ssh options (remote source / destination)"
+msgstr "SSH-Optionen (Remote-Quelle / -Ziel)"
+
+msgid "testing…"
+msgstr "teste…"
+
+msgid "threads"
+msgstr "Threads"
+
+msgid "to create"
+msgstr "zu erstellen"
+
+msgid "total"
+msgstr "gesamt"
+
+msgid "untested"
+msgstr "ungetestet"
+
+msgid "verify mismatch: {name}"
+msgstr "Verifizierungs-Abweichung: {name}"
+
+msgid "{n} copied"
+msgstr "{n} kopiert"
+
+msgid "{n} linked"
+msgstr "{n} verlinkt"
+
+msgid "{n} skipped"
+msgstr "{n} übersprungen"
+
+msgid "{size} saved by dedup"
+msgstr "{size} durch Dedup gespart"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "subcommands:\n  creds <sub>      Gespeicherte Cloud-/SSH-Verbindungsprofile in der Credentials-Datei\n                   verwalten: add, list, edit, remove, test, encrypt/decrypt, lock.\n                   'blitcp creds' für Hilfe ausführen.\n  ls <target>      Cloud-Ort auflisten (Verbindungsname oder s3:// / az:// / gs:// URL)\n                   oder Remote-SSH-Verzeichnis (per SFTP).\n                   Alias: list-objects. 'blitcp ls -h' für Hilfe.\n\nBeispiele:\n  blitcp /data /media/usb/data           lokal  → lokal\n  blitcp /data user@host:/backup         lokal  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → lokal\n  blitcp /data s3://bucket/backup        lokal  → Cloud\n  blitcp creds add aws-dev               Verbindungsprofil speichern\n  blitcp ls aws-dev                      gespeicherte Cloud-Verbindung auflisten\n  blitcp ls user@host:/var/log           Remote-SSH-Verzeichnis auflisten\n"
+
+msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
+msgstr "Sprache der Meldungen: {langs}. Überschreibt BLITCP_LANG und das System-Locale. Maschinenausgabe (--log-file) bleibt Englisch."
+
+
+# GUI deep-path strings + Settings/language section (2026-08-06)
+msgid "Access denied — run as Administrator to browse this folder"
+msgstr "Zugriff verweigert — zum Durchsuchen dieses Ordners als Administrator ausführen"
+
+msgid "Add at least one source"
+msgstr "Mindestens eine Quelle hinzufügen"
+
+msgid "Added {0} as source"
+msgstr "{0} als Quelle hinzugefügt"
+
+msgid "BLITCP"
+msgstr "BLITCP"
+
+msgid "Browse SSH"
+msgstr "SSH durchsuchen"
+
+msgid "Browse SSH server"
+msgstr "SSH-Server durchsuchen"
+
+msgid "Browse cloud"
+msgstr "Cloud durchsuchen"
+
+msgid "Browse cloud storage"
+msgstr "Cloud-Speicher durchsuchen"
+
+msgid "Browse files"
+msgstr "Dateien durchsuchen"
+
+msgid "Connections"
+msgstr "Verbindungen"
+
+msgid "Copy in progress — update not applied"
+msgstr "Kopie läuft — Update nicht angewendet"
+
+msgid "Could not check for updates"
+msgstr "Updates konnten nicht geprüft werden"
+
+msgid "Could not read credentials:"
+msgstr "Zugangsdaten konnten nicht gelesen werden:"
+
+msgid "Could not save history:"
+msgstr "Verlauf konnte nicht gespeichert werden:"
+
+msgid "Could not save:"
+msgstr "Speichern fehlgeschlagen:"
+
+msgid "Could not start blitcp.py"
+msgstr "blitcp.py konnte nicht gestartet werden"
+
+msgid "Dark mode"
+msgstr "Dunkelmodus"
+
+msgid "Dedup saved"
+msgstr "Dedup gespart"
+
+msgid "Documentation"
+msgstr "Dokumentation"
+
+msgid "Downloading"
+msgstr "Lade herunter:"
+
+msgid "Downloading blitcp.py"
+msgstr "blitcp.py wird heruntergeladen"
+
+msgid "Dry run complete"
+msgstr "Probelauf abgeschlossen"
+
+msgid "Dry run failed — see log"
+msgstr "Probelauf fehlgeschlagen — siehe Log"
+
+msgid "ETA"
+msgstr "Restzeit"
+
+msgid "Enter passphrase"
+msgstr "Passphrase eingeben"
+
+msgid "Fill in a random 6-word passphrase (~77 bits)"
+msgstr "Zufällige 6-Wort-Passphrase einsetzen (~77 Bit)"
+
+msgid "Finish or cancel the running copy before updating"
+msgstr "Laufende Kopie vor dem Update abschließen oder abbrechen"
+
+msgid "Folder = navigate · file = click to select · double-click = set as source."
+msgstr "Ordner = navigieren · Datei = Klick zum Auswählen · Doppelklick = als Quelle setzen."
+
+msgid "Generate"
+msgstr "Generieren"
+
+msgid "Generated ({0} bits). Save it in your password manager now — it is shown only here."
+msgstr "Generiert ({0} Bit). Jetzt im Passwort-Manager speichern — wird nur hier angezeigt."
+
+msgid "History"
+msgstr "Verlauf"
+
+msgid "Install already running…"
+msgstr "Installation läuft bereits…"
+
+msgid "Install failed — see terminal"
+msgstr "Installation fehlgeschlagen — siehe Terminal"
+
+msgid "Installed ✓"
+msgstr "Installiert ✓"
+
+msgid "Installing"
+msgstr "Installiere"
+
+msgid "Interface language"
+msgstr "Sprache der Oberfläche"
+
+msgid "LANGUAGE"
+msgstr "SPRACHE"
+
+msgid "Language, dependencies, version, updates."
+msgstr "Sprache, Abhängigkeiten, Version, Updates."
+
+msgid "Light mode"
+msgstr "Hellmodus"
+
+msgid "Loaded transfer — review and Start"
+msgstr "Übertragung geladen — prüfen und starten"
+
+msgid "Many sources → one destination. With more than one source, local only."
+msgstr "Mehrere Quellen → ein Ziel. Bei mehr als einer Quelle nur lokal."
+
+msgid "Name already exists"
+msgstr "Name existiert bereits"
+
+msgid "New transfer"
+msgstr "Neue Übertragung"
+
+msgid "Past transfers from the saved JSON logs."
+msgstr "Frühere Übertragungen aus den gespeicherten JSON-Logs."
+
+msgid "Progress"
+msgstr "Fortschritt"
+
+msgid "Re-bound credentials.json to this blitcp.py"
+msgstr "credentials.json neu an dieses blitcp.py gebunden"
+
+msgid "Read from / saved to credentials.json. Double-click to edit."
+msgstr "Aus credentials.json gelesen/gespeichert. Doppelklick zum Bearbeiten."
+
+msgid "Rekey failed:"
+msgstr "Rekey fehlgeschlagen:"
+
+msgid "Rekey needs blitcp.py"
+msgstr "Rekey benötigt blitcp.py"
+
+msgid "Removed"
+msgstr "Entfernt"
+
+msgid "Set a destination"
+msgstr "Ziel festlegen"
+
+msgid "Settings"
+msgstr "Einstellungen"
+
+msgid "Speed"
+msgstr "Geschwindigkeit"
+
+msgid "This <b>credentials.json</b> was bound to a different blitcp.py (tamper check). If you just updated blitcp, press <b>Rekey</b> to re-bind it."
+msgstr "Diese <b>credentials.json</b> war an ein anderes blitcp.py gebunden (Manipulationsprüfung). Nach einem Update von blitcp mit <b>Rekey</b> neu binden."
+
+msgid "This PC · local files"
+msgstr "Dieser PC · lokale Dateien"
+
+msgid "Transfer"
+msgstr "Übertragung"
+
+msgid "Unlock credentials.json"
+msgstr "credentials.json entsperren"
+
+msgid "Unlock credentials.json first"
+msgstr "Zuerst credentials.json entsperren"
+
+msgid "Update check needs blitcp.py"
+msgstr "Update-Prüfung benötigt blitcp.py"
+
+msgid "blitcp.py not found next to the GUI"
+msgstr "blitcp.py nicht neben der GUI gefunden"
+
+msgid "credentials.json is not encrypted — nothing to rekey"
+msgstr "credentials.json ist nicht verschlüsselt — nichts zu rekeyen"
+
+msgid "drive"
+msgstr "Laufwerk"
+
+msgid "failed"
+msgstr "fehlgeschlagen"
+
+msgid "folder"
+msgstr "Ordner"
+
+msgid "local only when multiple"
+msgstr "bei mehreren nur lokal"
+
+msgid "sudo authenticated"
+msgstr "sudo authentifiziert"
+
+msgid "sudo: authentication failed"
+msgstr "sudo: Authentifizierung fehlgeschlagen"
+
+msgid "Language"
+msgstr "Sprache"
+
+msgid "Later"
+msgstr "Später"
+
+msgid "Restart blitcp to apply the new language everywhere?"
+msgstr "blitcp neu starten, um die neue Sprache überall anzuwenden?"
+
+msgid "Restart now"
+msgstr "Jetzt neu starten"
+
+msgid "Add source"
+msgstr "Quelle hinzufügen"
+
+msgid "Advanced"
+msgstr "Erweitert"
+
+msgid "Cloud"
+msgstr "Cloud"
+
+msgid "Local"
+msgstr "Lokal"
+
+msgid "dedup"
+msgstr "Dedup"
+
+msgid "verify"
+msgstr "Prüfen"
+
+msgid "--use-sudo"
+msgstr "--use-sudo"
+
+msgid "Buffer (MB)"
+msgstr "Puffer (MB)"
+
+msgid "COPY"
+msgstr "KOPIE"
+
+msgid "Cloud concurrency"
+msgstr "Cloud-Parallelität"
+
+msgid "EXCLUDE PATTERNS"
+msgstr "AUSSCHLUSSMUSTER"
+
+msgid "FLAGS"
+msgstr "FLAGS"
+
+msgid "INDEX EXISTING (reflink dedup vs pre-existing files)"
+msgstr "INDEX EXISTING (Reflink-Dedup gegen vorhandene Dateien)"
+
+msgid "PRESERVE METADATA"
+msgstr "METADATEN ERHALTEN"
+
+msgid "SSH chunk (MB)"
+msgstr "SSH-Chunk (MB)"
+
+msgid "Tar batch size for SSH (--ssh-no-sftp) transfers. Not the same as Buffer."
+msgstr "Tar-Batchgröße für SSH-Übertragungen (--ssh-no-sftp). Nicht dasselbe wie der Puffer."
+
+msgid "acl"
+msgstr "acl"
+
+msgid "dedup existing"
+msgstr "Dedup vorhandener"
+
+msgid "force"
+msgstr "erzwingen"
+
+msgid "include node_modules"
+msgstr "node_modules einbeziehen"
+
+msgid "mode"
+msgstr "Modus"
+
+msgid "no hash cache"
+msgstr "kein Hash-Cache"
+
+msgid "overwrite all"
+msgstr "alles überschreiben"
+
+msgid "owner"
+msgstr "Besitzer"
+
+msgid "times"
+msgstr "Zeiten"
+
+msgid "xattr"
+msgstr "xattr"
+

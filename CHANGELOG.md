@@ -1,92 +1,50 @@
 # Changelog
 
+## v4.0.0 — 2026-08-06
+
+**fast-copy is now blitcp** ("blit" as in bit-block transfer — the block-order
+engine's namesake). The rename resolves the long-standing name collision with
+the unrelated FastCopy Windows tool. New home: https://blitcp.dev (the old
+domain redirects).
+
+### Added
+
+- **Passphrase generator** for credentials encryption: `blitcp creds encrypt
+  --generate[=N]` offers a diceware passphrase (EFF large wordlist, N words,
+  default 6 ≈ 77 bits, CSPRNG via `secrets`), shown once and confirmed before
+  use; the GUI's "Encrypt credentials" dialog gains a matching Generate
+  button that fills and reveals the passphrase. Generation is fully local —
+  no network involved.
+
+### Renamed — with full backward compatibility
+
+- CLI `blitcp` (was `fast_copy.py`), GUI `blitcp_gui` (was `fast_copy_gui`).
+  A `fast_copy.py` import/launcher shim ships for 1–2 releases: old imports
+  and commands keep working with a one-line deprecation note.
+- Release assets: `blitcp-linux`, `blitcp-macos-intel`, `blitcp-macos-arm64`,
+  `blitcp-windows.exe`, `blitcp_gui-*`.
+- Environment variables: `BLITCP_LANG`, `BLITCP_CREDENTIALS`,
+  `BLITCP_CREDS_PASSPHRASE`. The `FAST_COPY_*` names remain honoured.
+- On-disk sidecars (`.blitcp_dedup.db`, `.blitcp_manifest.json`,
+  `.blitcp_audit.jsonl`, `~/.blitcp_salt`, config dirs): existing files under
+  the old names are renamed in place on first touch — dedup state, manifests
+  and audit chains carry over; nothing is re-hashed or restarted. A sudo audit
+  log pinned by `chattr +i` keeps its old name and chain.
+- The i18n gettext domain is now `blitcp` (all 6 translations carried over).
+- Note: encrypted credentials are bound to the engine's content hash, so this
+  update — like every update — asks once to re-bind (`creds unlock`).
+
 ## v3.12.7 — 2026-08-06
 
-Bug fixes and an improvement of the update process.
+Bug fixes and an improvement of the update process. (The last release under
+the fast-copy name — the bridge to v4.0.0.)
 
 ### Improved
 
 - **Update process** — the update checker (CLI and GUI) now recognises
-  release assets under both current and future naming schemes, so
-  `--update` and the GUI update flow keep working seamlessly across
-  upcoming releases. Clearer message when no matching asset is found.
-
-## v3.12.6 — 2026-07-27
-
-### GUI (Linux)
-- **Fixed a crash (segfault) on the first key press** on some distributions.
-  The binary bundled half of the libxkbcommon library pair; the GUI now always
-  uses the host's matched pair, eliminating the crash in
-  `xkb_state_key_get_layout`.
-- A saved SSH port `0` is no longer silently rewritten to `22` at connect time.
-
-### Compatibility
-- Linux binaries are now built against glibc 2.35 — they run on
-  RHEL/Rocky/AlmaLinux 9, Debian 12 and other distributions the previous
-  builds refused to start on (`GLIBC_2.38 not found`).
-
-### Release pipeline (Windows NTFS ACL support)
-- CI verifies pywin32 both in the build environment **and inside the frozen
-  .exe**, so a release can no longer ship a Windows binary whose NTFS
-  owner/DACL preservation silently no-ops.
-- pywin32 installs from the tracked `requirements-win.txt` (one source of
-  truth for the version pin); removed the ineffective
-  `--collect-submodules=win32`.
-
-## v3.12.3 — 2026-07-08
-
-A large consolidated release covering everything since the 3.7 line: new
-transports and dedup engines, full file **and** directory metadata
-preservation, and a substantial correctness/security hardening pass.
-
-### New Features
-
-- **SMB/CIFS (`smb://`, UNC)** — a native transport to and from Windows shares
-  and Azure Files, as both source and destination.
-- **`--index-existing`** — reflink-dedup a copy against files that **already
-  exist** at the destination, so unchanged data is shared instead of rewritten.
-- **`--dedup-existing`** — in-place reflink merge of duplicate files already on
-  disk, reclaiming space without copying.
-- **ReFS block cloning (Windows)** — real copy-on-write clones on ReFS volumes.
-- **Metadata preservation** — `--preserve mode/owner/times/xattr/acl` now
-  applies to **directories** as well as files (including setuid/setgid and the
-  remote→local pull path).
-- **GUI** — SMB credential management and an in-app self-update flow.
-
-### Improvements
-
-- **`--preserve acl` is ~3.5–4× faster** — an xattr fast-path skips the
-  `getfacl`/`setfacl` subprocess pair when a file has no ACL.
-- **Large dedup trees are dramatically faster** — cross-platform HDD-aware
-  hashing plus a persistent hash cache (a 147k-file tree dropped from ~38 min to
-  ~11 s on a warm cache).
-- **Full extent dedup for large files** — the `FIDEDUPERANGE` loop now shares an
-  entire file rather than a single kernel-clamped chunk, so reclaimed-space
-  reporting is accurate.
-- **Live progress everywhere** — per-phase timing, files/sec, and link / verify
-  / index progress.
-- **Verify explains the real cause** of a failure, and writes the cross-run
-  linked-file list to a log.
-- **Batched SQLite commits** reduce fsync overhead on the dedup database.
-- **Credential encryption hardening** — AES-GCM, no plaintext on disk.
-
-### Bug Fixes
-
-- **FAT32 / removable destinations** copy correctly, and an incomplete verify
-  now fails the run instead of exiting `0`.
-- **Cross-mount source** no longer crashes — the file is warned about and
-  skipped.
-- **`--index-existing` edge cases** — non-UTF-8 filenames, hash-algorithm
-  mismatch, and empty-file linking.
-- **`--ssh-no-sftp`** directory nesting.
-- **Security** — setuid/setgid privilege-escalation hardening, TOCTOU
-  mitigation via `O_NOFOLLOW`, and updated cryptography dependencies.
-
-### Credits
-
-- `--index-existing` / `--dedup-existing` were contributed by
-  [@YoSiJo](https://github.com/YoSiJo) in
-  [#3](https://github.com/gekap/fast-copy/pull/3).
+  release assets under both naming schemes, so `--update` and the GUI
+  update flow keep working seamlessly across upcoming releases. Clearer
+  message when no matching asset is found.
 
 ## v3.7.5 — 2026-06-24
 

@@ -1,0 +1,951 @@
+# blitcp translations — zh_CN
+# GLOSSARY (keep in English inside translations): dedup, hard link, reflink,
+# sparse, tar pipe, SSH, SFTP, xxHash, FIEMAP, block-order, manifest.
+# First pass is machine-generated — native-speaker review welcome (PRs!).
+msgid ""
+msgstr ""
+"Project-Id-Version: blitcp\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "+ add folder…"
+msgstr "+ 添加文件夹…"
+
+msgid "+ add…"
+msgstr "+ 添加…"
+
+msgid "--force: proceeding anyway"
+msgstr "--force：仍然继续"
+
+msgid "--force: proceeding anyway (copy may fail mid-way)"
+msgstr "--force：仍然继续（复制可能中途失败）"
+
+msgid "0 / 0 files"
+msgstr "0 / 0 个文件"
+
+msgid "AWS named profile from ~/.aws/credentials"
+msgstr "来自 ~/.aws/credentials 的 AWS 命名配置"
+
+msgid "AWS region for s3:// (default: us-east-1)"
+msgstr "s3:// 的 AWS 区域（默认：us-east-1）"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Add connection"
+msgstr "添加连接"
+
+msgid "Azure Blob connection string (or env AZURE_STORAGE_CONNECTION_STRING)"
+msgstr "Azure Blob 连接字符串（或环境变量 AZURE_STORAGE_CONNECTION_STRING）"
+
+msgid "Azure storage account key. WARNING: a key passed on the command line is visible to other users via `ps` and is saved in shell history. Prefer a saved connection (blitcp creds add) or the AZURE_STORAGE_CONNECTION_STRING env var."
+msgstr "Azure 存储账户密钥。警告：命令行传入的密钥对系统其他用户可见；请优先使用 AZURE_STORAGE_KEY 环境变量或连接字符串。"
+
+msgid "Azure storage account name (with --az-key)"
+msgstr "Azure 存储账户名（配合 --az-key）"
+
+msgid "Block-order fast copy with dedup — reads files in physical disk order, deduplicates identical files. Copies between local paths, SSH hosts (user@host:/path), and cloud object storage (s3:// / az:// / gs://)."
+msgstr "带去重的块序快速复制 — 按磁盘物理顺序读取文件并对相同文件去重。支持本地路径、SSH 主机（user@host:/path）与云对象存储（s3:// / az:// / gs://）之间的复制。"
+
+msgid "Browse…"
+msgstr "浏览…"
+
+msgid "Buffer size in MB (default: {n})"
+msgstr "缓冲区大小（MB，默认：{n}）"
+
+msgid "CLOUD"
+msgstr "云存储"
+
+msgid "Can't install into the packaged app"
+msgstr "无法安装到打包的应用中"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Checking…"
+msgstr "正在检查…"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "CoW shared blocks; modifying one does not affect peers"
+msgstr "CoW 共享块；修改其一不影响其余"
+
+msgid "Comma-separated metadata kinds to preserve on the destination: mode,times (default), owner, xattr, acl. Special tokens: all, none. Examples: --preserve=owner,xattr  --preserve=all. Under --use-sudo, --preserve=all is implicit unless you pass --preserve explicitly. Destination filesystems that can't store some metadata (FAT32 for xattrs, etc.) drop those attributes; a one-line summary reports what was preserved vs dropped."
+msgstr "要在目标保留的元数据类型，逗号分隔：mode,times（默认）、owner、xattr、acl，或 all / none。"
+
+msgid "Concurrent uploads/downloads for object storage (s3/az/gs). Small-file transfers are latency-bound, so this defaults higher than --threads (default: {n})"
+msgstr "对象存储（s3/az/gs）的并发上传/下载数。小文件传输受延迟限制，因此默认值高于 --threads（默认：{n}）"
+
+msgid "Confirm"
+msgstr "确认"
+
+msgid "Confirm passphrase"
+msgstr "确认口令"
+
+msgid "Core engine installed"
+msgstr "核心引擎已安装"
+
+msgid "Core engine missing"
+msgstr "缺少核心引擎"
+
+msgid "Could not check destination free space — continuing"
+msgstr "无法检查目标可用空间 — 继续"
+
+msgid "Could not check remote space — continuing anyway"
+msgstr "无法检查远程空间 — 仍然继续"
+
+msgid "Could not download blitcp.py:"
+msgstr "无法下载 blitcp："
+
+msgid "Could not download the update:"
+msgstr "无法下载更新："
+
+msgid "Could not replace the application:"
+msgstr "无法替换应用程序："
+
+msgid "Couldn't find {asset} in release {tag}."
+msgstr "在发行版 {tag} 中未找到 {asset}。"
+
+msgid "Custom S3-compatible endpoint (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+msgstr "自定义 S3 兼容端点（MinIO、Cloudflare R2、Wasabi、Backblaze B2）。"
+
+msgid "DEPENDENCIES"
+msgstr "依赖项"
+
+msgid "DESTINATION"
+msgstr "目标"
+
+msgid "DONE"
+msgstr "完成"
+
+msgid "DONE — Nothing to copy"
+msgstr "完成 — 无需复制"
+
+msgid "Data:"
+msgstr "数据："
+
+msgid "Dest:"
+msgstr "目标："
+
+msgid "Destination disk:"
+msgstr "目标磁盘："
+
+msgid "Disable SMB3 transport encryption (on by default)"
+msgstr "禁用 SMB3 传输加密（默认开启）"
+
+msgid "Disable deduplication"
+msgstr "禁用去重"
+
+msgid "Disable persistent hash cache (cross-run dedup database)"
+msgstr "禁用持久哈希缓存（跨运行去重数据库）"
+
+msgid "Disk layout resolved: {n}/{total} files mapped"
+msgstr "磁盘布局已解析：{n}/{total} 个文件已映射"
+
+msgid "Download & install"
+msgstr "下载并安装"
+
+msgid "Download and install latest (or a specific version)"
+msgstr "下载并安装最新（或指定）版本"
+
+msgid "Download failed"
+msgstr "下载失败"
+
+msgid "Download manually:"
+msgstr "手动下载："
+
+msgid "Download only"
+msgstr "仅下载"
+
+msgid "Downloading…"
+msgstr "正在下载…"
+
+msgid "Duplicate handling:"
+msgstr "重复文件处理："
+
+msgid "Enable SSH compression (good for slow links)"
+msgstr "启用 SSH 压缩（适合慢速链路）"
+
+msgid "Enough space"
+msgstr "空间充足"
+
+msgid "Error copying {name}: {err}"
+msgstr "复制 {name} 出错：{err}"
+
+msgid "Errors:"
+msgstr "错误："
+
+msgid "Exclude files/dirs by name or glob (e.g. .venv, *.bat, .git*). Matching directories are pruned. Repeatable."
+msgstr "按名称或 glob 排除文件/目录（如 .venv、*.bat、.git*）。匹配的目录整体剪除。"
+
+msgid "FAILED"
+msgstr "失败"
+
+msgid "FAST BLOCK-ORDER COPY"
+msgstr "快速块序复制（block-order）"
+
+msgid "FAST-COPY"
+msgstr "FAST-COPY"
+
+msgid "FS does not support links — no disk savings"
+msgstr "文件系统不支持链接 — 无磁盘节省"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Failed to check for updates: {err}"
+msgstr "检查更新失败：{err}"
+
+msgid "Failed to replace binary: {err}"
+msgstr "替换二进制文件失败：{err}"
+
+msgid "Files:"
+msgstr "文件："
+
+msgid "Free:"
+msgstr "可用："
+
+msgid "Full copies:"
+msgstr "完整副本："
+
+msgid "Google Cloud project for gs://"
+msgstr "gs:// 的 Google Cloud 项目"
+
+msgid "Hardlinks:"
+msgstr "硬链接："
+
+msgid "Hash algorithm for dedup/verify. auto (default): xxh128 if installed, else sha256. xxh128: force xxh128 (10x faster, non-cryptographic). sha256: force sha256 (cryptographic; collision-resistant)."
+msgstr "去重/校验的哈希算法。auto（默认）：已安装则用 xxh128，否则 sha256。xxh128：强制 xxHash-128。sha256：强制 SHA-256。"
+
+msgid "Hashing {n} existing files ({done} already hashed)..."
+msgstr "正在对 {n} 个现有文件求哈希（{done} 个已完成）..."
+
+msgid "Hashing {n} files on remote source..."
+msgstr "正在对远程源的 {n} 个文件求哈希..."
+
+msgid "Hashing {n} files on remote..."
+msgstr "正在对远程 {n} 个文件求哈希..."
+
+msgid "Hashing {n} files to check for changes..."
+msgstr "正在对 {n} 个文件求哈希以检测变更..."
+
+msgid "Hashing {n} files..."
+msgstr "正在对 {n} 个文件求哈希..."
+
+msgid "Hashing..."
+msgstr "求哈希中..."
+
+msgid "Headroom:"
+msgstr "余量："
+
+msgid "Install"
+msgstr "安装"
+
+msgid "Language saved — restart to apply everywhere"
+msgstr "语言已保存 — 重启后全面生效"
+
+msgid "Links:"
+msgstr "链接："
+
+msgid "Message language: "
+msgstr "消息语言："
+
+msgid "NOT ENOUGH SPACE — need {size} more"
+msgstr "空间不足 — 还需 {size}"
+
+msgid "Named-connection file for cloud credentials. Reference a connection by name (e.g. aws-dev, aws-dev:folder) or in a URL as s3://name@bucket/key. Defaults to credentials.json next to blitcp (override with this flag or $BLITCP_CREDENTIALS). Manage it with: blitcp creds add/list/edit/remove/test."
+msgstr "云凭据的命名连接文件。可在 URL 中按名称引用连接（如 aws-dev）。"
+
+msgid "One or more sources, followed by the destination. A source can be a folder, file, or glob pattern (e.g. *.zip). Multiple sources are copied side-by-side under destination, preserving their basenames (cp -r style). Glob in the basename also works for SSH sources, e.g. user@host:/data/*.tar.gz"
+msgstr "一个或多个源，最后是目标。源可以是文件夹、文件或 glob（如 *.zip）。多个源会并排复制到目标下并保留各自的 basename（类似 cp -r）。SSH 源的 basename 也支持 glob，如 user@host:/data/*.tar.gz"
+
+msgid "Overwrite all files, skip identical-file detection"
+msgstr "覆盖所有文件，跳过相同文件检测"
+
+msgid "Path to SSH private key for remote destination"
+msgstr "远程目标的 SSH 私钥路径"
+
+msgid "Path to SSH private key for remote source"
+msgstr "远程源的 SSH 私钥路径"
+
+msgid "Path to a GCS service-account JSON key file"
+msgstr "GCS 服务账户 JSON 密钥文件路径"
+
+msgid "Permission denied — click to unlock with sudo"
+msgstr "权限被拒 — 点击以使用 sudo 解锁"
+
+msgid "Phase 1 — Scanning source"
+msgstr "阶段 1 — 扫描源"
+
+msgid "Phase 1b — Indexing existing files"
+msgstr "阶段 1b — 索引现有文件"
+
+msgid "Phase 2 — Deduplication"
+msgstr "阶段 2 — 去重（dedup）"
+
+msgid "Phase 2b — Incremental check"
+msgstr "阶段 2b — 增量检查"
+
+msgid "Phase 2b — Remote incremental check"
+msgstr "阶段 2b — 远程增量检查"
+
+msgid "Phase 3 — Space check"
+msgstr "阶段 3 — 空间检查"
+
+msgid "Phase 3 — Space check (remote destination)"
+msgstr "阶段 3 — 空间检查（远程目标）"
+
+msgid "Phase 3 — Space check (remote)"
+msgstr "阶段 3 — 空间检查（远程）"
+
+msgid "Phase 4 — Local-to-remote copy"
+msgstr "阶段 4 — 本地 → 远程复制"
+
+msgid "Phase 4 — Mapping physical disk layout"
+msgstr "阶段 4 — 映射磁盘物理布局"
+
+msgid "Phase 4 — Remote-to-local copy"
+msgstr "阶段 4 — 远程 → 本地复制"
+
+msgid "Phase 4 — Remote-to-remote copy"
+msgstr "阶段 4 — 远程 → 远程复制"
+
+msgid "Phase 5 — Block copy"
+msgstr "阶段 5 — 块复制"
+
+msgid "Phase 5 — Remote copy"
+msgstr "阶段 5 — 远程复制"
+
+msgid "Phase 5 — Remote-to-local copy"
+msgstr "阶段 5 — 远程 → 本地复制"
+
+msgid "Phase 5 — Remote-to-remote copy (relay)"
+msgstr "阶段 5 — 远程 → 远程复制（中继）"
+
+msgid "Phase 6 — Verification"
+msgstr "阶段 6 — 校验"
+
+msgid "Preview plan"
+msgstr "预览计划"
+
+msgid "Prompt for SSH password for remote destination"
+msgstr "提示输入远程目标的 SSH 密码"
+
+msgid "Prompt for SSH password for remote source"
+msgstr "提示输入远程源的 SSH 密码"
+
+msgid "Prompt for the SMB password"
+msgstr "提示输入 SMB 密码"
+
+msgid "Re-exec self under sudo if not already root. sudo will prompt for the password on the terminal. Useful when source or destination needs root (e.g. /var/lib/longhorn/replicas). Linux/macOS only."
+msgstr "若非 root 则在 sudo 下重新执行。sudo 会在终端提示输入密码。"
+
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Reflinks:"
+msgstr "Reflink："
+
+msgid "Reject SSH host keys not already in known_hosts instead of the interactive trust-on-first-use prompt. Use for CI/automated runs to prevent first-connection MITM."
+msgstr "拒绝 known_hosts 中不存在的 SSH 主机密钥，而不是交互式首次信任。"
+
+msgid "Rekey"
+msgstr "重设密钥"
+
+msgid "Reload"
+msgstr "重新加载"
+
+msgid "Remote incremental check complete:"
+msgstr "远程增量检查完成："
+
+msgid "Required:"
+msgstr "需要："
+
+msgid "Run again"
+msgstr "再次运行"
+
+msgid "SMB port (default: 445)"
+msgstr "SMB 端口（默认：445）"
+
+msgid "SOURCES"
+msgstr "源"
+
+msgid "SSH"
+msgstr "SSH"
+
+msgid "SSH (--ssh-no-sftp) tar batch size in MB (default: 100). Bigger = fewer round-trips; smaller = finer resume granularity. This is NOT --buffer (that's the block-copy I/O buffer)."
+msgstr "SSH（--ssh-no-sftp）tar 批次大小（MB，默认：100）。更大 = 更少往返；更小 = 更频繁的进度。"
+
+msgid "SSH (no SFTP) — local → remote  [dedup · incremental · verify]"
+msgstr "SSH（无 SFTP）— 本地 → 远程  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → local  [dedup · incremental · verify]"
+msgstr "SSH（无 SFTP）— 远程 → 本地  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → remote  [dedup · incremental · verify]"
+msgstr "SSH（无 SFTP）— 远程 → 远程  [dedup · incremental · verify]"
+
+msgid "SSH port for remote destination (default: 22)"
+msgstr "远程目标的 SSH 端口（默认：22）"
+
+msgid "SSH port for remote source (default: 22)"
+msgstr "远程源的 SSH 端口（默认：22）"
+
+msgid "SSH — Connecting"
+msgstr "SSH — 正在连接"
+
+msgid "SSH — Connecting to destination"
+msgstr "SSH — 正在连接目标"
+
+msgid "SSH — Connecting to source"
+msgstr "SSH — 正在连接源"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "扫描 PATH 并按大小将文件登记到去重索引。同步时，大小相同的文件将延迟求哈希并 reflink 而不是复制。"
+
+msgid "Scanning existing files in {path} ..."
+msgstr "正在扫描 {path} 中的现有文件 ..."
+
+msgid "Scanning files..."
+msgstr "正在扫描文件..."
+
+msgid "Scanning remote source..."
+msgstr "正在扫描远程源..."
+
+msgid "Scanning... {n} files"
+msgstr "扫描中... {n} 个文件"
+
+msgid "Select this path"
+msgstr "选择此路径"
+
+msgid "Set as destination"
+msgstr "设为目标"
+
+msgid "Set as source"
+msgstr "设为源"
+
+msgid "Show available updates and release notes"
+msgstr "显示可用更新与发行说明"
+
+msgid "Show copy plan without copying"
+msgstr "仅显示复制计划而不复制"
+
+msgid "Show version and exit"
+msgstr "显示版本并退出"
+
+msgid "Skip post-copy verification"
+msgstr "跳过复制后校验"
+
+msgid "Skip space check, copy even if not enough space"
+msgstr "跳过空间检查，即使空间不足也复制"
+
+msgid "Skipped {n} entries with unsafe paths"
+msgstr "已跳过 {n} 个含不安全路径的条目"
+
+msgid "Skipped {n} problematic entries"
+msgstr "已跳过 {n} 个有问题的条目"
+
+msgid "Skipped {n} symlinks ({reason}):"
+msgstr "已跳过 {n} 个符号链接（{reason}）："
+
+msgid "Skipped {n} unreadable files:"
+msgstr "已跳过 {n} 个不可读文件："
+
+msgid "Skipped:"
+msgstr "已跳过："
+
+msgid "Source:"
+msgstr "源："
+
+msgid "Source: {src} > Free: {free}"
+msgstr "源：{src} > 可用：{free}"
+
+msgid "Speed:"
+msgstr "速度："
+
+msgid "Start transfer"
+msgstr "开始传输"
+
+msgid "Symlinks:"
+msgstr "符号链接："
+
+msgid "Threads for hashing/layout (default: {n})"
+msgstr "哈希/布局线程数（默认：{n}）"
+
+msgid "Time:"
+msgstr "耗时："
+
+msgid "To copy:"
+msgstr "待复制："
+
+msgid "Total:"
+msgstr "总计："
+
+msgid "Transfer over plain SSH using tar (no SFTP subsystem). For servers with SSH enabled but SFTP disabled (e.g. some NAS). Supports dedup/incremental/verify."
+msgstr "使用 tar 通过纯 SSH 传输（无 SFTP 子系统）。适用于启用了 SSH 但禁用了 SFTP 的服务器（如 Synology NAS）。"
+
+msgid "Unexpected download URL (not HTTPS GitHub):"
+msgstr "意外的下载 URL（非 HTTPS GitHub）："
+
+msgid "Unknown SSH host"
+msgstr "未知的 SSH 主机"
+
+msgid "Unlock"
+msgstr "解锁"
+
+msgid "Up to date"
+msgstr "已是最新"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "Update available"
+msgstr "有可用更新"
+
+msgid "Update downloaded"
+msgstr "更新已下载"
+
+msgid "Update failed"
+msgstr "更新失败"
+
+msgid "Update installed"
+msgstr "更新已安装"
+
+msgid "Use --force to attempt anyway, or free up space on the destination."
+msgstr "使用 --force 强行尝试，或在目标上释放空间。"
+
+msgid "Use --force to skip this check."
+msgstr "使用 --force 跳过此检查。"
+
+msgid "Username for smb:// / UNC shares (overrides any user in the URL)"
+msgstr "smb:// / UNC 共享的用户名（覆盖 URL 中的用户）"
+
+msgid "VERSION"
+msgstr "版本"
+
+msgid "Verbose output (full FS detection details, etc.)"
+msgstr "详细输出（完整的文件系统检测信息等）"
+
+msgid "Verification failed:"
+msgstr "校验失败："
+
+msgid "Verification failures: {n}"
+msgstr "校验失败数：{n}"
+
+msgid "Verify:"
+msgstr "校验："
+
+msgid "Verifying"
+msgstr "正在校验"
+
+msgid "Verifying…"
+msgstr "校验中…"
+
+msgid "Warning: Could not check free space: {err}"
+msgstr "警告：无法检查可用空间：{err}"
+
+msgid "While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."
+msgstr "在 --index-existing 对磁盘求哈希时，同时从磁盘上已互为重复的文件回收空间（就地 reflink 合并）。"
+
+msgid "Windows/AD domain for SMB authentication"
+msgstr "SMB 认证所用的 Windows/AD 域"
+
+msgid "Write structured JSON log to file"
+msgstr "将结构化 JSON 日志写入文件"
+
+msgid "already exist,"
+msgstr "已存在，"
+
+msgid "copy options"
+msgstr "复制选项"
+
+msgid "credentials.json is locked"
+msgstr "credentials.json 已锁定"
+
+msgid "example — edit before running"
+msgstr "示例 — 运行前请编辑"
+
+msgid "blitcp.py (the copy engine) was not found next to the GUI."
+msgstr "未在 GUI 旁找到 blitcp（复制引擎）。"
+
+msgid "files"
+msgstr "个文件"
+
+msgid "files unchanged"
+msgstr "个文件未变更"
+
+msgid "free"
+msgstr "可用"
+
+msgid "hash"
+msgstr "哈希"
+
+msgid "info & self-update"
+msgstr "信息与自更新"
+
+msgid "language"
+msgstr "语言"
+
+msgid "locked"
+msgstr "已锁定"
+
+msgid "node_modules is excluded by default from BOTH the copy and --index-existing (huge, regenerable, and full of tiny identical files). Pass this to include it."
+msgstr "node_modules 默认同时从复制与 --index-existing 中排除（巨大且可重建）；此选项将其包含。"
+
+msgid "not installed"
+msgstr "未安装"
+
+msgid "passed"
+msgstr "通过"
+
+msgid "pointer to canonical; canonical must not be deleted"
+msgstr "指向规范文件的指针；规范文件不可删除"
+
+msgid "shared inode; zero extra disk"
+msgstr "共享 inode；零额外磁盘占用"
+
+msgid "single · local / SSH / cloud"
+msgstr "单个 · 本地 / SSH / 云"
+
+msgid "ssh options (remote source / destination)"
+msgstr "ssh 选项（远程源 / 目标）"
+
+msgid "testing…"
+msgstr "测试中…"
+
+msgid "threads"
+msgstr "线程"
+
+msgid "to create"
+msgstr "待创建"
+
+msgid "total"
+msgstr "总计"
+
+msgid "untested"
+msgstr "未测试"
+
+msgid "verify mismatch: {name}"
+msgstr "校验不匹配：{name}"
+
+msgid "{n} copied"
+msgstr "已复制 {n}"
+
+msgid "{n} linked"
+msgstr "已链接 {n}"
+
+msgid "{n} skipped"
+msgstr "已跳过 {n}"
+
+msgid "{size} saved by dedup"
+msgstr "去重节省 {size}"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "subcommands:\n  creds <sub>      管理 credentials 文件中保存的云/SSH 连接配置：add、list、edit、\n                   remove、test、encrypt/decrypt、lock。运行 'blitcp creds' 查看帮助。\n  ls <target>      列出云位置（已保存的连接名或 s3:// / az:// / gs:// URL）\n                   或远程 SSH 目录（经 SFTP）。\n                   别名：list-objects。运行 'blitcp ls -h' 查看帮助。\n\n示例:\n  blitcp /data /media/usb/data           本地  → 本地\n  blitcp /data user@host:/backup         本地  → 远程（SSH）\n  blitcp user@host:/data /local/backup   远程 → 本地\n  blitcp /data s3://bucket/backup        本地  → 云\n  blitcp creds add aws-dev               保存连接配置\n  blitcp ls aws-dev                      列出已保存的云连接\n  blitcp ls user@host:/var/log           列出远程 SSH 目录\n"
+
+msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
+msgstr "消息语言：{langs}。覆盖 BLITCP_LANG 与系统 locale。机器输出（--log-file）保持英文。"
+
+
+# GUI deep-path strings + Settings/language section (2026-08-06)
+msgid "Access denied — run as Administrator to browse this folder"
+msgstr "访问被拒绝 — 请以管理员身份运行以浏览此文件夹"
+
+msgid "Add at least one source"
+msgstr "请至少添加一个来源"
+
+msgid "Added {0} as source"
+msgstr "已将 {0} 添加为来源"
+
+msgid "BLITCP"
+msgstr "BLITCP"
+
+msgid "Browse SSH"
+msgstr "浏览 SSH"
+
+msgid "Browse SSH server"
+msgstr "浏览 SSH 服务器"
+
+msgid "Browse cloud"
+msgstr "浏览云存储"
+
+msgid "Browse cloud storage"
+msgstr "浏览云存储"
+
+msgid "Browse files"
+msgstr "浏览文件"
+
+msgid "Connections"
+msgstr "连接"
+
+msgid "Copy in progress — update not applied"
+msgstr "复制正在进行 — 未应用更新"
+
+msgid "Could not check for updates"
+msgstr "无法检查更新"
+
+msgid "Could not read credentials:"
+msgstr "无法读取凭据："
+
+msgid "Could not save history:"
+msgstr "无法保存历史记录："
+
+msgid "Could not save:"
+msgstr "无法保存："
+
+msgid "Could not start blitcp.py"
+msgstr "无法启动 blitcp.py"
+
+msgid "Dark mode"
+msgstr "深色模式"
+
+msgid "Dedup saved"
+msgstr "去重节省"
+
+msgid "Documentation"
+msgstr "文档"
+
+msgid "Downloading"
+msgstr "正在下载"
+
+msgid "Downloading blitcp.py"
+msgstr "正在下载 blitcp.py"
+
+msgid "Dry run complete"
+msgstr "试运行完成"
+
+msgid "Dry run failed — see log"
+msgstr "试运行失败 — 请查看日志"
+
+msgid "ETA"
+msgstr "预计剩余"
+
+msgid "Enter passphrase"
+msgstr "输入口令短语"
+
+msgid "Fill in a random 6-word passphrase (~77 bits)"
+msgstr "填入随机的 6 个单词口令短语（约 77 位熵）"
+
+msgid "Finish or cancel the running copy before updating"
+msgstr "更新前请先完成或取消正在进行的复制"
+
+msgid "Folder = navigate · file = click to select · double-click = set as source."
+msgstr "文件夹 = 导航 · 文件 = 点击选择 · 双击 = 设为来源。"
+
+msgid "Generate"
+msgstr "生成"
+
+msgid "Generated ({0} bits). Save it in your password manager now — it is shown only here."
+msgstr "已生成（{0} 位熵）。请立即保存到密码管理器 — 仅在此处显示一次。"
+
+msgid "History"
+msgstr "历史记录"
+
+msgid "Install already running…"
+msgstr "安装已在进行中…"
+
+msgid "Install failed — see terminal"
+msgstr "安装失败 — 请查看终端"
+
+msgid "Installed ✓"
+msgstr "已安装 ✓"
+
+msgid "Installing"
+msgstr "正在安装"
+
+msgid "Interface language"
+msgstr "界面语言"
+
+msgid "LANGUAGE"
+msgstr "语言"
+
+msgid "Language, dependencies, version, updates."
+msgstr "语言、依赖项、版本、更新。"
+
+msgid "Light mode"
+msgstr "浅色模式"
+
+msgid "Loaded transfer — review and Start"
+msgstr "已加载传输 — 请检查后点击开始"
+
+msgid "Many sources → one destination. With more than one source, local only."
+msgstr "多个来源 → 一个目标。多于一个来源时仅支持本地。"
+
+msgid "Name already exists"
+msgstr "名称已存在"
+
+msgid "New transfer"
+msgstr "新建传输"
+
+msgid "Past transfers from the saved JSON logs."
+msgstr "来自已保存 JSON 日志的过往传输。"
+
+msgid "Progress"
+msgstr "进度"
+
+msgid "Re-bound credentials.json to this blitcp.py"
+msgstr "credentials.json 已重新绑定到此 blitcp.py"
+
+msgid "Read from / saved to credentials.json. Double-click to edit."
+msgstr "从 credentials.json 读取/保存。双击编辑。"
+
+msgid "Rekey failed:"
+msgstr "重设密钥失败："
+
+msgid "Rekey needs blitcp.py"
+msgstr "重设密钥需要 blitcp.py"
+
+msgid "Removed"
+msgstr "已删除"
+
+msgid "Set a destination"
+msgstr "请设置目标"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Speed"
+msgstr "速度"
+
+msgid "This <b>credentials.json</b> was bound to a different blitcp.py (tamper check). If you just updated blitcp, press <b>Rekey</b> to re-bind it."
+msgstr "此 <b>credentials.json</b> 绑定的是另一个 blitcp.py（防篡改检查）。如果你刚更新了 blitcp，请点击 <b>Rekey</b> 重新绑定。"
+
+msgid "This PC · local files"
+msgstr "此电脑 · 本地文件"
+
+msgid "Transfer"
+msgstr "传输"
+
+msgid "Unlock credentials.json"
+msgstr "解锁 credentials.json"
+
+msgid "Unlock credentials.json first"
+msgstr "请先解锁 credentials.json"
+
+msgid "Update check needs blitcp.py"
+msgstr "检查更新需要 blitcp.py"
+
+msgid "blitcp.py not found next to the GUI"
+msgstr "在 GUI 旁未找到 blitcp.py"
+
+msgid "credentials.json is not encrypted — nothing to rekey"
+msgstr "credentials.json 未加密 — 无需重设密钥"
+
+msgid "drive"
+msgstr "驱动器"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "folder"
+msgstr "文件夹"
+
+msgid "local only when multiple"
+msgstr "多个来源时仅限本地"
+
+msgid "sudo authenticated"
+msgstr "sudo 认证成功"
+
+msgid "sudo: authentication failed"
+msgstr "sudo：认证失败"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Later"
+msgstr "稍后"
+
+msgid "Restart blitcp to apply the new language everywhere?"
+msgstr "重启 blitcp 以在所有界面应用新语言？"
+
+msgid "Restart now"
+msgstr "立即重启"
+
+msgid "Add source"
+msgstr "添加来源"
+
+msgid "Advanced"
+msgstr "高级"
+
+msgid "Cloud"
+msgstr "云"
+
+msgid "Local"
+msgstr "本地"
+
+msgid "dedup"
+msgstr "去重"
+
+msgid "verify"
+msgstr "校验"
+
+msgid "--use-sudo"
+msgstr "--use-sudo"
+
+msgid "Buffer (MB)"
+msgstr "缓冲区 (MB)"
+
+msgid "COPY"
+msgstr "复制"
+
+msgid "Cloud concurrency"
+msgstr "云并发数"
+
+msgid "EXCLUDE PATTERNS"
+msgstr "排除模式"
+
+msgid "FLAGS"
+msgstr "标志"
+
+msgid "INDEX EXISTING (reflink dedup vs pre-existing files)"
+msgstr "索引已有文件（与既有文件进行 reflink 去重）"
+
+msgid "PRESERVE METADATA"
+msgstr "保留元数据"
+
+msgid "SSH chunk (MB)"
+msgstr "SSH 块大小 (MB)"
+
+msgid "Tar batch size for SSH (--ssh-no-sftp) transfers. Not the same as Buffer."
+msgstr "SSH（--ssh-no-sftp）传输的 tar 批次大小。与缓冲区不同。"
+
+msgid "acl"
+msgstr "acl"
+
+msgid "dedup existing"
+msgstr "对已有文件去重"
+
+msgid "force"
+msgstr "强制"
+
+msgid "include node_modules"
+msgstr "包含 node_modules"
+
+msgid "mode"
+msgstr "权限"
+
+msgid "no hash cache"
+msgstr "不使用哈希缓存"
+
+msgid "overwrite all"
+msgstr "全部覆盖"
+
+msgid "owner"
+msgstr "所有者"
+
+msgid "times"
+msgstr "时间戳"
+
+msgid "xattr"
+msgstr "xattr"
+

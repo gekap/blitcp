@@ -24,3 +24,29 @@ fastcopy-498019-33a083612ff5.json
 *-service-account*.json
 gcs-*.json
 keys.txt
+credentials.json.bak.*
+
+# Local-only UAT & monitoring tooling (kept out of the repo by decision)
+uat.py
+uat_*.py
+find_my_code.py
+find_my_mentions.py
+license_monitor.sh
+license_monitor_logs/
+
+# Build & release artifacts
+build/
+dist/
+fast_copy.tar.gz
+node_modules/
+
+# Local state, backups and superseded site snapshots — never commit
+.fc/
+.claude/
+gcs_fastcopies/
+k8s/.fast_copy_manifest.json
+k8s/*.tar.gz
+k8s/fast-copy-landing-backup-*.tar.gz
+k8s/fast-copy-site/
+k8s/fast-copy-contact-worker/dist/
+k8s/traffic/__pycache__/

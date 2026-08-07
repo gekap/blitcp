@@ -1,8 +1,8 @@
-# fast-copy Documentation
+# blitcp Documentation
 
 High-speed file copier with deduplication, physical disk order optimization, and SSH remote support.
 
-This document is the canonical reference for every option exposed by both the CLI (`fast_copy.py`) and the GUI. Each entry describes what the option does, the default, and when to change it.
+This document is the canonical reference for every option exposed by both the CLI (`blitcp.py`) and the GUI. Each entry describes what the option does, the default, and when to change it.
 
 ---
 
@@ -75,7 +75,7 @@ CLI: `-v`, `--verbose`
 
 ### Skip verification
 
-Skips the post-copy integrity check. By default, fast-copy verifies that every copied file exists on the destination with the correct size, plus a hash spot-check on a random sample.
+Skips the post-copy integrity check. By default, blitcp verifies that every copied file exists on the destination with the correct size, plus a hash spot-check on a random sample.
 
 **When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Recommended to leave verification ON for external drives, USB sticks, or network destinations where errors are more likely.
 
@@ -181,7 +181,7 @@ CLI: `--ssh-src-port PORT`, `--ssh-dst-port PORT`
 
 Path to an SSH private key file for authentication.
 
-**When to use:** Key-based authentication (recommended). If not provided, fast-copy first tries the running SSH agent, then falls back to a password prompt if enabled.
+**When to use:** Key-based authentication (recommended). If not provided, blitcp first tries the running SSH agent, then falls back to a password prompt if enabled.
 
 CLI: `--ssh-src-key PATH`, `--ssh-dst-key PATH`
 
@@ -208,10 +208,10 @@ CLI: `--ssh-src-password`, `--ssh-dst-password`
 
 ## Credentials manager (`creds`)
 
-`fast_copy.py creds` stores reusable **cloud** (S3 / Azure / GCS) and **SSH** connections so you can refer to them by name instead of typing endpoints, keys, and paths on every copy. Connections live in a credentials file (default shown by `creds list`); the file can be encrypted at rest with **AES-256-GCM**.
+`blitcp.py creds` stores reusable **cloud** (S3 / Azure / GCS) and **SSH** connections so you can refer to them by name instead of typing endpoints, keys, and paths on every copy. Connections live in a credentials file (default shown by `creds list`); the file can be encrypted at rest with **AES-256-GCM**.
 
 ```
-fast_copy.py creds <sub> [NAME] [FILE]
+blitcp.py creds <sub> [NAME] [FILE]
 ```
 
 `FILE` is an optional path to a non-default credentials file. `NAME` is the connection name (required for `add`/`edit`/`remove`/`test`).
@@ -223,29 +223,29 @@ fast_copy.py creds <sub> [NAME] [FILE]
 | `edit NAME` | Edit a connection interactively. **Enter** keeps the current value; `-` clears an optional field. |
 | `remove NAME` | Delete a connection. |
 | `test NAME` | Live connection check (cloud API call or SSH login). |
-| `encrypt` | Encrypt the credentials file at rest (AES-256-GCM, bound to this `fast_copy.py`). |
+| `encrypt` | Encrypt the credentials file at rest (AES-256-GCM, bound to this `blitcp.py`). |
 | `decrypt` | Decrypt back to plaintext (mode `0600`). |
 | `rekey` | Re-bind an encrypted file to the current binary. |
 | `lock` / `unlock` | Set/clear OS file immutability (tamper-resistance; needs root — see `--use-sudo`). |
 
-**Encryption is offered by default** when a new credentials file is first created — secrets are not written in plaintext unless you decline. The passphrase comes from the `FAST_COPY_CREDS_PASSPHRASE` environment variable, or from a hidden interactive prompt.
+**Encryption is offered by default** when a new credentials file is first created — secrets are not written in plaintext unless you decline. The passphrase comes from the `BLITCP_CREDS_PASSPHRASE` environment variable, or from a hidden interactive prompt.
 
-> **Passphrase via environment variable:** set `FAST_COPY_CREDS_PASSPHRASE` to unlock an encrypted file non-interactively (scripts, cron). On Linux this value is readable from `/proc/<pid>/environ` by same-UID processes, so prefer the hidden prompt on shared/multi-user hosts.
+> **Passphrase via environment variable:** set `BLITCP_CREDS_PASSPHRASE` to unlock an encrypted file non-interactively (scripts, cron). On Linux this value is readable from `/proc/<pid>/environ` by same-UID processes, so prefer the hidden prompt on shared/multi-user hosts.
 
 The `lock`/`unlock` subcommands need root for `chattr`-style immutability. Use `--use-sudo` to have the command re-exec itself under `sudo`:
 
 ```
 # add and test a connection
-fast_copy.py creds add aws-prod
-fast_copy.py creds test aws-prod
+blitcp.py creds add aws-prod
+blitcp.py creds test aws-prod
 
 # list, encrypt, lock
-fast_copy.py creds list
-fast_copy.py creds encrypt
-fast_copy.py creds lock --use-sudo
+blitcp.py creds list
+blitcp.py creds encrypt
+blitcp.py creds lock --use-sudo
 
 # non-interactive unlock for an encrypted file
-FAST_COPY_CREDS_PASSPHRASE='…' fast_copy.py creds list
+BLITCP_CREDS_PASSPHRASE='…' blitcp.py creds list
 ```
 
 The lock is tamper-resistance only — root can reverse it. Run `creds unlock` before editing a locked file.
@@ -254,14 +254,14 @@ The lock is tamper-resistance only — root can reverse it. Run `creds unlock` b
 
 ## Cloud storage (S3 / Azure / GCS)
 
-fast-copy can copy **to and from** object storage. Cloud connections are managed through the [credentials manager](#credentials-manager-creds).
+blitcp can copy **to and from** object storage. Cloud connections are managed through the [credentials manager](#credentials-manager-creds).
 
 **1. Add a cloud connection** (`creds add` prompts for the type and its settings — endpoint/keys for S3, account/key or connection string for Azure, project/service-account JSON for GCS). You can also set a **default bucket/container** (and an optional default prefix) so you can refer to the connection by name alone:
 
 ```
-fast_copy.py creds add aws-prod        # type: s3
-fast_copy.py creds add az-backups      # type: azure
-fast_copy.py creds add gcs-archive     # type: gcs
+blitcp.py creds add aws-prod        # type: s3
+blitcp.py creds add az-backups      # type: azure
+blitcp.py creds add gcs-archive     # type: gcs
 ```
 
 **2. Use a saved connection as a source or destination endpoint.** Two equivalent forms:
@@ -277,16 +277,16 @@ fast_copy.py creds add gcs-archive     # type: gcs
 
 ```
 # upload a local folder to the default bucket of aws-prod
-fast_copy.py /data aws-prod:uploads/2024
+blitcp.py /data aws-prod:uploads/2024
 
 # download from a GCS connection to a local folder
-fast_copy.py gcs-archive:backup/2024 /restore
+blitcp.py gcs-archive:backup/2024 /restore
 
 # explicit bucket with a named connection's credentials
-fast_copy.py /data s3://aws-prod@my-bucket/incoming
+blitcp.py /data s3://aws-prod@my-bucket/incoming
 
 # bucket using ambient credentials (no saved connection)
-fast_copy.py /data s3://my-bucket/incoming
+blitcp.py /data s3://my-bucket/incoming
 ```
 
 If a connection has **no default bucket**, use the `NAME:<bucket>/<key>` shorthand or the `s3://NAME@<bucket>/<key>` form (or add a default bucket with `creds edit NAME`).
@@ -298,7 +298,7 @@ If a connection has **no default bucket**, use the `NAME:<bucket>/<key>` shortha
 List objects under a cloud location, or files in a remote SSH directory, from the terminal:
 
 ```
-fast_copy.py ls <connection[:folder] | s3://bucket/prefix | user@host:/path>
+blitcp.py ls <connection[:folder] | s3://bucket/prefix | user@host:/path>
 ```
 
 - **Cloud:** a saved cloud connection name, or an `s3://` / `az://` / `gs://` URL.
@@ -307,13 +307,13 @@ fast_copy.py ls <connection[:folder] | s3://bucket/prefix | user@host:/path>
 Options: `--credentials-file FILE`, and for SSH targets `--ssh-port N`, `--ssh-key PATH`, `--ssh-password`, `--ssh-strict-host-key-checking`.
 
 ```
-fast_copy.py ls aws-prod
-fast_copy.py ls gcs-archive:backup
-fast_copy.py ls s3://bucket/prefix --credentials-file creds.json
-fast_copy.py ls user@host:/var/log --ssh-key ~/.ssh/id_ed25519
+blitcp.py ls aws-prod
+blitcp.py ls gcs-archive:backup
+blitcp.py ls s3://bucket/prefix --credentials-file creds.json
+blitcp.py ls user@host:/var/log --ssh-key ~/.ssh/id_ed25519
 ```
 
-> Listing an encrypted cloud connection needs the passphrase — set `FAST_COPY_CREDS_PASSPHRASE` or run in a terminal. A bare `user@host:/path` is listed directly over SSH and never triggers a credentials passphrase prompt.
+> Listing an encrypted cloud connection needs the passphrase — set `BLITCP_CREDS_PASSPHRASE` or run in a terminal. A bare `user@host:/path` is listed directly over SSH and never triggers a credentials passphrase prompt.
 
 ---
 
@@ -322,13 +322,13 @@ fast_copy.py ls user@host:/var/log --ssh-key ~/.ssh/id_ed25519
 Report which optional Python packages are installed and what each one enables (cloud SDKs, faster hashing, SSH, etc.). Aliases: `deps`, `check-deps`, `doctor`.
 
 ```
-fast_copy.py deps
+blitcp.py deps
 ```
 
 With `--install` (`-i`), pip-installs the missing packages:
 
 ```
-fast_copy.py deps --install
+blitcp.py deps --install
 ```
 
 On a frozen (bundled-executable) build the dependencies are baked into the binary, so `pip install` does not apply and the command just reports status.
@@ -345,11 +345,11 @@ On a frozen (bundled-executable) build the dependencies are baked into the binar
 | `--update-sha256 <hex>` | Pin the expected SHA-256 (64 hex chars) of the downloaded binary; the update aborts on a mismatch. Use together with `--update`. |
 
 ```
-fast_copy.py --version
-fast_copy.py --check-update
-fast_copy.py --update
-fast_copy.py --update v3.6.4
-fast_copy.py --update --update-sha256 <64-hex-from-release-page>
+blitcp.py --version
+blitcp.py --check-update
+blitcp.py --update
+blitcp.py --update v3.6.4
+blitcp.py --update --update-sha256 <64-hex-from-release-page>
 ```
 
 > `--update` is refused under `sudo` (running as root or with `SUDO_USER` set): update as your normal user first, then re-elevate deliberately for the next root run.

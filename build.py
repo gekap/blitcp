@@ -3,14 +3,14 @@
 # Licensed under the Apache License, Version 2.0
 # See LICENSE file for details.
 """
-Build script — compiles fast_copy into a standalone executable.
+Build script — compiles blitcp into a standalone executable.
 
 Usage:
   python build.py              # build CLI executable
   python build.py --clean      # clean build artifacts first
 
 Output:
-  dist/fast_copy       — CLI executable
+  dist/blitcp       — CLI executable
 """
 
 import os
@@ -48,7 +48,7 @@ GUI_SPEC_TEMPLATE = '''# -*- mode: python ; coding: utf-8 -*-
 import os
 from PyInstaller.utils.hooks import collect_all
 
-datas, binaries, hiddenimports = [], [], ['xxhash', 'paramiko']
+datas, binaries, hiddenimports = [('locales', 'locales')], [], ['xxhash', 'paramiko']
 for pkg in {pkgs!r}:
     _d, _b, _h = collect_all(pkg)
     datas += _d
@@ -172,6 +172,81 @@ def _gui_spec_cmd(name, script, icon):
     return [sys.executable, "-m", "PyInstaller", "--clean", spec_path]
 
 
+def _mo_write(path, catalog):
+    """Write a gettext .mo file (little-endian, no plurals metadata needed
+    beyond what the header carries). Pure Python — the gettext CLI tools are
+    not a build dependency."""
+    import struct
+    items = sorted(catalog.items())
+    ids = b"".join(k.encode("utf-8") + b"\x00" for k, _ in items)
+    strs = b"".join(v.encode("utf-8") + b"\x00" for _, v in items)
+    keystart = 7 * 4 + 16 * len(items)
+    valuestart = keystart + len(ids)
+    koffsets, voffsets, ko, vo = [], [], keystart, valuestart
+    for k, v in items:
+        kb, vb = k.encode("utf-8"), v.encode("utf-8")
+        koffsets.append((len(kb), ko)); ko += len(kb) + 1
+        voffsets.append((len(vb), vo)); vo += len(vb) + 1
+    out = struct.pack("<7I", 0x950412DE, 0, len(items), 7 * 4,
+                      7 * 4 + len(items) * 8, 0, keystart)
+    for l, o in koffsets:
+        out += struct.pack("<2I", l, o)
+    for l, o in voffsets:
+        out += struct.pack("<2I", l, o)
+    with open(path, "wb") as f:
+        f.write(out + ids + strs)
+
+
+def _po_parse(path):
+    """Minimal .po reader: msgid/msgstr pairs with quoted continuation lines.
+    Enough for our catalogs; fails loudly on anything unexpected."""
+    catalog, cur_id, cur_str, state = {}, None, None, None
+    def unesc(s):
+        return s.encode().decode("unicode_escape").encode("latin-1").decode("utf-8")
+    for ln, raw in enumerate(open(path, encoding="utf-8"), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("msgid "):
+            if cur_id is not None:
+                catalog[cur_id] = cur_str
+            cur_id, cur_str, state = unesc(line[6:].strip().strip('"')), None, "id"
+        elif line.startswith("msgstr "):
+            cur_str, state = unesc(line[7:].strip().strip('"')), "str"
+        elif line.startswith('"'):
+            chunk = unesc(line.strip('"'))
+            if state == "id":
+                cur_id += chunk
+            elif state == "str":
+                cur_str += chunk
+        else:
+            raise SystemExit(f"{path}:{ln}: unparseable line: {line!r}")
+    if cur_id is not None:
+        catalog[cur_id] = cur_str
+    missing = [k for k, v in catalog.items() if k and not v]
+    if missing:
+        raise SystemExit(f"{path}: empty msgstr for: {missing[:3]}")
+    return catalog
+
+
+def compile_locales():
+    """locales/<lang>/LC_MESSAGES/blitcp.po → blitcp.mo, with a
+    placeholder-consistency check ({name} sets must match, or a translation
+    would crash .format() at runtime in that language only)."""
+    import re
+    n = 0
+    for po in sorted(glob_locales := __import__("glob").glob(
+            "locales/*/LC_MESSAGES/blitcp.po")):
+        catalog = _po_parse(po)
+        for k, v in catalog.items():
+            if k and set(re.findall(r"{\w*}", k)) != set(re.findall(r"{\w*}", v)):
+                raise SystemExit(f"{po}: placeholder mismatch in: {k!r}")
+        _mo_write(po[:-3] + ".mo", catalog)
+        n += 1
+    print(f"  locales: compiled {n} catalogs")
+    return n
+
+
 def build_target(name, script, windowed=False, icon=None):
     """Build a single target with PyInstaller.
 
@@ -193,8 +268,11 @@ def build_target(name, script, windowed=False, icon=None):
             "--windowed" if windowed else "--console",
             "--hidden-import=xxhash",
             "--hidden-import=paramiko",
+            # Translations (I18N_DESIGN.md): bundled next to the code; the
+            # runtime finds them via sys._MEIPASS/locales.
+            f"--add-data=locales{os.pathsep}locales",
         ]
-        # pywin32 powers NTFS owner+DACL preservation (fast_copy imports
+        # pywin32 powers NTFS owner+DACL preservation (blitcp imports
         # win32security / pywintypes lazily, so PyInstaller's static scan
         # needs them named explicitly or the ACL copy silently no-ops).
         # NOTE: pip's pywin32 exposes win32* modules as top-level names via
@@ -270,6 +348,8 @@ def sign_binary(path, thumbprint):
 
 
 def main():
+    # Translations first — a bad .po must fail the build, not the user's copy.
+    compile_locales()
     clean = "--clean" in sys.argv
     sign_thumb = None
     if "--sign" in sys.argv:
@@ -281,11 +361,11 @@ def main():
             print("  Error: --sign needs a certificate thumbprint")
             sys.exit(1)
 
-    print(f"Fast Copy Builder - {platform.system()} ({platform.machine()})")
+    print(f"blitcp Builder - {platform.system()} ({platform.machine()})")
     print("-" * 50)
 
-    if not os.path.exists("fast_copy.py"):
-        print("  Error: fast_copy.py not found in current directory")
+    if not os.path.exists("blitcp.py"):
+        print("  Error: blitcp.py not found in current directory")
         sys.exit(1)
 
     # Install deps
@@ -304,22 +384,22 @@ def main():
 
     # App icon (green bolt): .ico on Windows, .icns on macOS, ignored on Linux.
     icon = None
-    if platform.system() == "Windows" and os.path.exists("assets/fast-copy.ico"):
-        icon = "assets/fast-copy.ico"
-    elif platform.system() == "Darwin" and os.path.exists("assets/fast-copy.icns"):
-        icon = "assets/fast-copy.icns"
+    if platform.system() == "Windows" and os.path.exists("assets/blitcp.ico"):
+        icon = "assets/blitcp.ico"
+    elif platform.system() == "Darwin" and os.path.exists("assets/blitcp.icns"):
+        icon = "assets/blitcp.icns"
 
     # Build
     print("\nBuilding CLI executable...")
-    success = build_target("fast_copy", "fast_copy.py", icon=icon)
+    success = build_target("blitcp", "blitcp.py", icon=icon)
 
     # Build the GUI too, when its source is present (skippable via --no-gui).
-    gui_src = "fast_copy_modern_gui.py"
+    gui_src = "blitcp_gui.py"
     gui_built = False
     if "--no-gui" not in sys.argv and os.path.exists(gui_src):
         print("\nBuilding GUI executable...")
         # Best-effort: a GUI build failure must not sink the required CLI release.
-        gui_built = build_target("fast_copy_gui", gui_src, windowed=True, icon=icon)
+        gui_built = build_target("blitcp_gui", gui_src, windowed=True, icon=icon)
         if not gui_built:
             print("  WARNING: GUI build failed — continuing with CLI only.")
 
@@ -327,22 +407,22 @@ def main():
     if sign_thumb and success:
         sext = ".exe" if platform.system() == "Windows" else ""
         print("\nCode-signing...")
-        sign_binary(f"dist/fast_copy{sext}", sign_thumb)
+        sign_binary(f"dist/blitcp{sext}", sign_thumb)
         if gui_built:
-            sign_binary(f"dist/fast_copy_gui{sext}", sign_thumb)
+            sign_binary(f"dist/blitcp_gui{sext}", sign_thumb)
 
     # Summary
     ext = ".exe" if platform.system() == "Windows" else ""
     print(f"\n{'-' * 50}")
     if success:
         print(f"Build complete:\n")
-        print(f'  dist/fast_copy{ext}')
+        print(f'  dist/blitcp{ext}')
         if gui_built:
-            print(f'  dist/fast_copy_gui{ext}' +
-                  ("  (or dist/fast_copy_gui.app on macOS)"
+            print(f'  dist/blitcp_gui{ext}' +
+                  ("  (or dist/blitcp_gui.app on macOS)"
                    if platform.system() == "Darwin" else ""))
-        print(f'  Usage: fast_copy "C:\\Source" "E:\\Dest"')
-        print(f'         fast_copy /source /dest')
+        print(f'  Usage: blitcp "C:\\Source" "E:\\Dest"')
+        print(f'         blitcp /source /dest')
     else:
         print("Build failed.")
     print()

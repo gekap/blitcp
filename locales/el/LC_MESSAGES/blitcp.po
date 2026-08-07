@@ -1,0 +1,951 @@
+# blitcp translations — el
+# GLOSSARY (keep in English inside translations): dedup, hard link, reflink,
+# sparse, tar pipe, SSH, SFTP, xxHash, FIEMAP, block-order, manifest.
+# First pass is machine-generated — native-speaker review welcome (PRs!).
+msgid ""
+msgstr ""
+"Project-Id-Version: blitcp\n"
+"Language: el\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "+ add folder…"
+msgstr "+ προσθήκη φακέλου…"
+
+msgid "+ add…"
+msgstr "+ προσθήκη…"
+
+msgid "--force: proceeding anyway"
+msgstr "--force: συνέχεια ούτως ή άλλως"
+
+msgid "--force: proceeding anyway (copy may fail mid-way)"
+msgstr "--force: συνέχεια ούτως ή άλλως (η αντιγραφή μπορεί να αποτύχει στη μέση)"
+
+msgid "0 / 0 files"
+msgstr "0 / 0 αρχεία"
+
+msgid "AWS named profile from ~/.aws/credentials"
+msgstr "Ονομαστικό AWS profile από το ~/.aws/credentials"
+
+msgid "AWS region for s3:// (default: us-east-1)"
+msgstr "AWS region για s3:// (προεπιλογή: us-east-1)"
+
+msgid "Add"
+msgstr "Προσθήκη"
+
+msgid "Add connection"
+msgstr "Προσθήκη σύνδεσης"
+
+msgid "Azure Blob connection string (or env AZURE_STORAGE_CONNECTION_STRING)"
+msgstr "Azure Blob connection string (ή env AZURE_STORAGE_CONNECTION_STRING)"
+
+msgid "Azure storage account key. WARNING: a key passed on the command line is visible to other users via `ps` and is saved in shell history. Prefer a saved connection (blitcp creds add) or the AZURE_STORAGE_CONNECTION_STRING env var."
+msgstr "Κλειδί λογαριασμού Azure storage. ΠΡΟΣΟΧΗ: κλειδί στο command line είναι ορατό σε άλλους χρήστες του συστήματος· προτίμησε το AZURE_STORAGE_KEY env ή connection string."
+
+msgid "Azure storage account name (with --az-key)"
+msgstr "Όνομα λογαριασμού Azure storage (με --az-key)"
+
+msgid "Block-order fast copy with dedup — reads files in physical disk order, deduplicates identical files. Copies between local paths, SSH hosts (user@host:/path), and cloud object storage (s3:// / az:// / gs://)."
+msgstr "Γρήγορη αντιγραφή block-order με dedup — διαβάζει τα αρχεία σε φυσική σειρά δίσκου και αποδιπλασιάζει πανομοιότυπα αρχεία. Αντιγράφει μεταξύ τοπικών διαδρομών, SSH hosts (user@host:/path) και cloud object storage (s3:// / az:// / gs://)."
+
+msgid "Browse…"
+msgstr "Αναζήτηση…"
+
+msgid "Buffer size in MB (default: {n})"
+msgstr "Μέγεθος buffer σε MB (προεπιλογή: {n})"
+
+msgid "CLOUD"
+msgstr "CLOUD"
+
+msgid "Can't install into the packaged app"
+msgstr "Αδύνατη η εγκατάσταση μέσα στην πακεταρισμένη εφαρμογή"
+
+msgid "Cancel"
+msgstr "Άκυρο"
+
+msgid "Check for updates"
+msgstr "Έλεγχος για ενημερώσεις"
+
+msgid "Checking…"
+msgstr "Έλεγχος…"
+
+msgid "Close"
+msgstr "Κλείσιμο"
+
+msgid "CoW shared blocks; modifying one does not affect peers"
+msgstr "κοινά CoW blocks· η τροποποίηση ενός δεν επηρεάζει τα υπόλοιπα"
+
+msgid "Comma-separated metadata kinds to preserve on the destination: mode,times (default), owner, xattr, acl. Special tokens: all, none. Examples: --preserve=owner,xattr  --preserve=all. Under --use-sudo, --preserve=all is implicit unless you pass --preserve explicitly. Destination filesystems that can't store some metadata (FAT32 for xattrs, etc.) drop those attributes; a one-line summary reports what was preserved vs dropped."
+msgstr "Είδη metadata προς διατήρηση στον προορισμό, χωρισμένα με κόμμα: mode,times (προεπιλογή), owner, xattr, acl, ή all / none."
+
+msgid "Concurrent uploads/downloads for object storage (s3/az/gs). Small-file transfers are latency-bound, so this defaults higher than --threads (default: {n})"
+msgstr "Παράλληλα uploads/downloads για object storage (s3/az/gs). Οι μεταφορές μικρών αρχείων είναι latency-bound, γι' αυτό η προεπιλογή είναι μεγαλύτερη από το --threads (προεπιλογή: {n})"
+
+msgid "Confirm"
+msgstr "Επιβεβαίωση"
+
+msgid "Confirm passphrase"
+msgstr "Επιβεβαίωση passphrase"
+
+msgid "Core engine installed"
+msgstr "Ο πυρήνας εγκαταστάθηκε"
+
+msgid "Core engine missing"
+msgstr "Λείπει ο πυρήνας"
+
+msgid "Could not check destination free space — continuing"
+msgstr "Αδύνατος ο έλεγχος ελεύθερου χώρου προορισμού — συνέχεια"
+
+msgid "Could not check remote space — continuing anyway"
+msgstr "Αδύνατος ο έλεγχος απομακρυσμένου χώρου — συνέχεια ούτως ή άλλως"
+
+msgid "Could not download blitcp.py:"
+msgstr "Αδύνατη η λήψη του blitcp:"
+
+msgid "Could not download the update:"
+msgstr "Αδύνατη η λήψη της ενημέρωσης:"
+
+msgid "Could not replace the application:"
+msgstr "Αδύνατη η αντικατάσταση της εφαρμογής:"
+
+msgid "Couldn't find {asset} in release {tag}."
+msgstr "Δεν βρέθηκε το {asset} στην έκδοση {tag}."
+
+msgid "Custom S3-compatible endpoint (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+msgstr "Προσαρμοσμένο S3-συμβατό endpoint (MinIO, Cloudflare R2, Wasabi, Backblaze B2)."
+
+msgid "DEPENDENCIES"
+msgstr "ΕΞΑΡΤΗΣΕΙΣ"
+
+msgid "DESTINATION"
+msgstr "ΠΡΟΟΡΙΣΜΟΣ"
+
+msgid "DONE"
+msgstr "ΟΛΟΚΛΗΡΩΘΗΚΕ"
+
+msgid "DONE — Nothing to copy"
+msgstr "ΟΛΟΚΛΗΡΩΘΗΚΕ — Τίποτα προς αντιγραφή"
+
+msgid "Data:"
+msgstr "Δεδομένα:"
+
+msgid "Dest:"
+msgstr "Προορ.:"
+
+msgid "Destination disk:"
+msgstr "Δίσκος προορισμού:"
+
+msgid "Disable SMB3 transport encryption (on by default)"
+msgstr "Απενεργοποίηση κρυπτογράφησης SMB3 (ενεργή από προεπιλογή)"
+
+msgid "Disable deduplication"
+msgstr "Απενεργοποίηση dedup"
+
+msgid "Disable persistent hash cache (cross-run dedup database)"
+msgstr "Απενεργοποίηση μόνιμης hash cache (βάση dedup μεταξύ εκτελέσεων)"
+
+msgid "Disk layout resolved: {n}/{total} files mapped"
+msgstr "Διάταξη δίσκου: {n}/{total} αρχεία χαρτογραφήθηκαν"
+
+msgid "Download & install"
+msgstr "Λήψη & εγκατάσταση"
+
+msgid "Download and install latest (or a specific version)"
+msgstr "Λήψη και εγκατάσταση της τελευταίας (ή συγκεκριμένης) έκδοσης"
+
+msgid "Download failed"
+msgstr "Η λήψη απέτυχε"
+
+msgid "Download manually:"
+msgstr "Χειροκίνητη λήψη:"
+
+msgid "Download only"
+msgstr "Μόνο λήψη"
+
+msgid "Downloading…"
+msgstr "Λήψη…"
+
+msgid "Duplicate handling:"
+msgstr "Διαχείριση διπλότυπων:"
+
+msgid "Enable SSH compression (good for slow links)"
+msgstr "Ενεργοποίηση συμπίεσης SSH (καλή για αργές συνδέσεις)"
+
+msgid "Enough space"
+msgstr "Επαρκής χώρος"
+
+msgid "Error copying {name}: {err}"
+msgstr "Σφάλμα αντιγραφής {name}: {err}"
+
+msgid "Errors:"
+msgstr "Σφάλματα:"
+
+msgid "Exclude files/dirs by name or glob (e.g. .venv, *.bat, .git*). Matching directories are pruned. Repeatable."
+msgstr "Εξαίρεση αρχείων/φακέλων με όνομα ή glob (π.χ. .venv, *.bat, .git*). Οι φάκελοι που ταιριάζουν κλαδεύονται ολόκληροι."
+
+msgid "FAILED"
+msgstr "ΑΠΕΤΥΧΕ"
+
+msgid "FAST BLOCK-ORDER COPY"
+msgstr "ΓΡΗΓΟΡΗ ΑΝΤΙΓΡΑΦΗ BLOCK-ORDER"
+
+msgid "FAST-COPY"
+msgstr "FAST-COPY"
+
+msgid "FS does not support links — no disk savings"
+msgstr "το FS δεν υποστηρίζει links — καμία εξοικονόμηση δίσκου"
+
+msgid "Failed"
+msgstr "Απέτυχε"
+
+msgid "Failed to check for updates: {err}"
+msgstr "Αποτυχία ελέγχου ενημερώσεων: {err}"
+
+msgid "Failed to replace binary: {err}"
+msgstr "Αποτυχία αντικατάστασης του binary: {err}"
+
+msgid "Files:"
+msgstr "Αρχεία:"
+
+msgid "Free:"
+msgstr "Ελεύθερα:"
+
+msgid "Full copies:"
+msgstr "Πλήρη αντίγραφα:"
+
+msgid "Google Cloud project for gs://"
+msgstr "Google Cloud project για gs://"
+
+msgid "Hardlinks:"
+msgstr "Hardlinks:"
+
+msgid "Hash algorithm for dedup/verify. auto (default): xxh128 if installed, else sha256. xxh128: force xxh128 (10x faster, non-cryptographic). sha256: force sha256 (cryptographic; collision-resistant)."
+msgstr "Αλγόριθμος hash για dedup/επαλήθευση. auto (προεπιλογή): xxh128 αν είναι εγκατεστημένο, αλλιώς sha256. xxh128: επιβολή xxHash-128. sha256: επιβολή SHA-256."
+
+msgid "Hashing {n} existing files ({done} already hashed)..."
+msgstr "Hashing {n} υπαρχόντων αρχείων ({done} ήδη hashed)..."
+
+msgid "Hashing {n} files on remote source..."
+msgstr "Hashing {n} αρχείων στην απομακρυσμένη πηγή..."
+
+msgid "Hashing {n} files on remote..."
+msgstr "Hashing {n} αρχείων απομακρυσμένα..."
+
+msgid "Hashing {n} files to check for changes..."
+msgstr "Hashing {n} αρχείων για έλεγχο αλλαγών..."
+
+msgid "Hashing {n} files..."
+msgstr "Hashing {n} αρχείων..."
+
+msgid "Hashing..."
+msgstr "Hashing..."
+
+msgid "Headroom:"
+msgstr "Περιθώριο:"
+
+msgid "Install"
+msgstr "Εγκατάσταση"
+
+msgid "Language saved — restart to apply everywhere"
+msgstr "Η γλώσσα αποθηκεύτηκε — επανεκκίνηση για πλήρη εφαρμογή"
+
+msgid "Links:"
+msgstr "Links:"
+
+msgid "Message language: "
+msgstr "Γλώσσα μηνυμάτων: "
+
+msgid "NOT ENOUGH SPACE — need {size} more"
+msgstr "ΑΝΕΠΑΡΚΗΣ ΧΩΡΟΣ — χρειάζονται {size} ακόμα"
+
+msgid "Named-connection file for cloud credentials. Reference a connection by name (e.g. aws-dev, aws-dev:folder) or in a URL as s3://name@bucket/key. Defaults to credentials.json next to blitcp (override with this flag or $BLITCP_CREDENTIALS). Manage it with: blitcp creds add/list/edit/remove/test."
+msgstr "Αρχείο ονομαστικών συνδέσεων για cloud credentials. Αναφορά σε σύνδεση με όνομα (π.χ. aws-dev) στο URL ή σκέτη."
+
+msgid "One or more sources, followed by the destination. A source can be a folder, file, or glob pattern (e.g. *.zip). Multiple sources are copied side-by-side under destination, preserving their basenames (cp -r style). Glob in the basename also works for SSH sources, e.g. user@host:/data/*.tar.gz"
+msgstr "Μία ή περισσότερες πηγές και μετά ο προορισμός. Πηγή = φάκελος, αρχείο ή glob (π.χ. *.zip). Πολλαπλές πηγές αντιγράφονται δίπλα-δίπλα κάτω από τον προορισμό, διατηρώντας τα basenames (σαν cp -r). Glob στο basename δουλεύει και για πηγές SSH, π.χ. user@host:/data/*.tar.gz"
+
+msgid "Overwrite all files, skip identical-file detection"
+msgstr "Αντικατάσταση όλων των αρχείων, χωρίς ανίχνευση πανομοιότυπων"
+
+msgid "Path to SSH private key for remote destination"
+msgstr "Διαδρομή SSH private key για απομακρυσμένο προορισμό"
+
+msgid "Path to SSH private key for remote source"
+msgstr "Διαδρομή SSH private key για απομακρυσμένη πηγή"
+
+msgid "Path to a GCS service-account JSON key file"
+msgstr "Διαδρομή σε GCS service-account JSON key αρχείο"
+
+msgid "Permission denied — click to unlock with sudo"
+msgstr "Άρνηση πρόσβασης — κλικ για ξεκλείδωμα με sudo"
+
+msgid "Phase 1 — Scanning source"
+msgstr "Φάση 1 — Σάρωση πηγής"
+
+msgid "Phase 1b — Indexing existing files"
+msgstr "Φάση 1β — Ευρετηρίαση υπαρχόντων αρχείων"
+
+msgid "Phase 2 — Deduplication"
+msgstr "Φάση 2 — Αποδιπλασιασμός (dedup)"
+
+msgid "Phase 2b — Incremental check"
+msgstr "Φάση 2β — Έλεγχος αλλαγών"
+
+msgid "Phase 2b — Remote incremental check"
+msgstr "Φάση 2β — Απομακρυσμένος έλεγχος αλλαγών"
+
+msgid "Phase 3 — Space check"
+msgstr "Φάση 3 — Έλεγχος χώρου"
+
+msgid "Phase 3 — Space check (remote destination)"
+msgstr "Φάση 3 — Έλεγχος χώρου (απομακρυσμένος προορισμός)"
+
+msgid "Phase 3 — Space check (remote)"
+msgstr "Φάση 3 — Έλεγχος χώρου (απομακρυσμένος)"
+
+msgid "Phase 4 — Local-to-remote copy"
+msgstr "Φάση 4 — Αντιγραφή τοπικό → απομακρυσμένο"
+
+msgid "Phase 4 — Mapping physical disk layout"
+msgstr "Φάση 4 — Χαρτογράφηση φυσικής διάταξης δίσκου"
+
+msgid "Phase 4 — Remote-to-local copy"
+msgstr "Φάση 4 — Αντιγραφή απομακρυσμένο → τοπικό"
+
+msgid "Phase 4 — Remote-to-remote copy"
+msgstr "Φάση 4 — Αντιγραφή απομακρυσμένο → απομακρυσμένο"
+
+msgid "Phase 5 — Block copy"
+msgstr "Φάση 5 — Αντιγραφή κατά block"
+
+msgid "Phase 5 — Remote copy"
+msgstr "Φάση 5 — Απομακρυσμένη αντιγραφή"
+
+msgid "Phase 5 — Remote-to-local copy"
+msgstr "Φάση 5 — Αντιγραφή απομακρυσμένο → τοπικό"
+
+msgid "Phase 5 — Remote-to-remote copy (relay)"
+msgstr "Φάση 5 — Αντιγραφή απομακρυσμένο → απομακρυσμένο (relay)"
+
+msgid "Phase 6 — Verification"
+msgstr "Φάση 6 — Επαλήθευση"
+
+msgid "Preview plan"
+msgstr "Προεπισκόπηση πλάνου"
+
+msgid "Prompt for SSH password for remote destination"
+msgstr "Ερώτηση κωδικού SSH για απομακρυσμένο προορισμό"
+
+msgid "Prompt for SSH password for remote source"
+msgstr "Ερώτηση κωδικού SSH για απομακρυσμένη πηγή"
+
+msgid "Prompt for the SMB password"
+msgstr "Ερώτηση για τον κωδικό SMB"
+
+msgid "Re-exec self under sudo if not already root. sudo will prompt for the password on the terminal. Useful when source or destination needs root (e.g. /var/lib/longhorn/replicas). Linux/macOS only."
+msgstr "Επανεκτέλεση κάτω από sudo αν δεν τρέχει ήδη ως root. Το sudo θα ζητήσει κωδικό στο τερματικό."
+
+msgid "Ready"
+msgstr "Έτοιμο"
+
+msgid "Reflinks:"
+msgstr "Reflinks:"
+
+msgid "Reject SSH host keys not already in known_hosts instead of the interactive trust-on-first-use prompt. Use for CI/automated runs to prevent first-connection MITM."
+msgstr "Απόρριψη SSH host keys που δεν είναι ήδη στο known_hosts, αντί του διαδραστικού trust-on-first-use."
+
+msgid "Rekey"
+msgstr "Rekey"
+
+msgid "Reload"
+msgstr "Επαναφόρτωση"
+
+msgid "Remote incremental check complete:"
+msgstr "Ο απομακρυσμένος έλεγχος αλλαγών ολοκληρώθηκε:"
+
+msgid "Required:"
+msgstr "Απαιτούνται:"
+
+msgid "Run again"
+msgstr "Εκτέλεση ξανά"
+
+msgid "SMB port (default: 445)"
+msgstr "Θύρα SMB (προεπιλογή: 445)"
+
+msgid "SOURCES"
+msgstr "ΠΗΓΕΣ"
+
+msgid "SSH"
+msgstr "SSH"
+
+msgid "SSH (--ssh-no-sftp) tar batch size in MB (default: 100). Bigger = fewer round-trips; smaller = finer resume granularity. This is NOT --buffer (that's the block-copy I/O buffer)."
+msgstr "Μέγεθος tar batch σε MB για SSH (--ssh-no-sftp) (προεπιλογή: 100). Μεγαλύτερο = λιγότερα round-trips· μικρότερο = συχνότερο progress."
+
+msgid "SSH (no SFTP) — local → remote  [dedup · incremental · verify]"
+msgstr "SSH (χωρίς SFTP) — τοπικό → απομακρυσμένο  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → local  [dedup · incremental · verify]"
+msgstr "SSH (χωρίς SFTP) — απομακρυσμένο → τοπικό  [dedup · incremental · verify]"
+
+msgid "SSH (no SFTP) — remote → remote  [dedup · incremental · verify]"
+msgstr "SSH (χωρίς SFTP) — απομακρυσμένο → απομακρυσμένο  [dedup · incremental · verify]"
+
+msgid "SSH port for remote destination (default: 22)"
+msgstr "Θύρα SSH απομακρυσμένου προορισμού (προεπιλογή: 22)"
+
+msgid "SSH port for remote source (default: 22)"
+msgstr "Θύρα SSH απομακρυσμένης πηγής (προεπιλογή: 22)"
+
+msgid "SSH — Connecting"
+msgstr "SSH — Σύνδεση"
+
+msgid "SSH — Connecting to destination"
+msgstr "SSH — Σύνδεση με τον προορισμό"
+
+msgid "SSH — Connecting to source"
+msgstr "SSH — Σύνδεση με την πηγή"
+
+msgid "Save"
+msgstr "Αποθήκευση"
+
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "Σάρωση του PATH και καταχώρηση αρχείων κατά μέγεθος στο dedup index. Στο sync, αρχεία ίδιου μεγέθους γίνονται lazy-hash και reflink αντί να αντιγραφούν."
+
+msgid "Scanning existing files in {path} ..."
+msgstr "Σάρωση υπαρχόντων αρχείων στο {path} ..."
+
+msgid "Scanning files..."
+msgstr "Σάρωση αρχείων..."
+
+msgid "Scanning remote source..."
+msgstr "Σάρωση απομακρυσμένης πηγής..."
+
+msgid "Scanning... {n} files"
+msgstr "Σάρωση... {n} αρχεία"
+
+msgid "Select this path"
+msgstr "Επιλογή αυτής της διαδρομής"
+
+msgid "Set as destination"
+msgstr "Ορισμός ως προορισμός"
+
+msgid "Set as source"
+msgstr "Ορισμός ως πηγή"
+
+msgid "Show available updates and release notes"
+msgstr "Εμφάνιση διαθέσιμων ενημερώσεων και release notes"
+
+msgid "Show copy plan without copying"
+msgstr "Εμφάνιση πλάνου αντιγραφής χωρίς αντιγραφή"
+
+msgid "Show version and exit"
+msgstr "Εμφάνιση έκδοσης και έξοδος"
+
+msgid "Skip post-copy verification"
+msgstr "Παράλειψη επαλήθευσης μετά την αντιγραφή"
+
+msgid "Skip space check, copy even if not enough space"
+msgstr "Παράλειψη ελέγχου χώρου· αντιγραφή ακόμα κι αν δεν επαρκεί"
+
+msgid "Skipped {n} entries with unsafe paths"
+msgstr "Παραλείφθηκαν {n} εγγραφές με μη ασφαλείς διαδρομές"
+
+msgid "Skipped {n} problematic entries"
+msgstr "Παραλείφθηκαν {n} προβληματικές εγγραφές"
+
+msgid "Skipped {n} symlinks ({reason}):"
+msgstr "Παραλείφθηκαν {n} symlinks ({reason}):"
+
+msgid "Skipped {n} unreadable files:"
+msgstr "Παραλείφθηκαν {n} μη αναγνώσιμα αρχεία:"
+
+msgid "Skipped:"
+msgstr "Παραλείφθηκαν:"
+
+msgid "Source:"
+msgstr "Πηγή:"
+
+msgid "Source: {src} > Free: {free}"
+msgstr "Πηγή: {src} > Ελεύθερα: {free}"
+
+msgid "Speed:"
+msgstr "Ταχύτητα:"
+
+msgid "Start transfer"
+msgstr "Έναρξη μεταφοράς"
+
+msgid "Symlinks:"
+msgstr "Symlinks:"
+
+msgid "Threads for hashing/layout (default: {n})"
+msgstr "Threads για hashing/διάταξη (προεπιλογή: {n})"
+
+msgid "Time:"
+msgstr "Χρόνος:"
+
+msgid "To copy:"
+msgstr "Προς αντιγραφή:"
+
+msgid "Total:"
+msgstr "Σύνολο:"
+
+msgid "Transfer over plain SSH using tar (no SFTP subsystem). For servers with SSH enabled but SFTP disabled (e.g. some NAS). Supports dedup/incremental/verify."
+msgstr "Μεταφορά μέσω απλού SSH με tar (χωρίς SFTP subsystem). Για servers με SSH ενεργό αλλά SFTP απενεργοποιημένο (π.χ. Synology NAS)."
+
+msgid "Unexpected download URL (not HTTPS GitHub):"
+msgstr "Μη αναμενόμενο URL λήψης (όχι HTTPS GitHub):"
+
+msgid "Unknown SSH host"
+msgstr "Άγνωστος SSH host"
+
+msgid "Unlock"
+msgstr "Ξεκλείδωμα"
+
+msgid "Up to date"
+msgstr "Ενημερωμένο"
+
+msgid "Update"
+msgstr "Ενημέρωση"
+
+msgid "Update available"
+msgstr "Διαθέσιμη ενημέρωση"
+
+msgid "Update downloaded"
+msgstr "Η ενημέρωση λήφθηκε"
+
+msgid "Update failed"
+msgstr "Η ενημέρωση απέτυχε"
+
+msgid "Update installed"
+msgstr "Η ενημέρωση εγκαταστάθηκε"
+
+msgid "Use --force to attempt anyway, or free up space on the destination."
+msgstr "Χρησιμοποίησε --force για προσπάθεια ούτως ή άλλως, ή ελευθέρωσε χώρο στον προορισμό."
+
+msgid "Use --force to skip this check."
+msgstr "Χρησιμοποίησε --force για παράλειψη αυτού του ελέγχου."
+
+msgid "Username for smb:// / UNC shares (overrides any user in the URL)"
+msgstr "Όνομα χρήστη για smb:// / UNC shares (υπερισχύει του χρήστη στο URL)"
+
+msgid "VERSION"
+msgstr "ΕΚΔΟΣΗ"
+
+msgid "Verbose output (full FS detection details, etc.)"
+msgstr "Αναλυτική έξοδος (πλήρεις λεπτομέρειες ανίχνευσης FS κ.λπ.)"
+
+msgid "Verification failed:"
+msgstr "Η επαλήθευση απέτυχε:"
+
+msgid "Verification failures: {n}"
+msgstr "Αποτυχίες επαλήθευσης: {n}"
+
+msgid "Verify:"
+msgstr "Επαλήθ.:"
+
+msgid "Verifying"
+msgstr "Επαλήθευση σε εξέλιξη"
+
+msgid "Verifying…"
+msgstr "Επαλήθευση…"
+
+msgid "Warning: Could not check free space: {err}"
+msgstr "Προειδοποίηση: Αδύνατος ο έλεγχος ελεύθερου χώρου: {err}"
+
+msgid "While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."
+msgstr "Κατά το hashing του δίσκου με --index-existing, ανάκτηση χώρου και από αρχεία ΗΔΗ στον δίσκο που είναι διπλότυπα μεταξύ τους (in-place reflink merge)."
+
+msgid "Windows/AD domain for SMB authentication"
+msgstr "Windows/AD domain για SMB πιστοποίηση"
+
+msgid "Write structured JSON log to file"
+msgstr "Εγγραφή δομημένου JSON log σε αρχείο"
+
+msgid "already exist,"
+msgstr "υπάρχουν ήδη,"
+
+msgid "copy options"
+msgstr "επιλογές αντιγραφής"
+
+msgid "credentials.json is locked"
+msgstr "το credentials.json είναι κλειδωμένο"
+
+msgid "example — edit before running"
+msgstr "παράδειγμα — επεξεργασία πριν την εκτέλεση"
+
+msgid "blitcp.py (the copy engine) was not found next to the GUI."
+msgstr "Το blitcp (ο πυρήνας αντιγραφής) δεν βρέθηκε δίπλα στο GUI."
+
+msgid "files"
+msgstr "αρχεία"
+
+msgid "files unchanged"
+msgstr "αρχεία αμετάβλητα"
+
+msgid "free"
+msgstr "ελεύθερα"
+
+msgid "hash"
+msgstr "hash"
+
+msgid "info & self-update"
+msgstr "πληροφορίες & αυτο-ενημέρωση"
+
+msgid "language"
+msgstr "γλώσσα"
+
+msgid "locked"
+msgstr "κλειδωμένο"
+
+msgid "node_modules is excluded by default from BOTH the copy and --index-existing (huge, regenerable, and full of tiny identical files). Pass this to include it."
+msgstr "Το node_modules εξαιρείται από προεπιλογή ΚΑΙ από την αντιγραφή ΚΑΙ από το --index-existing (τεράστιο, αναγεννήσιμο)· αυτό το flag το συμπεριλαμβάνει."
+
+msgid "not installed"
+msgstr "μη εγκατεστημένο"
+
+msgid "passed"
+msgstr "επιτυχής"
+
+msgid "pointer to canonical; canonical must not be deleted"
+msgstr "δείκτης στο κανονικό· το κανονικό δεν πρέπει να διαγραφεί"
+
+msgid "shared inode; zero extra disk"
+msgstr "κοινό inode· μηδενικός επιπλέον χώρος"
+
+msgid "single · local / SSH / cloud"
+msgstr "μονό · τοπικό / SSH / cloud"
+
+msgid "ssh options (remote source / destination)"
+msgstr "επιλογές ssh (απομακρυσμένη πηγή / προορισμός)"
+
+msgid "testing…"
+msgstr "δοκιμή…"
+
+msgid "threads"
+msgstr "threads"
+
+msgid "to create"
+msgstr "προς δημιουργία"
+
+msgid "total"
+msgstr "συνολικά"
+
+msgid "untested"
+msgstr "αδοκίμαστο"
+
+msgid "verify mismatch: {name}"
+msgstr "αναντιστοιχία επαλήθευσης: {name}"
+
+msgid "{n} copied"
+msgstr "{n} αντιγράφηκαν"
+
+msgid "{n} linked"
+msgstr "{n} έγιναν link"
+
+msgid "{n} skipped"
+msgstr "{n} παραλείφθηκαν"
+
+msgid "{size} saved by dedup"
+msgstr "{size} εξοικονομήθηκαν με dedup"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "subcommands:\n  creds <sub>      Διαχείριση αποθηκευμένων cloud/SSH συνδέσεων στο αρχείο credentials:\n                   add, list, edit, remove, test, encrypt/decrypt, lock.\n                   Τρέξε 'blitcp creds' για βοήθεια.\n  ls <target>      Λίστα cloud τοποθεσίας (όνομα σύνδεσης ή s3:// / az:// / gs:// URL)\n                   ή απομακρυσμένου SSH φακέλου (μέσω SFTP).\n                   Ψευδώνυμο: list-objects. Τρέξε 'blitcp ls -h' για βοήθεια.\n\nπαραδείγματα:\n  blitcp /data /media/usb/data           τοπικό  → τοπικό\n  blitcp /data user@host:/backup         τοπικό  → απομακρυσμένο (SSH)\n  blitcp user@host:/data /local/backup   απομακρυσμένο → τοπικό\n  blitcp /data s3://bucket/backup        τοπικό  → cloud\n  blitcp creds add aws-dev               αποθήκευση προφίλ σύνδεσης\n  blitcp ls aws-dev                      λίστα αποθηκευμένης cloud σύνδεσης\n  blitcp ls user@host:/var/log           λίστα απομακρυσμένου SSH φακέλου\n"
+
+msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
+msgstr "Γλώσσα μηνυμάτων: {langs}. Υπερισχύει του BLITCP_LANG και του locale του συστήματος. Η μηχανική έξοδος (--log-file) μένει στα αγγλικά."
+
+
+# GUI deep-path strings + Settings/language section (2026-08-06)
+msgid "Access denied — run as Administrator to browse this folder"
+msgstr "Άρνηση πρόσβασης — εκτέλεση ως Administrator για περιήγηση σε αυτόν τον φάκελο"
+
+msgid "Add at least one source"
+msgstr "Πρόσθεσε τουλάχιστον ένα source"
+
+msgid "Added {0} as source"
+msgstr "Το {0} προστέθηκε ως source"
+
+msgid "BLITCP"
+msgstr "BLITCP"
+
+msgid "Browse SSH"
+msgstr "Περιήγηση SSH"
+
+msgid "Browse SSH server"
+msgstr "Περιήγηση SSH server"
+
+msgid "Browse cloud"
+msgstr "Περιήγηση cloud"
+
+msgid "Browse cloud storage"
+msgstr "Περιήγηση cloud storage"
+
+msgid "Browse files"
+msgstr "Περιήγηση αρχείων"
+
+msgid "Connections"
+msgstr "Συνδέσεις"
+
+msgid "Copy in progress — update not applied"
+msgstr "Μεταφορά σε εξέλιξη — η ενημέρωση δεν εφαρμόστηκε"
+
+msgid "Could not check for updates"
+msgstr "Αδύνατος ο έλεγχος ενημερώσεων"
+
+msgid "Could not read credentials:"
+msgstr "Αδύνατη η ανάγνωση credentials:"
+
+msgid "Could not save history:"
+msgstr "Αδύνατη η αποθήκευση ιστορικού:"
+
+msgid "Could not save:"
+msgstr "Αδύνατη η αποθήκευση:"
+
+msgid "Could not start blitcp.py"
+msgstr "Αδύνατη η εκκίνηση του blitcp.py"
+
+msgid "Dark mode"
+msgstr "Σκούρο θέμα"
+
+msgid "Dedup saved"
+msgstr "Όφελος dedup"
+
+msgid "Documentation"
+msgstr "Τεκμηρίωση"
+
+msgid "Downloading"
+msgstr "Λήψη"
+
+msgid "Downloading blitcp.py"
+msgstr "Λήψη blitcp.py"
+
+msgid "Dry run complete"
+msgstr "Το dry run ολοκληρώθηκε"
+
+msgid "Dry run failed — see log"
+msgstr "Το dry run απέτυχε — δες το log"
+
+msgid "ETA"
+msgstr "ETA"
+
+msgid "Enter passphrase"
+msgstr "Εισαγωγή passphrase"
+
+msgid "Fill in a random 6-word passphrase (~77 bits)"
+msgstr "Συμπλήρωση τυχαίου passphrase 6 λέξεων (~77 bits)"
+
+msgid "Finish or cancel the running copy before updating"
+msgstr "Ολοκλήρωσε ή ακύρωσε την τρέχουσα μεταφορά πριν την ενημέρωση"
+
+msgid "Folder = navigate · file = click to select · double-click = set as source."
+msgstr "Φάκελος = πλοήγηση · αρχείο = κλικ για επιλογή · διπλό κλικ = ορισμός ως source."
+
+msgid "Generate"
+msgstr "Δημιουργία"
+
+msgid "Generated ({0} bits). Save it in your password manager now — it is shown only here."
+msgstr "Δημιουργήθηκε ({0} bits). Αποθήκευσέ το στον password manager σου τώρα — εμφανίζεται μόνο εδώ."
+
+msgid "History"
+msgstr "Ιστορικό"
+
+msgid "Install already running…"
+msgstr "Η εγκατάσταση ήδη εκτελείται…"
+
+msgid "Install failed — see terminal"
+msgstr "Η εγκατάσταση απέτυχε — δες το terminal"
+
+msgid "Installed ✓"
+msgstr "Εγκαταστάθηκε ✓"
+
+msgid "Installing"
+msgstr "Εγκατάσταση"
+
+msgid "Interface language"
+msgstr "Γλώσσα διεπαφής"
+
+msgid "LANGUAGE"
+msgstr "ΓΛΩΣΣΑ"
+
+msgid "Language, dependencies, version, updates."
+msgstr "Γλώσσα, εξαρτήσεις, έκδοση, ενημερώσεις."
+
+msgid "Light mode"
+msgstr "Φωτεινό θέμα"
+
+msgid "Loaded transfer — review and Start"
+msgstr "Η μεταφορά φορτώθηκε — έλεγξε και πάτα Start"
+
+msgid "Many sources → one destination. With more than one source, local only."
+msgstr "Πολλά sources → ένα destination. Με πάνω από ένα source, μόνο τοπικά."
+
+msgid "Name already exists"
+msgstr "Το όνομα υπάρχει ήδη"
+
+msgid "New transfer"
+msgstr "Νέα μεταφορά"
+
+msgid "Past transfers from the saved JSON logs."
+msgstr "Προηγούμενες μεταφορές από τα αποθηκευμένα JSON logs."
+
+msgid "Progress"
+msgstr "Πρόοδος"
+
+msgid "Re-bound credentials.json to this blitcp.py"
+msgstr "Το credentials.json ξανασυνδέθηκε με αυτό το blitcp.py"
+
+msgid "Read from / saved to credentials.json. Double-click to edit."
+msgstr "Ανάγνωση/αποθήκευση στο credentials.json. Διπλό κλικ για επεξεργασία."
+
+msgid "Rekey failed:"
+msgstr "Το rekey απέτυχε:"
+
+msgid "Rekey needs blitcp.py"
+msgstr "Το rekey χρειάζεται το blitcp.py"
+
+msgid "Removed"
+msgstr "Αφαιρέθηκε"
+
+msgid "Set a destination"
+msgstr "Όρισε destination"
+
+msgid "Settings"
+msgstr "Ρυθμίσεις"
+
+msgid "Speed"
+msgstr "Ταχύτητα"
+
+msgid "This <b>credentials.json</b> was bound to a different blitcp.py (tamper check). If you just updated blitcp, press <b>Rekey</b> to re-bind it."
+msgstr "Αυτό το <b>credentials.json</b> ήταν δεμένο με διαφορετικό blitcp.py (έλεγχος παραποίησης). Αν μόλις ενημέρωσες το blitcp, πάτα <b>Rekey</b> για επανασύνδεση."
+
+msgid "This PC · local files"
+msgstr "Αυτός ο υπολογιστής · τοπικά αρχεία"
+
+msgid "Transfer"
+msgstr "Μεταφορά"
+
+msgid "Unlock credentials.json"
+msgstr "Ξεκλείδωμα credentials.json"
+
+msgid "Unlock credentials.json first"
+msgstr "Ξεκλείδωσε πρώτα το credentials.json"
+
+msgid "Update check needs blitcp.py"
+msgstr "Ο έλεγχος ενημερώσεων χρειάζεται το blitcp.py"
+
+msgid "blitcp.py not found next to the GUI"
+msgstr "Το blitcp.py δεν βρέθηκε δίπλα στο GUI"
+
+msgid "credentials.json is not encrypted — nothing to rekey"
+msgstr "Το credentials.json δεν είναι κρυπτογραφημένο — τίποτα για rekey"
+
+msgid "drive"
+msgstr "δίσκος"
+
+msgid "failed"
+msgstr "απέτυχε"
+
+msgid "folder"
+msgstr "φάκελος"
+
+msgid "local only when multiple"
+msgstr "μόνο τοπικά όταν είναι πολλά"
+
+msgid "sudo authenticated"
+msgstr "sudo: επιτυχής ταυτοποίηση"
+
+msgid "sudo: authentication failed"
+msgstr "sudo: αποτυχία ταυτοποίησης"
+
+msgid "Language"
+msgstr "Γλώσσα"
+
+msgid "Later"
+msgstr "Αργότερα"
+
+msgid "Restart blitcp to apply the new language everywhere?"
+msgstr "Επανεκκίνηση του blitcp για να εφαρμοστεί παντού η νέα γλώσσα;"
+
+msgid "Restart now"
+msgstr "Επανεκκίνηση τώρα"
+
+msgid "Add source"
+msgstr "Προσθήκη source"
+
+msgid "Advanced"
+msgstr "Σύνθετα"
+
+msgid "Cloud"
+msgstr "Cloud"
+
+msgid "Local"
+msgstr "Τοπικό"
+
+msgid "dedup"
+msgstr "dedup"
+
+msgid "verify"
+msgstr "επαλήθευση"
+
+msgid "--use-sudo"
+msgstr "--use-sudo"
+
+msgid "Buffer (MB)"
+msgstr "Buffer (MB)"
+
+msgid "COPY"
+msgstr "ΑΝΤΙΓΡΑΦΗ"
+
+msgid "Cloud concurrency"
+msgstr "Παραλληλία cloud"
+
+msgid "EXCLUDE PATTERNS"
+msgstr "ΜΟΤΙΒΑ ΕΞΑΙΡΕΣΗΣ"
+
+msgid "FLAGS"
+msgstr "FLAGS"
+
+msgid "INDEX EXISTING (reflink dedup vs pre-existing files)"
+msgstr "INDEX EXISTING (reflink dedup με προϋπάρχοντα αρχεία)"
+
+msgid "PRESERVE METADATA"
+msgstr "ΔΙΑΤΗΡΗΣΗ METADATA"
+
+msgid "SSH chunk (MB)"
+msgstr "SSH chunk (MB)"
+
+msgid "Tar batch size for SSH (--ssh-no-sftp) transfers. Not the same as Buffer."
+msgstr "Μέγεθος tar batch για SSH μεταφορές (--ssh-no-sftp). Δεν είναι το ίδιο με το Buffer."
+
+msgid "acl"
+msgstr "acl"
+
+msgid "dedup existing"
+msgstr "dedup υπαρχόντων"
+
+msgid "force"
+msgstr "force"
+
+msgid "include node_modules"
+msgstr "με node_modules"
+
+msgid "mode"
+msgstr "δικαιώματα"
+
+msgid "no hash cache"
+msgstr "χωρίς hash cache"
+
+msgid "overwrite all"
+msgstr "αντικατάσταση όλων"
+
+msgid "owner"
+msgstr "ιδιοκτήτης"
+
+msgid "times"
+msgstr "χρόνοι"
+
+msgid "xattr"
+msgstr "xattr"
+

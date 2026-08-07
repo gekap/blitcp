@@ -1,0 +1,12 @@
+# Shows a "Sponsor" button on the repository.
+# Docs: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+github: [gekap]
+
+# Other funding platforms — uncomment and fill in if you use them:
+# patreon: your-patreon-username
+# open_collective: your-collective
+# ko_fi: your-kofi-username
+# liberapay: your-liberapay-username
+# buy_me_a_coffee: your-bmac-username
+# custom: ["https://your-site.example/donate"]

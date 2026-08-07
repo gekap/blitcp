@@ -47,7 +47,7 @@ jobs:
               gh release create "$tag" --title "$tag" --generate-notes
             fi
           fi
-          gh release upload "$tag" fast_copy.py --clobber
+          gh release upload "$tag" blitcp.py --clobber
 
   build:
     needs: prepare
@@ -61,13 +61,13 @@ jobs:
           # locks out Debian 12, RHEL 9 and anything older; 22.04 gives 2.35.
           - os: ubuntu-22.04
             name: linux
-            artifact: fast_copy
+            artifact: blitcp
           - os: macos-latest
             name: macos-arm64
-            artifact: fast_copy
+            artifact: blitcp
           - os: windows-latest
             name: windows
-            artifact: fast_copy.exe
+            artifact: blitcp.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -89,7 +89,7 @@ jobs:
           python -c "import boto3, azure.storage.blob, google.cloud.storage, smbclient; print('cloud + SMB SDKs OK')"
 
       - name: Install pywin32 (NTFS owner/ACL preservation, bundled into the binary)
-        # Windows-only. fast_copy.py imports win32security / pywintypes lazily, so
+        # Windows-only. blitcp.py imports win32security / pywintypes lazily, so
         # without pywin32 present at build time the frozen .exe silently no-ops
         # NTFS owner+DACL copy on --preserve=acl/all. This proves the BUILD env
         # has pywin32; the bundle-verify step after the build proves PyInstaller
@@ -101,7 +101,7 @@ jobs:
 
       - name: Embed private update token
         # Inject the read-only update token (PRIVATE builds only) from the
-        # FC_EMBEDDED_UPDATE_TOKEN secret into fast_copy.py before freezing, so
+        # FC_EMBEDDED_UPDATE_TOKEN secret into blitcp.py before freezing, so
         # the binary self-updates without an env var. No secret → no token
         # (public builds stay clean). base64 keeps it off a casual `strings`.
         shell: bash
@@ -110,9 +110,9 @@ jobs:
         run: |
           if [ -n "$FC_EMBEDDED_UPDATE_TOKEN" ]; then
             b64=$(printf '%s' "$FC_EMBEDDED_UPDATE_TOKEN" | base64 | tr -d '\n')
-            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" fast_copy.py
-            rm -f fast_copy.py.bak
-            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" fast_copy.py \
+            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" blitcp.py
+            rm -f blitcp.py.bak
+            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" blitcp.py \
               && echo "embedded update token (${#b64} b64 chars)" \
               || { echo "::error::token injection failed"; exit 1; }
           else
@@ -143,10 +143,10 @@ jobs:
         if: matrix.name == 'windows'
         shell: bash
         run: |
-          listing=$(python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b dist/fast_copy.exe)
+          listing=$(python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b dist/blitcp.exe)
           for mod in win32security pywintypes; do
             if ! grep -qi "$mod" <<< "$listing"; then
-              echo "::error::$mod is not bundled in dist/fast_copy.exe — NTFS ACL preservation would silently no-op"
+              echo "::error::$mod is not bundled in dist/blitcp.exe — NTFS ACL preservation would silently no-op"
               exit 1
             fi
           done
@@ -157,15 +157,15 @@ jobs:
         run: |
           n="${{ matrix.name }}"
           if [ "$n" = "windows" ]; then
-            mv dist/fast_copy.exe dist/fast_copy-$n.exe
-            [ -f dist/fast_copy_gui.exe ] && mv dist/fast_copy_gui.exe dist/fast_copy_gui-$n.exe
+            mv dist/blitcp.exe dist/blitcp-$n.exe
+            [ -f dist/blitcp_gui.exe ] && mv dist/blitcp_gui.exe dist/blitcp_gui-$n.exe
           else
-            mv dist/fast_copy dist/fast_copy-$n
+            mv dist/blitcp dist/blitcp-$n
             # GUI on macOS is a .app bundle → zip it; elsewhere it's a loose binary.
-            if [ -d dist/fast_copy_gui.app ]; then
-              (cd dist && zip -qr fast_copy_gui-$n.app.zip fast_copy_gui.app)
-            elif [ -f dist/fast_copy_gui ]; then
-              mv dist/fast_copy_gui dist/fast_copy_gui-$n
+            if [ -d dist/blitcp_gui.app ]; then
+              (cd dist && zip -qr blitcp_gui-$n.app.zip blitcp_gui.app)
+            elif [ -f dist/blitcp_gui ]; then
+              mv dist/blitcp_gui dist/blitcp_gui-$n
             fi
           fi
           ls -la dist/
@@ -192,11 +192,11 @@ jobs:
                         Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $signtool) { throw 'signtool.exe not found in the Windows SDK.' }
           Write-Host "Using $signtool"
-          foreach ($f in Get-ChildItem 'dist\fast_copy*-windows.exe') {
+          foreach ($f in Get-ChildItem 'dist\blitcp*-windows.exe') {
             & $signtool sign `
               /f $pfx /p $env:WINDOWS_CERT_PASSWORD `
               /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
-              /d 'fast-copy' $f.FullName
+              /d 'blitcp' $f.FullName
             if ($LASTEXITCODE -ne 0) { throw "signing failed for $($f.Name)" }
             # Verify is informational: a self-signed test cert's root isn't trusted
             # on the runner, so /pa returns non-zero even though the file IS signed.
@@ -215,7 +215,7 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           shopt -s nullglob
-          for f in dist/fast_copy-${{ matrix.name }}* dist/fast_copy_gui-${{ matrix.name }}*; do
+          for f in dist/blitcp-${{ matrix.name }}* dist/blitcp_gui-${{ matrix.name }}*; do
             echo "Uploading $f ..."
             gh release upload "$tag" "$f" --clobber
           done
@@ -247,9 +247,9 @@ jobs:
         run: |
           if [ -n "$FC_EMBEDDED_UPDATE_TOKEN" ]; then
             b64=$(printf '%s' "$FC_EMBEDDED_UPDATE_TOKEN" | base64 | tr -d '\n')
-            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" fast_copy.py
-            rm -f fast_copy.py.bak
-            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" fast_copy.py \
+            sed -i.bak "s|^_EMBEDDED_UPDATE_TOKEN_B64 = \"\"|_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"|" blitcp.py
+            rm -f blitcp.py.bak
+            grep -q "_EMBEDDED_UPDATE_TOKEN_B64 = \"$b64\"" blitcp.py \
               && echo "embedded update token (${#b64} b64 chars)" \
               || { echo "::error::token injection failed"; exit 1; }
           else
@@ -295,25 +295,25 @@ jobs:
           fi
           # Make the x86_64 deps importable by PyInstaller's analysis/hooks.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
-            --onefile --name fast_copy --clean --noupx --console \
-            --paths "$PKGDIR" --icon assets/fast-copy.icns \
+            --onefile --name blitcp --clean --noupx --console \
+            --paths "$PKGDIR" --icon assets/blitcp.icns \
             --hidden-import=xxhash --hidden-import=paramiko $CLOUD_FLAGS \
-            fast_copy.py
-          file dist/fast_copy
+            blitcp.py
+          file dist/blitcp
           # GUI (best-effort — must not block the CLI release).
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
-            --onefile --windowed --name fast_copy_gui --clean --noupx \
-            --paths "$PKGDIR" --icon assets/fast-copy.icns \
+            --onefile --windowed --name blitcp_gui --clean --noupx \
+            --paths "$PKGDIR" --icon assets/blitcp.icns \
             --hidden-import=xxhash --hidden-import=paramiko $CLOUD_FLAGS \
-            fast_copy_modern_gui.py || echo "::warning::macOS-intel GUI build failed; shipping CLI only"
+            blitcp_gui.py || echo "::warning::macOS-intel GUI build failed; shipping CLI only"
 
       - name: Rename binaries
         run: |
-          mv dist/fast_copy dist/fast_copy-macos-intel
-          if [ -d dist/fast_copy_gui.app ]; then
-            (cd dist && zip -qr fast_copy_gui-macos-intel.app.zip fast_copy_gui.app)
-          elif [ -f dist/fast_copy_gui ]; then
-            mv dist/fast_copy_gui dist/fast_copy_gui-macos-intel
+          mv dist/blitcp dist/blitcp-macos-intel
+          if [ -d dist/blitcp_gui.app ]; then
+            (cd dist && zip -qr blitcp_gui-macos-intel.app.zip blitcp_gui.app)
+          elif [ -f dist/blitcp_gui ]; then
+            mv dist/blitcp_gui dist/blitcp_gui-macos-intel
           fi
           ls -la dist/
 
@@ -323,7 +323,7 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           shopt -s nullglob
-          for f in dist/fast_copy-macos-intel* dist/fast_copy_gui-macos-intel*; do
+          for f in dist/blitcp-macos-intel* dist/blitcp_gui-macos-intel*; do
             echo "Uploading $f ..."
             gh release upload "$tag" "$f" --clobber
           done
@@ -352,8 +352,8 @@ jobs:
                    --json assets --jq '.assets[].name')
           echo "Release assets:"; echo "$assets"
           missing=0
-          for expect in fast_copy-linux fast_copy-macos-arm64 \
-                        fast_copy-macos-intel fast_copy-windows.exe; do
+          for expect in blitcp-linux blitcp-macos-arm64 \
+                        blitcp-macos-intel blitcp-windows.exe; do
             if ! printf '%s\n' "$assets" | grep -qx "$expect"; then
               echo "::error::missing release asset: $expect"
               missing=1
