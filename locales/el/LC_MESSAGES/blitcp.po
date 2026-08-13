@@ -949,3 +949,21 @@ msgstr "χρόνοι"
 msgid "xattr"
 msgstr "xattr"
 
+
+msgid "Small files"
+msgstr "Μικρά αρχεία"
+
+msgid "parallel workers"
+msgstr "παράλληλα νήματα"
+
+msgid "stream"
+msgstr "ροή"
+
+msgid "How <1MB files are copied on local transfers: a parallel worker pool (default, fastest) or the classic single-threaded tar block-stream."
+msgstr "Πώς αντιγράφονται τα αρχεία κάτω του 1MB στις τοπικές μεταφορές: παράλληλη δεξαμενή νημάτων (προεπιλογή, ταχύτερη) ή το κλασικό μονονηματικό tar block-stream."
+
+msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
+msgstr "Μηχανισμός μικρών αρχείων για τοπικές αντιγραφές: 'parallel' = δεξαμενή νημάτων (νήματα x4, προεπιλογή), 'stream' = μονονηματικό tar block-stream"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "υποεντολές:\n  creds <sub>      Διαχείριση αποθηκευμένων προφίλ σύνδεσης cloud/SSH στο\n                   αρχείο διαπιστευτηρίων: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Βοήθεια: 'blitcp creds'.\n  ls <target>      Εμφάνιση θέσης cloud (όνομα αποθηκευμένης σύνδεσης ή URL\n                   s3:// / az:// / gs://) ή απομακρυσμένου καταλόγου SSH\n                   (αποθηκευμένη σύνδεση ssh ή user@host:/path, μέσω SFTP).\n                   Ψευδώνυμο: list-objects. Βοήθεια: 'blitcp ls -h'.\n\nπαραδείγματα:\n  blitcp /data /media/usb/data           τοπικό  → τοπικό\n  blitcp /data user@host:/backup         τοπικό  → απομακρυσμένο (SSH)\n  blitcp user@host:/data /local/backup   απομακρυσμένο → τοπικό\n  blitcp /data s3://bucket/backup        τοπικό  → cloud\n  blitcp creds add aws-dev               αποθήκευση προφίλ σύνδεσης\n  blitcp ls aws-dev                      λίστα αποθηκευμένης σύνδεσης cloud\n  blitcp ls user@host:/var/log           λίστα απομακρυσμένου καταλόγου SSH\n"

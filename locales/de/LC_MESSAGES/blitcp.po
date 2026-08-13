@@ -949,3 +949,21 @@ msgstr "Zeiten"
 msgid "xattr"
 msgstr "xattr"
 
+
+msgid "Small files"
+msgstr "Kleine Dateien"
+
+msgid "parallel workers"
+msgstr "parallele Worker"
+
+msgid "stream"
+msgstr "Stream"
+
+msgid "How <1MB files are copied on local transfers: a parallel worker pool (default, fastest) or the classic single-threaded tar block-stream."
+msgstr "Wie Dateien unter 1 MB bei lokalen Übertragungen kopiert werden: paralleler Worker-Pool (Standard, am schnellsten) oder der klassische einsträngige Tar-Blockstream."
+
+msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
+msgstr "Engine für kleine Dateien bei lokalen Kopien: 'parallel' = Worker-Pool (Threads x4, Standard), 'stream' = einsträngiger Tar-Blockstream"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "Unterbefehle:\n  creds <sub>      Gespeicherte Cloud-/SSH-Verbindungsprofile in der\n                   Credentials-Datei verwalten: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Hilfe: 'blitcp creds'.\n  ls <target>      Einen Cloud-Speicherort auflisten (gespeicherter Verbindungsname\n                   oder s3:// / az:// / gs:// URL) oder ein entferntes SSH-Verzeichnis\n                   (gespeicherte SSH-Verbindung oder user@host:/pfad, via SFTP).\n                   Alias: list-objects. Hilfe: 'blitcp ls -h'.\n\nBeispiele:\n  blitcp /data /media/usb/data           lokal  → lokal\n  blitcp /data user@host:/backup         lokal  → entfernt (SSH)\n  blitcp user@host:/data /local/backup   entfernt → lokal\n  blitcp /data s3://bucket/backup        lokal  → Cloud\n  blitcp creds add aws-dev               Verbindungsprofil speichern\n  blitcp ls aws-dev                      gespeicherte Cloud-Verbindung auflisten\n  blitcp ls user@host:/var/log           entferntes SSH-Verzeichnis auflisten\n"

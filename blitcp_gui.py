@@ -90,7 +90,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with blitcp.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "4.0.0"
+GUI_VERSION = "4.0.2"
 GUI_REPO = "gekap/blitcp"
 
 try:
@@ -2022,8 +2022,11 @@ class BlitcpGUI(QWidget):
         opts.addWidget(tlbl)
         self.thread_sel = QComboBox()
         self.thread_sel.setObjectName("mini")
-        self.thread_sel.addItems(["2", "4", "8", "16"])
-        self.thread_sel.setCurrentText("4")
+        # "auto" = let the CLI size from the CPU (logical processors,
+        # floor 4 / cap 16). Explicit numbers are for experimentation —
+        # SSD/SSH/cloud destinations reward 32+, USB HDDs don't.
+        self.thread_sel.addItems(["auto", "2", "4", "8", "16", "32", "64", "128"])
+        self.thread_sel.setCurrentText("auto")
         opts.addWidget(self.thread_sel)
         opts.addStretch(1)
         self.adv_toggle = self._opt(ic("adjustments") + " " + _tr("Advanced"), False)
@@ -2082,6 +2085,7 @@ class BlitcpGUI(QWidget):
         grid.addWidget(self._advlbl(_tr("Buffer (MB)")), 0, 0)
         grid.addWidget(self._advlbl(_tr("Cloud concurrency")), 0, 1)
         grid.addWidget(self._advlbl(_tr("SSH chunk (MB)")), 0, 2)
+        grid.addWidget(self._advlbl(_tr("Small files")), 0, 3)
         self.buf_input = QLineEdit("64")
         self.buf_input.setObjectName("advinput")
         self.conc_input = QLineEdit("16")
@@ -2090,9 +2094,17 @@ class BlitcpGUI(QWidget):
         self.chunk_input.setObjectName("advinput")
         self.chunk_input.setToolTip(_tr("Tar batch size for SSH (--ssh-no-sftp) "
                                         "transfers. Not the same as Buffer."))
+        self.small_sel = QComboBox()
+        self.small_sel.setObjectName("mini")
+        self.small_sel.addItems([_tr("parallel workers"), _tr("stream")])
+        self.small_sel.setToolTip(_tr("How <1MB files are copied on local "
+                                      "transfers: a parallel worker pool "
+                                      "(default, fastest) or the classic "
+                                      "single-threaded tar block-stream."))
         grid.addWidget(self.buf_input, 1, 0)
         grid.addWidget(self.conc_input, 1, 1)
         grid.addWidget(self.chunk_input, 1, 2)
+        grid.addWidget(self.small_sel, 1, 3)
         lay.addLayout(grid)
         lay.addSpacing(16)
 
@@ -2287,7 +2299,14 @@ class BlitcpGUI(QWidget):
             stats.addWidget(vl, 1, i)
             self.stat_vals[k] = vl
         lay.addLayout(stats)
-        lay.addSpacing(13)
+        # Current-file line: which file (or stage) the engine is writing right
+        # now, with its own progress — so a multi-GB file doesn't look like a
+        # frozen counter. Fed by the "current" fields of --progress-json.
+        self.pcur = QLabel("")
+        self.pcur.setObjectName("statk")
+        lay.addSpacing(4)
+        lay.addWidget(self.pcur)
+        lay.addSpacing(9)
 
         self.log_box = QFrame()
         self.log_box.setObjectName("logbox")
@@ -2913,7 +2932,14 @@ class BlitcpGUI(QWidget):
         h = self.hash_sel.currentText().strip()
         if h:
             argv += ["--hash", h]
-        argv += ["--threads", self.thread_sel.currentText().strip() or "4"]
+        tsel = self.thread_sel.currentText().strip()
+        if tsel and tsel != "auto":
+            argv += ["--threads", tsel]
+        # "auto": omit --threads entirely — the CLI derives it from the CPU.
+        # Index-based (labels are translated): 0 = parallel (CLI default),
+        # 1 = tar block-stream.
+        if self.small_sel.currentIndex() == 1:
+            argv += ["--small-files", "stream"]
         if self.buf_input.text().strip():
             argv += ["--buffer", self.buf_input.text().strip()]
         if self.conc_input.text().strip():
@@ -3072,6 +3098,7 @@ class BlitcpGUI(QWidget):
         self.stat_vals["Speed"].setText("—")
         self.stat_vals["ETA"].setText("—")
         self.stat_vals["Dedup saved"].setText("—")
+        self.pcur.setText("")
         self.pfiles.setText(_tr("0 / 0 files"))
 
         proc.readyReadStandardOutput.connect(self._on_proc_stdout)
@@ -3210,8 +3237,23 @@ class BlitcpGUI(QWidget):
                 self.pfiles.setText(
                     f"{int(ev.get('files_done', 0)):,} / {int(ev.get('files_total', 0)):,} files")
                 self.stat_vals["Speed"].setText(fmt_size(ev.get("speed_bps", 0) or 0) + "/s")
+                # eta_s null = "not enough history yet" (fresh stage) — show a
+                # dash, never a fake number.
+                _es = ev.get("eta_s")
                 self.stat_vals["ETA"].setText(
-                    "0s" if ev.get("t") == "done" else fmt_time(ev.get("eta_s", 0) or 0))
+                    "0s" if ev.get("t") == "done"
+                    else ("—" if _es is None else fmt_time(_es)))
+                cur = ev.get("current")
+                if cur and ev.get("t") != "done":
+                    name = cur if len(cur) <= 72 else "…" + cur[-71:]
+                    ct = ev.get("current_total", 0) or 0
+                    if ct >= 64 * 1024 * 1024:  # per-file progress only where it means anything
+                        cd = ev.get("current_done", 0) or 0
+                        self.pcur.setText(f"{name}   {fmt_size(cd)} / {fmt_size(ct)}")
+                    else:
+                        self.pcur.setText(name)
+                else:
+                    self.pcur.setText("")
                 self._run_meta["last"] = ev
             return
         # plain text → log (collapsing Python tracebacks to one clean line)
@@ -4312,6 +4354,8 @@ class BlitcpGUI(QWidget):
             "buffer_mb": self.buf_input.text(),
             "cloud_concurrency": self.conc_input.text(),
             "chunk_mb": self.chunk_input.text(),
+            "small_files": "stream" if self.small_sel.currentIndex() == 1
+                           else "parallel",
             "preserve": [k for k, o in self.meta_opts.items() if o.property("active")],
             "flags": [k for k, o in self.flag_opts.items() if o.property("active")],
             "exclude": list(self.exclude_patterns),
@@ -4463,6 +4507,9 @@ class BlitcpGUI(QWidget):
             self.conc_input.setText(str(cfg["cloud_concurrency"]))
         if "chunk_mb" in cfg:
             self.chunk_input.setText(str(cfg["chunk_mb"]))
+        if cfg.get("small_files"):
+            self.small_sel.setCurrentIndex(
+                1 if cfg["small_files"] == "stream" else 0)
         for k, o in self.meta_opts.items():
             o.setProperty("active", k in cfg.get("preserve", []))
             repolish(o)

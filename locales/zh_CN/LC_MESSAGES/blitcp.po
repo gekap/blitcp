@@ -949,3 +949,21 @@ msgstr "时间戳"
 msgid "xattr"
 msgstr "xattr"
 
+
+msgid "Small files"
+msgstr "小文件"
+
+msgid "parallel workers"
+msgstr "并行工作线程"
+
+msgid "stream"
+msgstr "流式"
+
+msgid "How <1MB files are copied on local transfers: a parallel worker pool (default, fastest) or the classic single-threaded tar block-stream."
+msgstr "本地传输中小于 1MB 文件的复制方式：并行工作线程池（默认，最快）或经典的单线程 tar 块流。"
+
+msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
+msgstr "本地复制的小文件引擎：'parallel' = 工作线程池（线程 x4，默认），'stream' = 单线程 tar 块流"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "子命令:\n  creds <sub>      管理凭据文件中保存的 cloud/SSH 连接配置:\n                   add, list, edit, remove, test, encrypt/decrypt, lock。\n                   运行 'blitcp creds' 查看帮助。\n  ls <target>      列出云端位置（已保存的连接名称或 s3:// / az:// / gs://\n                   URL）或远程 SSH 目录（已保存的 ssh 连接或\n                   user@host:/path，经 SFTP）。\n                   别名: list-objects。运行 'blitcp ls -h' 查看帮助。\n\n示例:\n  blitcp /data /media/usb/data           本地  → 本地\n  blitcp /data user@host:/backup         本地  → 远程 (SSH)\n  blitcp user@host:/data /local/backup   远程 → 本地\n  blitcp /data s3://bucket/backup        本地  → 云端\n  blitcp creds add aws-dev               保存连接配置\n  blitcp ls aws-dev                      列出已保存的云连接\n  blitcp ls user@host:/var/log           列出远程 SSH 目录\n"

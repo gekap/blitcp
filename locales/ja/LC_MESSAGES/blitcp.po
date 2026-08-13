@@ -949,3 +949,21 @@ msgstr "タイムスタンプ"
 msgid "xattr"
 msgstr "xattr"
 
+
+msgid "Small files"
+msgstr "小さいファイル"
+
+msgid "parallel workers"
+msgstr "並列ワーカー"
+
+msgid "stream"
+msgstr "ストリーム"
+
+msgid "How <1MB files are copied on local transfers: a parallel worker pool (default, fastest) or the classic single-threaded tar block-stream."
+msgstr "ローカル転送で1MB未満のファイルをコピーする方法：並列ワーカープール（デフォルト、最速）または従来のシングルスレッド tar ブロックストリーム。"
+
+msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
+msgstr "ローカルコピーの小ファイルエンジン：'parallel' = ワーカープール（スレッド x4、デフォルト）、'stream' = シングルスレッド tar ブロックストリーム"
+
+msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
+msgstr "サブコマンド:\n  creds <sub>      認証情報ファイルに保存された cloud/SSH 接続プロファイルの\n                   管理: add, list, edit, remove, test, encrypt/decrypt,\n                   lock。ヘルプは 'blitcp creds' を実行。\n  ls <target>      クラウドの場所（保存済み接続名または s3:// / az:// / gs://\n                   URL）またはリモート SSH ディレクトリ（保存済み ssh 接続\n                   または user@host:/path、SFTP 経由）を一覧表示。\n                   別名: list-objects。ヘルプは 'blitcp ls -h' を実行。\n\n使用例:\n  blitcp /data /media/usb/data           ローカル → ローカル\n  blitcp /data user@host:/backup         ローカル → リモート (SSH)\n  blitcp user@host:/data /local/backup   リモート → ローカル\n  blitcp /data s3://bucket/backup        ローカル → クラウド\n  blitcp creds add aws-dev               接続プロファイルを保存\n  blitcp ls aws-dev                      保存済みクラウド接続を一覧表示\n  blitcp ls user@host:/var/log           リモート SSH ディレクトリを一覧表示\n"

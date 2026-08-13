@@ -1,5 +1,62 @@
 # Changelog
 
+## v4.0.2 — 2026-08-13
+
+Windows-focused performance and progress-truthfulness release, built from a
+live 85 GB NVMe → USB profiling session (total wall-clock 1h 4m → 44m 47s on
+the identical job).
+
+### Performance
+
+- **Phase 4 disk-layout mapping is ~1000× faster on Windows** (12m 48s →
+  0.7s for 6.6k files): the per-file probe now opens with
+  `FILE_READ_ATTRIBUTES` instead of `GENERIC_READ` — a read-intent handle
+  made Defender content-scan every file on open — and adds
+  `FILE_SHARE_DELETE`; probes run on an oversubscribed pool (threads ×4).
+- **Phase 4 is skipped entirely on solid-state sources**: one seek-penalty
+  query per source volume (`IOCTL_STORAGE_QUERY_PROPERTY` on Windows,
+  `/sys/.../queue/rotational` on Linux). Flash has no read head, so physical
+  ordering cannot help; rotational sources keep the full mapping. A
+  `Seek-penalty check:` diagnostic line shows the per-volume verdicts
+  whenever the mapping still runs.
+- **Small files (<1MB) on local copies use a parallel worker pool**
+  (threads ×4, up to 128) instead of the single-threaded tar-pipe
+  extraction, overlapping per-file NTFS/AV-scan latencies. The tar pipe
+  remains for SSH transfers and stays selectable locally via
+  `--small-files stream` (GUI: Advanced → Small files).
+- **Copy order: small files first**, riding the destination write cache,
+  then large files — ascending (ending on the largest) when no physical
+  ordering applies.
+
+### Progress & GUI
+
+- Speed is now a 30-second windowed rate (was: average since start, which
+  hid mid-run slowdowns and made the ETA swing several-fold); the displayed
+  ETA is smoothed, stage-scoped during the small-file stage (files/s based —
+  byte-rate extrapolation over tiny files once claimed 19h for a 3-minute
+  stage), shows "—" until enough history exists, and resets its window at
+  stage handoffs.
+- The GUI shows the file being written right now, with per-file progress
+  for large files (`--progress-json` gains `current`/`current_done`/
+  `current_total`) — a 50 GB file no longer looks like a frozen counter.
+- `--threads` defaults from the CPU (logical processors, floor 4, cap 8);
+  the GUI selector gains auto (default) and 32/64/128.
+
+### Fixed
+
+- Sub-8KB files copied by the new parallel path kept a wrong mtime (data
+  still in the write buffer when the timestamp was applied; flush first).
+- The solid-state skip never fired: `\\?\` long-path prefixes made every
+  local volume look like a UNC share.
+- Verification result and space-check behavior unchanged; `test_preserve`
+  suite green throughout.
+
+### i18n
+
+- 6 new msgids translated across all 6 languages (small-files selector,
+  tooltip, `--small-files` help) — including the previously untranslated
+  CLI help epilog (subcommands/examples).
+
 ## v4.0.0 — 2026-08-06
 
 **fast-copy is now blitcp** ("blit" as in bit-block transfer — the block-order
@@ -19,9 +76,8 @@ domain redirects).
 ### Renamed — with full backward compatibility
 
 - CLI `blitcp` (was `fast_copy.py`), GUI `blitcp_gui` (was `fast_copy_gui`).
-  Existing `fast_copy.py` installs upgrade in place — the self-updater
-  replaces the file with the blitcp engine, so old entry points keep
-  working without a separate shim.
+  A `fast_copy.py` import/launcher shim ships for 1–2 releases: old imports
+  and commands keep working with a one-line deprecation note.
 - Release assets: `blitcp-linux`, `blitcp-macos-intel`, `blitcp-macos-arm64`,
   `blitcp-windows.exe`, `blitcp_gui-*`.
 - Environment variables: `BLITCP_LANG`, `BLITCP_CREDENTIALS`,

@@ -166,7 +166,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.0.0"
+__version__ = "4.0.2"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,
@@ -239,7 +239,12 @@ def _env(name, default=None):
 # CONFIG
 # ════════════════════════════════════════════════════════════════════════════
 DEFAULT_BUFFER_MB = 64
-DEFAULT_THREADS = 4
+# Auto-sized from the CPU: the I/O worker pools (small-file writers ×4,
+# layout probes ×4) and hash threads all scale from this. Floor 4 so tiny
+# VMs still overlap I/O; default caps at 8 (= 32 small-file writers) so the
+# out-of-box behavior doesn't stampede a USB disk or the AV scan queue —
+# bigger is an explicit --threads choice (GUI: 16/32/64/128).
+DEFAULT_THREADS = max(4, min(8, os.cpu_count() or 4))
 # Object storage has no tar-pipe equivalent: every file is a separate PUT/GET,
 # dominated by request latency. Overlapping many in-flight requests is the only
 # small-file win available, so cloud concurrency defaults higher than --threads.
@@ -4078,9 +4083,14 @@ def get_physical_offset_windows(filepath):
     try:
         import ctypes.wintypes as wt
 
-        GENERIC_READ = 0x80000000
+        # FILE_READ_ATTRIBUTES, NOT GENERIC_READ: FSCTL_GET_RETRIEVAL_POINTERS
+        # needs no data access, and a read-intent open makes Defender scan the
+        # whole file (~670ms each on Downloads/MotW files) and hydrates
+        # OneDrive placeholders. Attributes-only opens skip both.
+        FILE_READ_ATTRIBUTES = 0x0080
         FILE_SHARE_READ = 1
         FILE_SHARE_WRITE = 2
+        FILE_SHARE_DELETE = 4
         OPEN_EXISTING = 3
         FSCTL_GET_RETRIEVAL_POINTERS = 0x00090073
 
@@ -4091,8 +4101,8 @@ def get_physical_offset_windows(filepath):
         CloseHandle = kernel32.CloseHandle
 
         handle = CreateFileW(
-            str(filepath), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            str(filepath), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None, OPEN_EXISTING, 0, None,
         )
         INVALID = wt.HANDLE(-1).value
@@ -5261,6 +5271,123 @@ def get_physical_offset(filepath):
     return 0
 
 
+def _volume_seek_penalty_windows(path):
+    """Does the physical disk behind `path` incur a seek penalty?
+
+    True = rotational HDD, False = SSD/NVMe, None = unknown (UNC, error).
+    One IOCTL pair per VOLUME — not per file."""
+    try:
+        import ctypes.wintypes as wt
+
+        drive = os.path.splitdrive(os.path.abspath(path))[0]
+        if not drive or drive.startswith("\\\\"):
+            return None  # UNC share — no local physical disk to ask
+
+        kernel32 = ctypes.windll.kernel32
+        CreateFileW = kernel32.CreateFileW
+        CreateFileW.restype = wt.HANDLE
+        DeviceIoControl = kernel32.DeviceIoControl
+        CloseHandle = kernel32.CloseHandle
+        INVALID = wt.HANDLE(-1).value
+
+        def _dev_ioctl(device, code, in_buf, out_len):
+            h = CreateFileW(device, 0, 3, None, 3, 0, None)
+            if h == INVALID:
+                return None
+            try:
+                out = ctypes.create_string_buffer(out_len)
+                ret = wt.DWORD(0)
+                ok = DeviceIoControl(h, code,
+                                     in_buf, len(in_buf) if in_buf else 0,
+                                     out, out_len, ctypes.byref(ret), None)
+                return out.raw[:ret.value] if ok else None
+            finally:
+                CloseHandle(h)
+
+        IOCTL_STORAGE_GET_DEVICE_NUMBER = 0x2D1080
+        raw = _dev_ioctl("\\\\.\\" + drive,
+                         IOCTL_STORAGE_GET_DEVICE_NUMBER, None, 12)
+        if raw is None or len(raw) < 12:
+            return None
+        devnum = struct.unpack_from("<I", raw, 4)[0]
+
+        IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
+        # STORAGE_PROPERTY_QUERY {PropertyId=StorageDeviceSeekPenaltyProperty(7),
+        #                         QueryType=PropertyStandardQuery(0), pad}
+        query = struct.pack("<II4x", 7, 0)
+        raw = _dev_ioctl("\\\\.\\PhysicalDrive%d" % devnum,
+                         IOCTL_STORAGE_QUERY_PROPERTY, query, 12)
+        if raw is None or len(raw) < 9:
+            return None
+        # DEVICE_SEEK_PENALTY_DESCRIPTOR: Version(4) Size(4) IncursSeekPenalty(1)
+        return raw[8] != 0
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _volume_seek_penalty_linux(path):
+    """Seek penalty via /sys rotational flag. True/False/None as above."""
+    try:
+        st = os.stat(path)
+        base = "/sys/dev/block/%d:%d" % (os.major(st.st_dev),
+                                         os.minor(st.st_dev))
+        # A partition's queue lives on its parent disk (base/..).
+        for p in (base + "/queue/rotational", base + "/../queue/rotational"):
+            try:
+                with open(p) as f:
+                    return f.read().strip() == "1"
+            except OSError:
+                continue
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+_PENALTY_LABEL = {False: "SSD", True: "HDD", None: "unknown"}
+
+
+def _skip_physical_mapping(entries):
+    """(skip, verdicts) — skip is True when EVERY source volume positively
+    reports no seek penalty; verdicts is a per-volume label list for the
+    diagnostic line.
+
+    Physical-order mapping only pays for itself on rotational sources —
+    flash reads any order at the same speed, so the per-file probes are
+    pure overhead (on Windows they can cost minutes). Unknown verdicts
+    (UNC, odd devices, errors) keep the mapping, the safe default."""
+    if not entries:
+        return False, []
+    verdicts = []
+    if _system == "Windows":
+        # Strip the \\?\ long-path prefix first — with it, splitdrive's
+        # result starts with "\\" and every local path looks like UNC.
+        drives = {os.path.splitdrive(
+                      os.path.abspath(_strip_long_path(e.src)))[0]
+                  for e in entries}
+        if not drives or any((not d or d.startswith("\\\\")) for d in drives):
+            return False, ["UNC/driveless source"]
+        results = {d: _volume_seek_penalty_windows(d + "\\") for d in drives}
+        verdicts = ["%s=%s" % (d, _PENALTY_LABEL[v])
+                    for d, v in sorted(results.items())]
+        return all(v is False for v in results.values()), verdicts
+    if _system == "Linux":
+        dirs = {os.path.dirname(os.path.abspath(e.src)) for e in entries}
+        # One representative dir per device is enough for the /sys lookup.
+        seen = {}
+        for d in dirs:
+            try:
+                dev = os.stat(d).st_dev
+            except OSError:
+                return False, ["stat failed: %s" % d]
+            if dev not in seen:
+                seen[dev] = _volume_seek_penalty_linux(d)
+        verdicts = ["dev%s=%s" % (dev, _PENALTY_LABEL[v])
+                    for dev, v in sorted(seen.items())]
+        return all(v is False for v in seen.values()), verdicts
+    # macOS: get_physical_offset is just st_ino — effectively free, keep it.
+    return False, []
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # FOLDER SCANNER
 # ════════════════════════════════════════════════════════════════════════════
@@ -5463,6 +5590,21 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
 
 def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     """Query physical offsets in parallel, return entries sorted by disk position."""
+    # Flash sources have no read head: physical ordering cannot speed them
+    # up, and the per-file probes are pure cost (minutes on Windows). Skip
+    # the whole pass and use the size-sorted fallback order instead.
+    skip, verdicts = _skip_physical_mapping(entries)
+    if skip:
+        print(f"  {C.GREEN}Source is solid-state (no seek penalty) — "
+              f"physical ordering skipped.{C.RESET}")
+        return sorted(entries, key=lambda e: e.size, reverse=True)
+    if verdicts:
+        # Diagnostic: WHY the mapping still runs (which volume was HDD or
+        # couldn't be identified). One dim line, invaluable when the skip
+        # doesn't fire where the user expected it to.
+        print(f"  {C.DIM}Seek-penalty check: {', '.join(verdicts)} — "
+              f"mapping physical layout.{C.RESET}")
+
     print(f"  {C.DIM}Reading disk layout ({_system})...{C.RESET}", end="", flush=True)
 
     offsets = [0] * len(entries)
@@ -5475,7 +5617,10 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     # it and Phase 4 looks frozen until the final "resolved" line.
     total = len(entries)
     _phase_emit("Mapping layout", 0, total)
-    with ThreadPoolExecutor(max_workers=threads) as pool:
+    # Metadata-only probes (open + ioctl, no data read) are latency-bound,
+    # not bandwidth-bound — oversubscribe well past the copy thread count.
+    workers = min(128, threads * 4)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(get_offset, i) for i in range(total)]
         done = 0
         for f in as_completed(futures):
@@ -6179,16 +6324,62 @@ class Progress:
         self.lock = threading.Lock()
         self.start = time.time()
         self._last_print = 0
-        # (timestamp, files_done) samples over the last ~10s — gives a RECENT
-        # file rate for the ETA once bytes are exhausted but files remain
-        # (large files copy first, so the byte-based ETA collapses to 0 while
-        # thousands of small files are still streaming).
+        # (timestamp, files_done, bytes_done) samples over the last ~30s.
+        # Speed/ETA use this RECENT window, not the run-long average: the
+        # cumulative average is so volatile early in a run that one slow
+        # patch multiplies the ETA several-fold, then takes minutes to
+        # recover. The window also feeds the file-rate tail ETA (large files
+        # copy first, so the byte-based ETA collapses to 0 while thousands
+        # of small files are still streaming).
         self._samples = deque()
+        # EMA state for the displayed ETA (~10s time constant): a brief dip
+        # nudges the estimate instead of jumping it.
+        self._eta_smooth = None
+        self._eta_ts = None
+        # What is being copied right now (for the GUI): a rel path during
+        # the large-file stage, a stage label during the parallel small-file
+        # stage. _cur_base = bytes_done when it started, so the emitter can
+        # derive per-item progress without extra bookkeeping in the copy loop.
+        self._cur = None
+        self._cur_total = 0
+        self._cur_base = 0
+        self._cur_stage = False
+        self._cur_files_total = 0
+        self._cur_files_base = 0
 
     def update(self, nbytes, nfiles=0):
         with self.lock:
             self.bytes_done += nbytes
             self.files_done += nfiles
+
+    def set_current(self, name, size=0, nfiles=0, stage=False):
+        """Record what's being copied now (None to clear). Emitted in the
+        --progress-json stream as current/current_done/current_total.
+
+        stage=True marks a whole STAGE (the parallel small-file pool) rather
+        than one file: the ETA is then scoped to the stage and driven by its
+        files/s — tiny files are latency-bound, so extrapolating the whole
+        job from their byte rate once showed a 19-hour ETA on a 3-minute
+        run."""
+        with self.lock:
+            self._cur = name
+            self._cur_total = size if name else 0
+            self._cur_base = self.bytes_done
+            self._cur_stage = bool(name) and stage
+            self._cur_files_total = nfiles if name else 0
+            self._cur_files_base = self.files_done
+
+    def reset_rate_window(self):
+        """Forget the recent-rate window and ETA smoothing.
+
+        Call at a stage handoff (large files → parallel small files): the
+        window still holds the OLD stage's file rate (~0.4 files/s), so the
+        ≥99% files-remaining ETA computes hours — and the EMA then chases
+        that stale number for longer than the whole tail stage lasts."""
+        with self.lock:
+            self._samples.clear()
+            self._eta_smooth = None
+            self._eta_ts = None
 
     def display(self):
         now = time.time()
@@ -6202,6 +6393,19 @@ class Progress:
         with self.lock:
             bytes_done = self.bytes_done
             files_done = self.files_done
+            cur = self._cur
+            cur_total = self._cur_total
+            cur_done = bytes_done - self._cur_base
+            cur_stage = self._cur_stage
+            stage_files_rem = max(
+                self._cur_files_total - (files_done - self._cur_files_base),
+                0)
+            # Sample bookkeeping under the lock: display() runs from many
+            # worker threads and reset_rate_window() may clear concurrently.
+            self._samples.append((now, files_done, bytes_done))
+            while len(self._samples) > 2 and now - self._samples[0][0] > 30.0:
+                self._samples.popleft()
+            t0, f0, b0 = self._samples[0]
 
         pct = (bytes_done / self.total_bytes * 100) if self.total_bytes else 100
         # Never show 100% (or overshoot past it) while files are still being
@@ -6210,21 +6414,59 @@ class Progress:
         pct = min(pct, 100.0)
         if files_done < self.total_files:
             pct = min(pct, 99.0)
-        speed = bytes_done / elapsed
-        eta = max((self.total_bytes - bytes_done) / speed, 0) if speed > 0 else 0
+        span = now - t0
+        avg_speed = bytes_done / elapsed
 
-        # Recent file rate (~10s window) for the small-file tail.
-        self._samples.append((now, files_done))
-        while len(self._samples) > 2 and now - self._samples[0][0] > 10.0:
-            self._samples.popleft()
-        if pct >= 99.0 and files_done < self.total_files:
-            t0, f0 = self._samples[0]
-            frate = (files_done - f0) / (now - t0) if now - t0 > 0 else 0
-            if frate > 0:
-                eta = max(eta, (self.total_files - files_done) / frate)
+        # ETA only once the window holds a REAL measurement (≥3s). The
+        # first moments after a (re)start have a garbage bytes/elapsed
+        # ratio — seeding the smoother with it once showed a 7000-minute
+        # ETA at run start. Until then: speed shows the run average,
+        # ETA shows unknown (None → "—").
+        if span >= 3.0:
+            speed = (bytes_done - b0) / span
+            eta_speed = speed if speed > 0 else avg_speed
+        else:
+            speed = avg_speed
+            eta_speed = 0
+
+        if eta_speed > 0:
+            frate = (files_done - f0) / span if span > 0 else 0
+            if cur_stage:
+                # Stage-scoped ETA (parallel small-file pool): these copies
+                # are per-file-latency-bound, so files/s is the honest rate;
+                # the byte rate of near-empty files says nothing about the
+                # large files that follow. Falls back to stage bytes when no
+                # file has completed inside the window yet.
+                if frate > 0:
+                    eta = stage_files_rem / frate
+                else:
+                    eta = max(cur_total - cur_done, 0) / eta_speed
+            else:
+                eta = max((self.total_bytes - bytes_done) / eta_speed, 0)
+
+                # Recent file rate for a many-small-files tail. Only when a
+                # real crowd remains: with small files copying first, the run
+                # now ends on a few LARGE files, and extrapolating "files/s"
+                # over those would inflate the ETA the byte math already
+                # gets right.
+                if pct >= 99.0 and self.total_files - files_done > 64:
+                    if frate > 0:
+                        eta = max(eta, (self.total_files - files_done) / frate)
+
+            # Smooth the displayed ETA (irregular-sampling EMA, ~10s const).
+            if self._eta_smooth is None:
+                self._eta_smooth = eta
+            else:
+                dt = now - self._eta_ts
+                alpha = dt / (dt + 10.0)
+                self._eta_smooth += alpha * (eta - self._eta_smooth)
+            self._eta_ts = now
+            eta = max(self._eta_smooth, 0.0)
+        else:
+            eta = None  # not enough history yet
 
         if PROGRESS_JSON:
-            sys.stdout.write(json.dumps({
+            obj = {
                 "t": "progress",
                 "pct": round(pct, 2),
                 "bytes_done": bytes_done,
@@ -6233,7 +6475,13 @@ class Progress:
                 "files_done": files_done,
                 "files_total": self.total_files,
                 "eta_s": eta,
-            }) + "\n")
+            }
+            if cur:
+                obj["current"] = cur
+                obj["current_total"] = cur_total
+                obj["current_done"] = (min(max(cur_done, 0), cur_total)
+                                       if cur_total else max(cur_done, 0))
+            sys.stdout.write(json.dumps(obj) + "\n")
             sys.stdout.flush()
             return
 
@@ -6246,7 +6494,7 @@ class Progress:
             f"{fmt_size(bytes_done)}/{fmt_size(self.total_bytes)}  "
             f"{C.GREEN}{fmt_speed(speed)}{C.RESET}  "
             f"{files_done}/{self.total_files} files  "
-            f"ETA {fmt_time(eta)}   "
+            f"ETA {fmt_time(eta) if eta is not None else '—'}   "
         )
         sys.stdout.flush()
 
@@ -6487,6 +6735,128 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
                 os.close(fd)
 
 
+def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
+                        threads=DEFAULT_THREADS):
+    """Copy small files with a thread pool (LOCAL destinations).
+
+    A local destination pays a fixed per-file latency — NTFS create/close,
+    Defender's on-access scan of every new file, HDD metadata flushes —
+    that dwarfs the byte cost of a <1MB file. The tar pipe extracts
+    sequentially, so it serializes those latencies; a pool overlaps them.
+    Entries are submitted in physical order, so source reads drift from
+    disk order by at most the worker count. The tar pipe remains the right
+    tool for the SSH paths (one stream instead of per-file round-trips).
+    """
+    if not small_entries:
+        return
+
+    small_size = sum(e.size for e in small_entries)
+    # Scales with --threads (×4, since workers idle in per-file latency, not
+    # CPU). Cap 128: past that, NTFS metadata contention and AV scan queues
+    # give it back, and each worker holds a 256KB buffer + 2 handles.
+    workers = min(128, max(1, threads * 4))
+    print(f"  {C.CYAN}Copying {len(small_entries)} small files "
+          f"({fmt_size(small_size)}) with {workers} parallel writers...{C.RESET}")
+
+    os.makedirs(_long_path(dst_root), exist_ok=True)
+    cancelled = threading.Event()
+
+    def _copy_one(entry):
+        if cancelled.is_set():
+            return
+        if cancel_check and cancel_check():
+            cancelled.set()
+            return
+        dst_path = os.path.join(dst_root, entry.rel)
+        counted = 0  # bytes already added to progress for THIS file
+        try:
+            os.makedirs(_long_path(os.path.dirname(dst_path)), exist_ok=True)
+            try:
+                src_fd = _safe_open_read_fd(entry.src)
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    _log("error", entry.rel, entry.size,
+                         error="symlink in source (elevated)")
+                else:
+                    # Benign only for a permission error on the SOURCE
+                    # (exit 3); systemic errnos stay untagged so they
+                    # surface as real failures (exit 1), not silent skips.
+                    _log("error", entry.rel, entry.size, error=str(e),
+                         source_read=_is_benign_source_read(e))
+                progress.update(entry.size, 1)
+                return
+            try:
+                dst_fd = _safe_open_write_fd(dst_path, truncate=True)
+            except OSError as e:
+                os.close(src_fd)
+                if e.errno == errno.ELOOP:
+                    _log("error", entry.rel, entry.size,
+                         error="symlink at destination")
+                else:
+                    _log("error", entry.rel, entry.size, error=str(e))
+                progress.update(entry.size, 1)
+                return
+            buf = bytearray(256 * 1024)
+            with os.fdopen(src_fd, "rb") as fin, os.fdopen(dst_fd, "wb") as fout:
+                keep_fd = fout.fileno()
+                while True:
+                    n = fin.readinto(buf)
+                    if not n:
+                        break
+                    fout.write(memoryview(buf)[:n])
+                    counted += n
+                    progress.update(n)
+                    progress.display()
+                # Flush BEFORE utime: a <8KB file still sits in the
+                # BufferedWriter, and the flush-at-close would land after
+                # _safe_apply_meta and clobber the copied mtime.
+                fout.flush()
+                try:
+                    st = os.fstat(fin.fileno())
+                    _safe_apply_meta(keep_fd, dst_path, st, src_path=entry.src)
+                except OSError:
+                    pass
+            _log("copied", entry.rel, entry.size, method="parallel_small")
+            progress.update(0, 1)
+            return True
+        except (OSError, IOError) as e:
+            print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
+            _log("error", entry.rel, entry.size, error=str(e),
+                 source_read=_benign_source_error(e, entry.src))
+            # Clean up the partial file (same policy as copy_individual).
+            try:
+                if os.path.exists(dst_path):
+                    os.remove(dst_path)
+            except OSError:
+                pass
+            # Only the bytes NOT already counted — otherwise a file that
+            # failed partway is double-counted and the bar overshoots.
+            progress.update(max(0, entry.size - counted), 1)
+
+    ok = 0
+    progress.set_current(
+        "%d small files (%d parallel writers)" % (len(small_entries), workers),
+        small_size, nfiles=len(small_entries), stage=True)
+    # Stage handoff: drop the large-file-era rate window so the files-based
+    # tail ETA reflects THIS stage's completion rate within a second or two.
+    progress.reset_rate_window()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for f in as_completed([pool.submit(_copy_one, e)
+                               for e in small_entries]):
+            if f.result() is True:
+                ok += 1
+    progress.set_current(None)
+
+    if cancelled.is_set():
+        return
+    failed = len(small_entries) - ok
+    if failed:
+        print(f"\r  {C.YELLOW}Copied {ok} small files, "
+              f"{failed} errors{C.RESET}                    ")
+    else:
+        print(f"\r  {C.GREEN}Copied {ok} small files{C.RESET}                    ")
+
+
 _HAS_SEEK_HOLE = hasattr(os, "SEEK_HOLE") and hasattr(os, "SEEK_DATA")
 
 
@@ -6599,6 +6969,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
         if cancel_check and cancel_check():
             return
 
+        progress.set_current(entry.rel, entry.size)
         dst_path = os.path.join(dst_root, entry.rel)
         dst_dir = os.path.dirname(dst_path)
         # Snapshot so the error path below can tell how many of THIS entry's
@@ -6738,15 +7109,19 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             already = progress.bytes_done - bytes_before
             progress.update(max(0, entry.size - already), 1)
 
+    progress.set_current(None)
+
 
 def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None,
-                fs_strategy=None):
+                fs_strategy=None, threads=DEFAULT_THREADS,
+                small_mode="parallel"):
     """
     Hybrid block copy engine:
       - Reflink-capable FS (btrfs, XFS reflink, APFS, ReFS): all files via
         copy_individual using reflinks (instant, metadata-only)
-      - Otherwise: small files (<1MB) bundled into tar block stream, large
-        files (>=1MB) via individual copy with large buffers
+      - Otherwise: small files (<1MB) copied by a parallel worker pool
+        (copy_small_parallel), large files (>=1MB) via individual copy
+        with large buffers
     """
     # Reflink (FICLONE / clonefile) only works *within* the same filesystem.
     # The destination FS detection alone doesn't catch the cross-mount case,
@@ -6784,27 +7159,55 @@ def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None,
     small_size = sum(e.size for e in small)
     large_size = sum(e.size for e in large)
 
+    small_label = "parallel copy" if small_mode == "parallel" else "block stream"
     print(f"  Strategy:")
     print(f"    Small files (<1MB): {C.BOLD}{len(small)}{C.RESET} files, "
-          f"{C.BOLD}{fmt_size(small_size)}{C.RESET} → block stream")
+          f"{C.BOLD}{fmt_size(small_size)}{C.RESET} → {small_label}")
     print(f"    Large files (≥1MB): {C.BOLD}{len(large)}{C.RESET} files, "
           f"{C.BOLD}{fmt_size(large_size)}{C.RESET} → individual copy")
     print()
 
-    # Copy large files first (they benefit most from physical ordering)
-    if large:
-        print(f"  {C.BOLD}── Large files ──{C.RESET}")
-        buf = bytearray(buf_size)
-        copy_individual(large, dst_root, progress, buf, cancel_check,
-                        fs_strategy=fs_strategy)
+    # Small files FIRST — parallel per-file copies. (The tar pipe used here
+    # previously serialized destination writes behind a single extractor
+    # thread; the pool overlaps the per-file NTFS/AV-scan latencies instead.)
+    # Going small-first spends the destination's fresh write cache (SMR/HDD
+    # burst region) on the workload that suffers most once the cache is
+    # exhausted, while large sequential files barely notice the collapsed
+    # state. It also makes progress read honestly: files and bytes converge
+    # instead of "99% done with thousands of files left".
+    if small:
+        if small_mode == "stream":
+            # Opt-in single-worker path (--small-files stream): the tar pipe
+            # with one extractor thread. Wrapped in the same stage bookkeeping
+            # so the GUI line and the stage-scoped ETA behave identically.
+            print(f"  {C.BOLD}── Small files (block stream) ──{C.RESET}")
+            progress.set_current(
+                "%d small files (tar stream)" % len(small),
+                small_size, nfiles=len(small), stage=True)
+            progress.reset_rate_window()
+            copy_block_stream(small, dst_root, progress, cancel_check)
+            progress.set_current(None)
+        else:
+            print(f"  {C.BOLD}── Small files (parallel) ──{C.RESET}")
+            copy_small_parallel(small, dst_root, progress, cancel_check,
+                                threads=threads)
         if cancel_check and cancel_check():
             return
         print()
 
-    # Block-stream small files
-    if small:
-        print(f"  {C.BOLD}── Small files (block stream) ──{C.RESET}")
-        copy_block_stream(small, dst_root, progress, cancel_check)
+    if large:
+        # A rotational source's physical order MUST be preserved (that's the
+        # Phase 4 seek sweep). When there is no mapping info — solid-state
+        # skip or probe fallback — order is free: run ascending so the file
+        # counter keeps moving and the run ends on the single largest file,
+        # with the current-file line showing its progress.
+        if not any(e.physical_offset > 0 for e in large):
+            large = sorted(large, key=lambda e: e.size)
+        print(f"  {C.BOLD}── Large files ──{C.RESET}")
+        progress.reset_rate_window()  # drop the small-file-era rates
+        buf = bytearray(buf_size)
+        copy_individual(large, dst_root, progress, buf, cancel_check,
+                        fs_strategy=fs_strategy)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -13361,6 +13764,12 @@ def main():
                         help=_tr("Buffer size in MB (default: {n})").format(n=DEFAULT_BUFFER_MB))
     copy_grp.add_argument("--threads", type=int, default=DEFAULT_THREADS,
                         help=_tr("Threads for hashing/layout (default: {n})").format(n=DEFAULT_THREADS))
+    copy_grp.add_argument("--small-files", choices=["parallel", "stream"],
+                        default="parallel",
+                        help=_tr("Small-file engine for local copies: "
+                                 "'parallel' = worker pool (threads x4, "
+                                 "default), 'stream' = single-threaded tar "
+                                 "block-stream"))
     copy_grp.add_argument("--cloud-concurrency", type=int,
                         default=DEFAULT_CLOUD_CONCURRENCY,
                         help=_tr("Concurrent uploads/downloads for object storage "
@@ -14853,7 +15262,8 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     progress = Progress(unique_size, len(copy_entries))
     t0 = time.time()
-    copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy)
+    copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy,
+                threads=args.threads, small_mode=args.small_files)
     progress.finish()
 
     # Create links for duplicates

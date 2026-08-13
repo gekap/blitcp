@@ -55,13 +55,21 @@ Size of the read/write buffer used for file I/O, controlling how much data is re
 
 CLI: `--buffer MB`
 
-### Threads — default: `4`
+### Threads — default: auto (CPU logical processors, min 4, max 8)
 
-Number of parallel workers used for file hashing (deduplication), physical disk layout detection, and incremental change verification.
+Number of parallel workers used for file hashing (deduplication), physical disk layout detection, incremental change verification — and, since v4.0.2, the small-file copy pool (threads ×4 parallel writers, up to 128).
 
-**When to change:** Increase to match your CPU core count for large file sets (thousands of files) to speed up hashing and dedup. Keep at 4 for typical use. This does **not** affect the actual copy speed — copying is always sequential for optimal disk throughput.
+**When to change:** The auto default fits most machines. Raise it (GUI offers 16/32/64/128) to push more parallel small-file writers on SSD, network, or cloud destinations; USB hard disks rarely benefit past the default. Large-file copying is always sequential for optimal disk throughput regardless of this setting.
 
 CLI: `--threads N`
+
+### Small files engine — default: `parallel`
+
+How files under 1 MB are copied on local transfers. `parallel` copies them through a pool of parallel writers (threads ×4, up to 128), overlapping the per-file overhead — file creation, timestamps, antivirus on-access scans — that dominates small-file copies. `stream` is the classic single-threaded tar block-stream (producer → consumer through a pipe, no temp file), kept as a fallback.
+
+**When to change:** Stay on `parallel` (several times faster on Windows, where Defender scans every new file). Switch to `stream` only to A/B test or if a destination misbehaves with concurrent writers. SSH transfers always use tar streaming regardless of this setting.
+
+CLI: `--small-files parallel|stream` · GUI: Advanced → Small files
 
 ### Dry run
 
@@ -205,7 +213,7 @@ CLI: `--ssh-src-password`, `--ssh-dst-password`
 
 | Source | Destination | Mode | Method |
 |--------|-------------|------|--------|
-| Local | Local | Local copy | Physical disk order, tar bundling for small files, reflinks where supported |
+| Local | Local | Local copy | Physical disk order (rotational sources), parallel small-file pool — tar bundling still available via `--small-files stream` — reflinks where supported |
 | Local | Remote (SSH) | Upload | SFTP + tar streaming over SSH |
 | Remote (SSH) | Local | Download | SFTP + tar streaming from SSH |
 | Remote (SSH) | Remote (SSH) | Relay | Data relayed through your machine via SSH |
@@ -371,8 +379,8 @@ Files are copied in 5 phases:
 1. **Scan** — Walks the source tree, indexes every file with its size
 2. **Dedup** — Hashes files (xxHash-128 or SHA-256) to find identical content. Each unique file is copied once; duplicates become hard links
 3. **Space check** — Verifies the destination has enough free space for the deduplicated data
-4. **Physical layout** — Resolves on-disk physical offsets (`FIEMAP` on Linux, `fcntl` on macOS, `FSCTL` on Windows) and sorts files by block order
-5. **Block copy** — Large files (≥1 MB) are copied with 64 MB buffers. Small files are streamed via tar pipe (producer→consumer, no temp file on disk). Duplicates are recreated as hard links
+4. **Physical layout** — Resolves on-disk physical offsets (`FIEMAP` on Linux, `fcntl` on macOS, `FSCTL` on Windows) and sorts files by block order. Skipped automatically when every source volume is solid-state (flash has no seek penalty, so physical ordering cannot help) — a per-volume `Seek-penalty check` line explains the decision whenever the mapping still runs
+5. **Block copy** — Small files (<1 MB) go first, copied by a pool of parallel writers (threads ×4) that overlaps per-file overhead and rides the destination's fresh write cache; large files follow with 64 MB buffers, in physical order on rotational sources or size-ascending otherwise. Duplicates are recreated as hard links
 
 After copying, all files are verified against source hashes.
 
@@ -906,7 +914,7 @@ The `--log-file` option writes a machine-readable JSON log with:
   Speed:   41.2 MB/s
 ```
 
-Dedup detected 15,471 duplicate files (25.8%), saving 92.5 MB. Files were read in physical disk order and small files bundled into block streams.
+Dedup detected 15,471 duplicate files (25.8%), saving 92.5 MB. Files were read in physical disk order and small files copied through the parallel writer pool.
 
 ### Remote-to-Local: 91,669 files (888 MB) over 100 Mbps LAN
 
