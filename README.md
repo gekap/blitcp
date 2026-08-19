@@ -1,6 +1,7 @@
 # blitcp — High-Speed File Copier with Deduplication & SSH Streaming
 
 [![Release](https://img.shields.io/github/v/release/gekap/blitcp?color=00b37e&label=release)](https://github.com/gekap/blitcp/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/blitcp?color=00b37e&label=pypi)](https://pypi.org/project/blitcp/)
 [![Downloads](https://img.shields.io/github/downloads/gekap/blitcp/total?color=00b37e&label=downloads)](https://github.com/gekap/blitcp/releases)
 [![License](https://img.shields.io/github/license/gekap/blitcp?color=00b37e)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-00b37e)](https://github.com/gekap/blitcp/releases/latest)
@@ -30,18 +31,19 @@ large SSH transfers. CLI + desktop GUI, in 7 languages.
 
 ## Quickstart
 
-Prebuilt CLI and GUI binaries for Linux, macOS and Windows are on the
-[Releases page](https://github.com/gekap/blitcp/releases) — no install needed.
-Or run from source:
-
 ```bash
-pip install paramiko          # SSH support; xxhash optional (~10× faster hashing)
+pip install blitcp            # CLI — zero dependencies, Python 3.8+
 
 blitcp /data /media/usb/data                # local → local
 blitcp /data user@host:/backup              # local → remote over SSH
 blitcp user@host:/data s3://bucket/backup   # any combination of local/SSH/cloud
 blitcp --help                               # everything else
 ```
+
+Optional: `pip install paramiko` for SSH, `blitcp[cloud]` for S3/Azure/GCS/SMB,
+`xxhash` for ~10× faster hashing. Prebuilt CLI and GUI binaries for Linux,
+macOS and Windows are on the
+[Releases page](https://github.com/gekap/blitcp/releases) — no Python needed.
 
 ## Key features
 
@@ -74,7 +76,7 @@ Full methodology and more scenarios: [blitcp.dev/benchmarks](https://blitcp.dev/
 [![blitcp GUI](https://blitcp.dev/screenshots/transfer.png)](https://blitcp.dev/#screenshots)
 
 ```bash
-pip install PySide6 && python blitcp_gui.py
+pip install "blitcp[gui]" && blitcp-gui
 ```
 
 Transfers, saved connections, file browser, history and settings — same engine,
