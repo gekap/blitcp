@@ -25,7 +25,7 @@ large SSH transfers. CLI + desktop GUI, in 7 languages.
 | Thousands of small files copy painfully slow | **Bundles small files** into tar stream batches |
 | Duplicate files waste space and time | **Content-aware dedup** — copies once, hard-links or reflinks the rest |
 | No space check until copy fails mid-way | **Pre-flight space check** before any data is written |
-| Silent corruption on cheap USB drives | **Post-copy verification** confirms integrity |
+| Copies that quietly fail half-way | **Post-copy verification** — every file checked for existence and exact size, with an exit code a script can act on |
 | Copying between two servers is painful | **Remote-to-remote relay** via SSH tar pipe streaming |
 | SFTP is slow | **Raw SSH tar streaming** bypasses SFTP overhead — 3–5× faster |
 

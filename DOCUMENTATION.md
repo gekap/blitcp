@@ -89,7 +89,9 @@ CLI: `-v`, `--verbose`
 
 ### Skip verification
 
-Skips the post-copy integrity check. By default, blitcp verifies that every copied file exists on the destination with the correct size, plus a hash spot-check on a random sample.
+Skips the post-copy check. By default, blitcp verifies that every copied file exists on the destination with the exact expected size; on SSH transfers it additionally hash-checks a random sample of up to 20 files (SHA-256 on both sides).
+
+This is a **completeness** check, not an integrity one. It catches the ways a copy actually fails — missing files, truncated or half-written files, a destination that filled up, an interrupted transfer. It does **not** detect content that changed while keeping the same size (failing media writing garbage, a bit flip in non-ECC RAM); catching that requires hashing every file, which means reading the whole destination back. SSH transfers are protected in flight by SSH's own per-packet integrity checks, so corruption on the wire drops the connection rather than landing silently.
 
 **When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Recommended to leave verification ON for external drives, USB sticks, or network destinations where errors are more likely.
 
