@@ -90,7 +90,7 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with blitcp.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "4.0.2"
+GUI_VERSION = "4.0.3"
 GUI_REPO = "gekap/blitcp"
 
 try:

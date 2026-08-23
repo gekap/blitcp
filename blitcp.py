@@ -166,7 +166,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.0.2"
+__version__ = "4.0.3"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,
@@ -3050,7 +3050,15 @@ def check_remote_space(ssh, remote_path, required_bytes, force=False):
     # Try the path itself, then walk up to find an existing parent
     check_path = remote_path
     for _ in range(10):
-        out, _, rc = ssh.exec_cmd(f"df -B1 {shlex.quote(check_path)} 2>/dev/null")
+        # -P (POSIX) keeps every filesystem on ONE line. Without it, df wraps
+        # long device names — which is exactly what NFS mounts have
+        # (server:/export/...) — putting the numbers on a second line where
+        # the parser below never looks. Fall back to the plain form for the
+        # rare df that lacks -P (busybox); a failing df is handled as
+        # "unknown" a few lines down, not as an error.
+        out, _, rc = ssh.exec_cmd(
+            f"df -P -B1 {shlex.quote(check_path)} 2>/dev/null || "
+            f"df -B1 {shlex.quote(check_path)} 2>/dev/null", timeout=30)
         if rc == 0:
             break
         parent = posixpath.dirname(check_path.rstrip("/"))
@@ -3073,9 +3081,15 @@ def check_remote_space(ssh, remote_path, required_bytes, force=False):
         total = int(parts[1])
         free = int(parts[3])
     except (IndexError, ValueError):
-        if force:
-            return True
-        return False
+        # Never fail silently: the caller exits the run on False, so a
+        # wordless return here ended the copy with no explanation at all.
+        # An unreadable df means "unknown", which is the same verdict as a
+        # df that did not run — and that case deliberately does not block
+        # the copy.
+        print("  " + C.YELLOW
+              + _tr("Could not check remote space — continuing anyway")
+              + C.RESET)
+        return True
 
     pct_free = free / total * 100 if total else 0
     print(f"  Destination disk (remote):")

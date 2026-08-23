@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.0.3 — 2026-08-23
+
+Patch release: one bug, reported from the field ([#4](https://github.com/gekap/blitcp/issues/4)).
+
+### Fixed
+
+- **SSH copies to an NFS-backed destination stopped after the space check,
+  silently.** The remote free-space check ran `df` without `-P`, so a long
+  device name — which is what every NFS mount has (`server:/export/...`) —
+  wrapped onto a second line and pushed the numbers out of the line the
+  parser reads. The resulting `IndexError` returned "no space verdict"
+  **without printing anything**, and the caller ends the run on that: the
+  copy exited with status 1 after `Data to write: …`, no error, nothing
+  copied. `df -P` keeps every filesystem on one line (with a fallback for
+  the rare `df` lacking `-P`), and an unreadable `df` now says so and lets
+  the copy continue, the same as a `df` that fails outright.
+
 ## v4.0.2 — 2026-08-13
 
 Windows-focused performance and progress-truthfulness release, built from a
