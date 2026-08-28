@@ -6,6 +6,7 @@
 [![License](https://img.shields.io/github/license/gekap/blitcp?color=00b37e)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-00b37e)](https://github.com/gekap/blitcp/releases/latest)
 [![Website](https://img.shields.io/badge/website-blitcp.dev-00b37e)](https://blitcp.dev)
+[![Support](https://img.shields.io/badge/support-ko--fi-00b37e)](https://ko-fi.com/blitcp)
 
 > **blitcp is the new name of fast-copy** (renamed in v4.0.0 — "blit" as in
 > [bit-block transfer](https://en.wikipedia.org/wiki/Bit_blit), which is what
@@ -25,7 +26,7 @@ large SSH transfers. CLI + desktop GUI, in 7 languages.
 | Thousands of small files copy painfully slow | **Bundles small files** into tar stream batches |
 | Duplicate files waste space and time | **Content-aware dedup** — copies once, hard-links or reflinks the rest |
 | No space check until copy fails mid-way | **Pre-flight space check** before any data is written |
-| Copies that quietly fail half-way | **Post-copy verification** — every file checked for existence and exact size, with an exit code a script can act on |
+| Copies that quietly fail half-way | **Post-copy verification** — every copied file is read back and its content hashed against the source, with an exit code a script can act on |
 | Copying between two servers is painful | **Remote-to-remote relay** via SSH tar pipe streaming |
 | SFTP is slow | **Raw SSH tar streaming** bypasses SFTP overhead — 3–5× faster |
 
@@ -88,17 +89,15 @@ point and click. [More screenshots →](https://blitcp.dev/#screenshots)
 - **[DOCUMENTATION.md](DOCUMENTATION.md)** — the full manual: every option, how it works internally, examples, benchmarks
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
 
+## Support
+
+blitcp is free and Apache-2.0 licensed, and stays that way. Donations via
+[Ko-fi](https://ko-fi.com/blitcp) go towards the Windows code signing
+certificate, hosting for blitcp.dev, and the hardware the published benchmarks
+run on. Starring the repository or filing a good bug report helps just as much.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE). The `--index-existing` /
 `--dedup-existing` features were contributed by
 [York-Simon Johannsen](https://github.com/YoSiJo) (#3).
-
-## Support
-
-blitcp is free and open source — the best way to support it is to help it grow:
-
-- ⭐ **Star the repository** and share it with anyone who moves a lot of data
-- 🐛 **Report bugs and ideas** via [issues](https://github.com/gekap/blitcp/issues) or pull requests
-
-If you'd like to make a donation, please [get in touch](https://blitcp.dev/#contact).

@@ -90,8 +90,11 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with blitcp.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "4.0.3"
+GUI_VERSION = "4.1.6"
 GUI_REPO = "gekap/blitcp"
+# Shown only on the Settings version card, which the user opened on
+# purpose. Static URL — nothing is fetched, nothing is tracked.
+SUPPORT_URL = "https://ko-fi.com/blitcp"
 
 try:
     import blitcp as fc
@@ -978,6 +981,14 @@ TYPE_LABELS = [
     ("gs", "Google Cloud Storage"), ("ssh", "SSH / SFTP"),
     ("smb", "SMB / CIFS"),
 ]
+# SSH transport choice per connection. "ssh" (exec/tar, today's default) needs
+# a shell on the server; "sftp" works on SFTP-only endpoints (no exec channel,
+# e.g. managed gateways); "both" is the classic hybrid (SFTP large + tar small).
+SSH_PROTOCOLS = [
+    ("ssh", "SSH only — tar over exec (fastest, needs shell)"),
+    ("sftp", "SFTP only — no shell needed (managed/restricted servers)"),
+    ("both", "SSH + SFTP — hybrid (SFTP large files, tar small)"),
+]
 
 
 class ConnectionDialog(QDialog):
@@ -1039,6 +1050,15 @@ class ConnectionDialog(QDialog):
                 bl.addWidget(inp)
                 bl.addSpacing(13)
                 self.fields[(t, key)] = inp
+            if t == "ssh":
+                bl.addWidget(self._lbl("Protocol"))
+                bl.addSpacing(5)
+                self.f_proto = QComboBox()
+                self.f_proto.setObjectName("fieldinput")
+                for val, label in SSH_PROTOCOLS:
+                    self.f_proto.addItem(label, val)
+                bl.addWidget(self.f_proto)
+                bl.addSpacing(13)
             self.fieldsets[t] = box
             lay.addWidget(box)
 
@@ -1096,6 +1116,10 @@ class ConnectionDialog(QDialog):
                 inp.setText(str(c.get("port", dp) or dp))
             else:
                 inp.setText(str(c.get(key, "") or ""))
+        # missing/unknown protocol on a saved conn = "ssh" (today's behavior)
+        proto = c.get("protocol", "ssh") if ctype == "ssh" else "ssh"
+        vals = [v for v, _ in SSH_PROTOCOLS]
+        self.f_proto.setCurrentIndex(vals.index(proto if proto in vals else "ssh"))
 
     def _sync_type(self):
         t = self.f_type.currentData()
@@ -1163,6 +1187,7 @@ class ConnectionDialog(QDialog):
             elif self.fields[(t, "password")].text():
                 e["password"] = self.fields[(t, "password")].text()
             put("path", "path")
+            e["protocol"] = self.f_proto.currentData()
         elif t == "smb":
             if not self.fields[(t, "host")].text().strip():
                 return None, "SMB needs a host"
@@ -1404,6 +1429,54 @@ class RemoteBrowseDialog(QDialog):
     def _accept(self):
         self.result_path = self.gui._compose_path(self.conn, self.cwd, self.selected)
         self.accept()
+
+
+def _engine_auto_update_enabled():
+    """The engine owns this setting so the CLI and the GUI cannot disagree.
+    Unanswered means off here: the GUI checkbox has to show a definite state,
+    and defaulting an unasked question to "yes" is how tools end up phoning
+    home without consent."""
+    try:
+        return bool(fc._load_settings().get("auto_update_check", False))
+    except Exception:
+        return False
+
+
+def _set_engine_auto_update(on):
+    try:
+        st = fc._load_settings()
+        st["auto_update_check"] = bool(on)
+        fc._save_settings(st)
+    except Exception:
+        pass
+
+
+def _auto_update_due():
+    """True when an automatic check is allowed AND a day has passed. Mirrors
+    the engine's own throttle so launching the GUI ten times does not mean ten
+    requests."""
+    try:
+        if os.environ.get("BLITCP_NO_UPDATE_CHECK") or \
+                os.environ.get("FAST_COPY_NO_UPDATE_CHECK"):
+            return False
+        st = fc._load_settings()
+        if not st.get("auto_update_check"):
+            return False
+        import time as _t
+        return (_t.time() - float(st.get("last_update_check") or 0)
+                >= fc._AUTO_CHECK_EVERY)
+    except Exception:
+        return False
+
+
+def _mark_auto_update_checked():
+    try:
+        st = fc._load_settings()
+        import time as _t
+        st["last_update_check"] = _t.time()
+        fc._save_settings(st)
+    except Exception:
+        pass
 
 
 class _UpdateCheckWorker(QThread):
@@ -2482,14 +2555,28 @@ class BlitcpGUI(QWidget):
         nm.setObjectName("connname")
         mt = QLabel(GUI_REPO)
         mt.setObjectName("connmeta")
+        sp = QLabel(_tr("Support development: {url}").format(url=SUPPORT_URL))
+        sp.setObjectName("connmeta")
+        sp.setTextInteractionFlags(Qt.TextSelectableByMouse)
         col.addWidget(nm)
         col.addWidget(mt)
+        col.addWidget(sp)
         cl.addWidget(cic)
         cl.addLayout(col, 1)
         self.upd_btn = textbtn(_tr("Check for updates"), oid="btnsm")
         self.upd_btn.clicked.connect(self._update_btn_clicked)
         cl.addWidget(self.upd_btn)
         lay.addWidget(card)
+
+        # Automatic checks are the user's call, not ours. The engine stores the
+        # same answer in settings.json, so saying yes here also settles the
+        # question the CLI would otherwise ask on its next interactive run.
+        self.auto_upd_cb = QCheckBox(
+            _tr("Check for updates automatically, once a day"))
+        self.auto_upd_cb.setChecked(_engine_auto_update_enabled())
+        self.auto_upd_cb.toggled.connect(_set_engine_auto_update)
+        lay.addSpacing(6)
+        lay.addWidget(self.auto_upd_cb)
 
     @staticmethod
     def _have_module(name):
@@ -2969,6 +3056,14 @@ class BlitcpGUI(QWidget):
             argv.append("--include-node-modules")
         return argv
 
+    def _ssh_protocol(self, path):
+        """Effective transport for a remote endpoint: 'ssh' | 'sftp' | 'both'.
+        Saved connections carry an explicit choice; missing/unknown values and
+        ad-hoc hosts default to 'ssh' (the behavior before this setting)."""
+        matched = self._match_conn("ssh", path)
+        proto = self.conns[matched].get("protocol") if matched else None
+        return proto if proto in ("ssh", "sftp", "both") else "ssh"
+
     def _ssh_auth_flags(self, path, which):
         """SSH auth for one endpoint. which='dst'|'src'.
         Returns (extra_argv, env_dict), or None if the user cancelled.
@@ -3033,12 +3128,14 @@ class BlitcpGUI(QWidget):
         # Resolve SSH auth (key / password) for remote endpoints.
         ssh_extra, ssh_env = [], {}
         involves_ssh = False
+        ssh_endpoints = []                   # remote path strings, for protocol lookup
         if self.dest_type == "SSH":
             r = self._ssh_auth_flags(dest, "dst")
             if r is None:
                 return                       # user cancelled
             ssh_extra += r[0]
             ssh_env.update(r[1])
+            ssh_endpoints.append(dest)
             involves_ssh = True
         if len(sources) == 1 and self.sources and self.sources[0]["t"] == "SSH":
             r = self._ssh_auth_flags(sources[0], "src")
@@ -3047,10 +3144,20 @@ class BlitcpGUI(QWidget):
             ssh_extra += r[0]
             ssh_env.update(r[1])
             involves_ssh = True
+            ssh_endpoints.append(sources[0])
         if involves_ssh:
-            # SSH transfers always use plain SSH (tar over the exec channel) —
-            # no SFTP is attempted at all.
-            ssh_extra.append("--ssh-no-sftp")
+            # Transport per the saved connection's Protocol choice.
+            # Ad-hoc (unsaved) hosts keep today's default: plain SSH.
+            protos = {self._ssh_protocol(p) for p in ssh_endpoints}
+            if "ssh" in protos and "sftp" in protos:
+                self.show_toast(_tr("Source and destination connections need "
+                                    "compatible SSH protocols"))
+                return
+            if "sftp" in protos:
+                ssh_extra.append("--sftp-only")
+            elif "ssh" in protos:
+                ssh_extra.append("--ssh-no-sftp")
+            # all "both": no flag — classic hybrid (SFTP large + tar small)
 
         proc = QProcess(self)
         env = QProcessEnvironment.systemEnvironment()
@@ -4632,6 +4739,11 @@ class BlitcpGUI(QWidget):
             return
         if getattr(self, "_upd_running", False):
             return
+        # Opt-in, and at most once a day. Before this, every launch hit the
+        # network whether or not the user had ever been asked.
+        if not _auto_update_due():
+            return
+        _mark_auto_update_checked()
         self._startup_check = True
         self._upd_running = True
         self._upd_thread = _UpdateCheckWorker()

@@ -410,8 +410,8 @@ msgstr "SSH — ソースへ接続中"
 msgid "Save"
 msgstr "保存"
 
-msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
-msgstr "PATH をスキャンし、サイズで重複排除インデックスに登録。同期時、同サイズのファイルは遅延ハッシュされ、コピーの代わりに reflink されます。"
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. Also widens link scope drive-wide: without this flag a copy only links onto content inside its own destination, so a second backup never shares storage with an older one. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "PATH をスキャンし、サイズで重複排除インデックスに登録。同期時、同サイズのファイルは遅延ハッシュされ、コピーの代わりに reflink されます。さらに link のスコープをドライブ全体に広げます: このフラグがない場合、コピーは自身の宛先内の内容にのみ link するため、2 つ目のバックアップが古いものとストレージを共有することはありません。PATH は宛先と同じ filesystem 上にある必要があります。複数指定可。"
 
 msgid "Scanning existing files in {path} ..."
 msgstr "{path} の既存ファイルをスキャン中 ..."
@@ -967,3 +967,77 @@ msgstr "ローカルコピーの小ファイルエンジン：'parallel' = ワ�
 
 msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
 msgstr "サブコマンド:\n  creds <sub>      認証情報ファイルに保存された cloud/SSH 接続プロファイルの\n                   管理: add, list, edit, remove, test, encrypt/decrypt,\n                   lock。ヘルプは 'blitcp creds' を実行。\n  ls <target>      クラウドの場所（保存済み接続名または s3:// / az:// / gs://\n                   URL）またはリモート SSH ディレクトリ（保存済み ssh 接続\n                   または user@host:/path、SFTP 経由）を一覧表示。\n                   別名: list-objects。ヘルプは 'blitcp ls -h' を実行。\n\n使用例:\n  blitcp /data /media/usb/data           ローカル → ローカル\n  blitcp /data user@host:/backup         ローカル → リモート (SSH)\n  blitcp user@host:/data /local/backup   リモート → ローカル\n  blitcp /data s3://bucket/backup        ローカル → クラウド\n  blitcp creds add aws-dev               接続プロファイルを保存\n  blitcp ls aws-dev                      保存済みクラウド接続を一覧表示\n  blitcp ls user@host:/var/log           リモート SSH ディレクトリを一覧表示\n"
+
+msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
+msgstr "純粋なSFTPで転送 — サーバー上でコマンドを一切実行しません。execチャネルを閉じるSFTP専用エンドポイント（マネージドゲートウェイ、制限付きアカウント）向け。増分転送と検証は機能します。重複排除リンクとリモート空き容量チェックはスキップされます。"
+
+msgid "Skipping dedup — remote hashing needs a shell (SFTP-only mode)"
+msgstr "重複排除をスキップ — リモートハッシュ化にはシェルが必要です（SFTP専用モード）"
+
+msgid "SFTP-only: {n} duplicates will be uploaded in full (links need a shell)"
+msgstr "SFTP専用: {n} 個の重複ファイルは完全にアップロードされます（リンクにはシェルが必要）"
+
+msgid "Source and destination connections need compatible SSH protocols"
+msgstr "ソースと宛先の接続には互換性のあるSSHプロトコルが必要です"
+
+msgid "Hashing: {cand} dedup candidates — {skip} unique-size files need no pre-copy hash"
+msgstr "ハッシュ化: 重複排除候補 {cand} 件 — サイズが一意な {skip} 件はコピー前ハッシュ不要"
+
+msgid "Prefix check: {n} same-size files proven unique (no full hash needed)"
+msgstr "プレフィックス確認: 同一サイズの {n} 件が一意と判明（完全ハッシュ不要）"
+
+msgid "Script mode: no progress bar or banners, one final OK/FAILED line, errors on stderr. The exit code stays the contract (0 ok, 1 corrupt, 2 error, 3 source files skipped)."
+msgstr "スクリプトモード: 進捗バーやバナーを表示せず、最後に OK/FAILED の1行のみ、エラーは stderr へ。終了コードは従来どおり (0 正常、1 破損、2 エラー、3 ソースファイルをスキップ)。"
+
+msgid "Quiet, but keep the copy progress bar. Implies --quiet: banners and phase output stay suppressed, the bar and the final OK/FAILED line are all you get."
+msgstr "静かに、ただしコピーの進捗バーは残します。--quiet を含意し、バナーやフェーズ出力は抑制されたまま、進捗バーと最後の OK/FAILED の行だけが表示されます。"
+
+msgid "Check for updates automatically, once a day? [Y/n]: "
+msgstr "1日1回、自動で更新を確認しますか? [Y/n]: "
+
+msgid "No automatic checks. Run --check-update whenever you want one."
+msgstr "自動確認は行いません。必要なときに --check-update を実行してください。"
+
+msgid "Update available: {tag} — run --update"
+msgstr "更新があります: {tag} — --update を実行してください"
+
+msgid "Failed to check for updates — network or GitHub unavailable"
+msgstr "更新の確認に失敗しました — ネットワークまたは GitHub が利用できません"
+
+msgid "Check for updates automatically, once a day"
+msgstr "1日1回、自動で更新を確認する"
+
+msgid "Verifying contents of {n} files..."
+msgstr "{n} 個のファイルの内容を検証中…"
+
+msgid "content mismatch (hash differs): {rel}"
+msgstr "内容が一致しません (hash が異なります): {rel}"
+
+msgid "{n} file(s) reached the destination with the wrong contents."
+msgstr "{n} 個のファイルが誤った内容で宛先に到達しました。"
+
+msgid "could not be read back from the destination: {rel}"
+msgstr "宛先から読み戻せませんでした: {rel}"
+
+msgid "{n} by existence + size: links, clones and sparse copies"
+msgstr "{n} 件は存在とサイズのみ: hard link、reflink クローン、sparse コピー"
+
+msgid "{n} not content-checked: source unreadable"
+msgstr "{n} 件は内容未検証: 転送元を読み取れません"
+
+
+
+msgid "Checked {n} remote path(s)"
+msgstr "リモートの {n} 個のパスを確認しました"
+
+msgid "Scanned remote ({n} files)"
+msgstr "リモートをスキャンしました（{n} 個のファイル）"
+
+msgid "Update available: {tag} — run: {cmd}"
+msgstr "アップデートがあります: {tag} — 実行: {cmd}"
+
+msgid "cannot create it or it is not writable"
+msgstr "作成できないか、書き込みできません"
+
+msgid "Support development: {url}"
+msgstr "開発を支援する: {url}"

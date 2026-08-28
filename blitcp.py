@@ -109,9 +109,19 @@ def _resolve_lang(argv):
 
 def _load_translation(lang):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    localedir = os.path.join(base, "locales")
+    if not os.path.isdir(localedir):
+        # pip install: catalogs ship in the blitcp_locales data package
+        # instead of a locales/ dir next to this module.
+        try:
+            import blitcp_locales
+            localedir = os.path.join(
+                os.path.dirname(os.path.abspath(blitcp_locales.__file__)),
+                "locales")
+        except ImportError:
+            pass  # no catalogs anywhere — gettext falls back to English
     return _gettext_mod.translation(
-        I18N_DOMAIN, os.path.join(base, "locales"),
-        languages=[lang], fallback=True)
+        I18N_DOMAIN, localedir, languages=[lang], fallback=True)
 
 
 FC_LANG = _resolve_lang(sys.argv[1:])
@@ -166,7 +176,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.0.3"
+__version__ = "4.1.6"
+# Shown only where the user explicitly asked for it (--version, GUI
+# About/Settings). A plain static URL: no redirect, no tracking, no
+# network call of any kind is made on our side.
+SUPPORT_URL = "https://ko-fi.com/blitcp"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,
@@ -222,6 +236,42 @@ def _dir_really_writable(d):
         return True
     except OSError:
         return False
+
+
+def _fmt_exc(e):
+    """One line describing an exception, never empty, plus a way to dig deeper.
+
+    OSError stringifies to "" when it was raised with no arguments — routine in
+    socket and SSH teardown paths — and the handler printed it straight, so a
+    failed transfer ended in a bare "Error:". That is worse than a traceback:
+    it names no cause, no file, and no way to look further. Fall back to errno,
+    filename and the class name so the line always carries something to act on,
+    and let BLITCP_TRACEBACK=1 print the full traceback for the failures blitcp
+    otherwise handles quietly — the one-line rule is about not dumping stack on
+    people, not about withholding the reason when they ask for it."""
+    want_tb = bool(_env("TRACEBACK"))
+    msg = str(e).strip()
+    if not msg:
+        bits = []
+        eno = getattr(e, "errno", None)
+        if eno is not None:
+            bits.append("errno %d (%s)" % (eno, errno.errorcode.get(eno, "?")))
+        fn = getattr(e, "filename", None)
+        if fn:
+            bits.append(repr(fn))
+        if bits:
+            msg = "%s: %s" % (type(e).__name__, ", ".join(bits))
+        elif want_tb:
+            msg = "%s with no message" % type(e).__name__
+        else:
+            msg = ("%s with no message — re-run with BLITCP_TRACEBACK=1 to see "
+                   "where it came from" % type(e).__name__)
+    if want_tb:
+        import traceback as _tb
+        detail = _tb.format_exc().rstrip()
+        if detail and "NoneType: None" not in detail:
+            msg += "\n" + detail
+    return msg
 
 
 def _env(name, default=None):
@@ -1599,6 +1649,11 @@ class C:
     BOLD   = "\033[1m"  if _is_tty else ""
     DIM    = "\033[2m"  if _is_tty else ""
     RESET  = "\033[0m"  if _is_tty else ""
+    # Erase from the cursor to the end of the line. A line printed over a
+    # progress bar has to clear whatever the bar left behind, and a fixed pad
+    # of a dozen spaces does not reach the end of a 90-column bar — which is
+    # why summaries used to trail fragments like "MB/434.8 MB  26.8 MB/s".
+    CLR    = "\033[K"   if _is_tty else ""
 
 def fmt_size(n):
     for u in ("B", "KB", "MB", "GB", "TB"):
@@ -1762,6 +1817,120 @@ def hash_file(filepath, buf_size=HASH_CHUNK, progress_cb=None):
                 if progress_cb:
                     progress_cb(len(chunk))
                 chunk = f.read(buf_size)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+class _SourceDigests:
+    """Source content hashes captured *while the copy engine already holds the
+    bytes*, so post-copy content verification costs one destination read
+    instead of re-reading both sides.
+
+    Only the byte-copy paths feed this. Reflink/CoW clones and hard links never
+    move bytes through userspace — the filesystem guarantees the destination is
+    the same extents — so those are recorded as `SKIP` and content-checked no
+    further than existence + size."""
+
+    SKIP = "__fs_guaranteed__"        # CoW clone / hard link — same extents
+    NA = "__content_check_na__"       # sparse copy — no whole-file digest exists
+
+    def __init__(self):
+        self.enabled = False
+        self._d = {}
+        self._lock = threading.Lock()
+
+    def arm(self):
+        self.enabled = True
+        self._d.clear()
+
+    def disarm(self):
+        self.enabled = False
+        self._d.clear()
+
+    def put(self, rel, digest):
+        if self.enabled and digest is not None:
+            with self._lock:
+                self._d[rel] = digest
+
+    def mark_fs_guaranteed(self, rel):
+        self.put(rel, self.SKIP)
+
+    def mark_not_applicable(self, rel):
+        self.put(rel, self.NA)
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._d)
+
+
+_SRC_DIGESTS = _SourceDigests()
+
+
+def _digest_sink():
+    """A hasher when verification is armed, else None — so the copy loops pay
+    nothing at all when the user passed --no-verify."""
+    return new_hasher() if _SRC_DIGESTS.enabled else None
+
+
+def _flush_destination(path):
+    """Force the destination filesystem's dirty pages out before we call the
+    copy done, and report how long that took.
+
+    Two reasons. A backup tool that returns while gigabytes still sit in the
+    page cache invites the user to unplug the drive on a copy that has not
+    landed. And the time we print is meaningless without it: on a USB disk the
+    write cache absorbs the whole job, so the run "finishes" at RAM speed and
+    the reported MB/s is off by an order of magnitude or two.
+
+    syncfs() on Linux flushes only the destination's filesystem; elsewhere we
+    fall back to os.sync(), which is system-wide but still correct. Windows has
+    no cheap equivalent, so nothing is flushed there and the number keeps its
+    old meaning."""
+    if _system == "Linux":
+        # syncfs() flushes only the destination's filesystem. Its failure modes
+        # are ordinary — musl has no libc.so.6, older glibc has no syncfs — so
+        # they must not take the portable fallback down with them, which is
+        # what a single shared try did.
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                if libc.syncfs(fd) == 0:
+                    return
+            finally:
+                os.close(fd)
+        except (OSError, AttributeError):
+            pass
+    try:
+        if hasattr(os, "sync"):
+            os.sync()
+    except OSError:
+        pass
+
+
+def _within(path, root):
+    """True when `path` is `root` itself or lives underneath it. Both sides are
+    realpath'd so a symlinked destination compares correctly."""
+    try:
+        rp = os.path.realpath(path)
+        rr = os.path.realpath(root)
+    except OSError:
+        return False
+    return rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep)
+
+
+def _hash_file_prefix(filepath, nbytes=65536):
+    """Hash only the first nbytes of a file — the cheap prefilter for
+    same-size dedup groups: different prefixes prove the files differ without
+    reading them whole. NOT comparable to full hashes."""
+    h = new_hasher()
+    try:
+        with open(filepath, "rb") as f:
+            chunk = f.read(nbytes)
+        if not chunk:
+            return _EMPTY_HASH
+        h.update(chunk)
         return h.hexdigest()
     except OSError:
         return None
@@ -2179,6 +2348,17 @@ class DedupDB:
     def __init__(self, dst_root):
         self.dst_root = os.path.realpath(dst_root)
         self.mount = _find_mount_point(dst_root)
+        # Resolved once. safe_full_path() used to recompute it for every row a
+        # hash lookup returned, and the mount cannot move mid-run — the row's
+        # own path is what has to be re-resolved each time, and still is.
+        self._real_mount = os.path.realpath(self.mount)
+        # Cross-run dedup links a new copy onto content the DB already knows.
+        # Restricted to THIS destination by default: linking a fresh backup
+        # onto the inodes of an older backup elsewhere on the drive makes the
+        # two share storage, so damage to one damages both and deleting one
+        # frees nothing — nobody asks for that by running `blitcp src dst`.
+        # --index-existing is the explicit opt-in that widens it drive-wide.
+        self.link_scope_drive_wide = False
         # Prefer the drive/mount root (DB shared across the whole drive), but
         # only when files can REALLY be created there — os.access lies on
         # Windows (C:\ says writable, creation is ACL-denied). And even then,
@@ -2191,6 +2371,23 @@ class DedupDB:
             candidates.append(self.dst_root)
         # Prefix to convert dest-relative → mount-relative
         self._prefix = os.path.relpath(self.dst_root, self.mount)
+        # LIKE pattern confining a hash lookup to this destination; see
+        # lookup_by_hash(). None when the destination IS the mount root, where
+        # every row is in scope anyway and a filter would only cost time.
+        # Over-matching is harmless (safe_full_path + the caller's scope test
+        # still run); under-matching would lose real links, so nothing here may
+        # narrow the pattern beyond the literal prefix.
+        _p = self._prefix.replace(os.sep, "/").strip("/")
+        if _p in ("", ".") or _p.split("/")[0] == "..":
+            # "." → the destination IS the mount. ".." → the destination is not
+            # under the mount at all (a resolution the mount lookup should never
+            # produce): a pattern built from it would match nothing and silently
+            # disable cross-run dedup, so fall back to filtering in the caller.
+            self._scope_like = None
+        else:
+            self._scope_like = (_p.replace("\\", r"\\")
+                                  .replace("%", r"\%")
+                                  .replace("_", r"\_")) + "/%"
         last_err = None
         for i, base in enumerate(candidates):
             db_path = _migrate_local_sidecar(base, DEDUP_DB_NAME,
@@ -2324,6 +2521,40 @@ class DedupDB:
             row = c.fetchone()
             return row[0] if row else None
 
+    # ~230 bytes per entry measured (tuple key + hex digest + dict slot), so
+    # this ceiling is about 45 MB. The previous 2,000,000 counted rows rather
+    # than bytes and would have allocated most of a gigabyte before the first
+    # file was copied — on exactly the long-lived backup targets whose cache
+    # grows large.
+    _PRELOAD_MAX_ROWS = 200000
+
+    def preload_source_cache(self, limit=None):
+        """Read the whole source hash cache into a dict, once.
+
+        Every candidate file used to do its own SELECT, each taking the
+        connection lock. The database lives at the destination — frequently the
+        slowest device in the path — so on a spinning disk those point queries
+        cost far more than the hashing they exist to avoid: measured 0.2s ->
+        2.3s for Phase 2 as the table filled to a few hundred rows. Returns
+        None when the table is too big to hold, and the caller falls back to
+        per-file lookups."""
+        if limit is None:
+            limit = self._PRELOAD_MAX_ROWS
+        try:
+            with self.lock:
+                c = self.conn.cursor()
+                n = c.execute("SELECT count(*) FROM source_cache "
+                              "WHERE hash_algo = ?", (_hash_name,)).fetchone()[0]
+                if n > limit:
+                    return None
+                rows = c.execute(
+                    "SELECT rel_path, size, mtime_ns, content_hash "
+                    "FROM source_cache WHERE hash_algo = ?",
+                    (_hash_name,)).fetchall()
+            return {(r[0], r[1], r[2]): r[3] for r in rows}
+        except sqlite3.Error:
+            return None
+
     def store_source_batch(self, rows):
         """Cache source hashes. rows = list of (rel_path, size, mtime_ns, hash)."""
         with self.lock:
@@ -2391,15 +2622,29 @@ class DedupDB:
         return None
 
     def lookup_by_hash(self, content_hash):
-        """Find files on this drive with this hash.
+        """Find files with this hash that this run is allowed to link against.
+
+        The scope test lives in SQL rather than in the caller. With a drive-wide
+        index — the --index-existing case — one hash can match thousands of rows
+        spread across the disk, and each was resolved through safe_full_path()
+        (two realpath() calls, on Windows across reparse points) only for the
+        caller to throw it away for being outside the destination. Filtering
+        here keeps those rows in the database: measured 2.48s -> 0.05s over 914
+        hash groups against a 60k-row index, and the gap widens with the index.
+
+        Skipped when the user widened the scope on purpose, so --index-existing
+        keeps finding matches anywhere on the drive.
+
         Returns list of (mount_rel_path, size, mtime_ns)."""
+        sql = ("SELECT mount_rel, size, mtime_ns FROM dest_files "
+               "WHERE content_hash = ? AND hash_algo = ?")
+        params = [content_hash, _hash_name]
+        if not self.link_scope_drive_wide and self._scope_like:
+            sql += " AND mount_rel LIKE ? ESCAPE '\\'"
+            params.append(self._scope_like)
         with self.lock:
             c = self.conn.cursor()
-            c.execute(
-                "SELECT mount_rel, size, mtime_ns FROM dest_files "
-                "WHERE content_hash = ? AND hash_algo = ?",
-                (content_hash, _hash_name),
-            )
+            c.execute(sql, params)
             return c.fetchall()
 
     def dest_sizes(self):
@@ -2687,6 +2932,21 @@ class DedupDB:
             )
             return [row[0] for row in c.fetchall()]
 
+    def size_known(self, size):
+        """True when ANY indexed file has this size — hashed (dest_files) or
+        lazily indexed (existing_index). This is the gate for the selective
+        pre-hash: a source file whose size matches nothing here and nothing in
+        the transfer cannot cross-run dedup, so hashing it pre-copy is waste."""
+        with self.lock:
+            c = self.conn.cursor()
+            c.execute("SELECT 1 FROM dest_files WHERE size = ? LIMIT 1",
+                      (size,))
+            if c.fetchone():
+                return True
+            c.execute("SELECT 1 FROM existing_index WHERE size = ? LIMIT 1",
+                      (size,))
+            return c.fetchone() is not None
+
     def promote_from_existing(self, mount_rel, size, content_hash, mtime_ns=None):
         """Move an entry from existing_index to dest_files (hash now known).
         Always called after lazy hashing, regardless of whether hash matched.
@@ -2750,7 +3010,7 @@ class DedupDB:
             return None
         full = os.path.join(self.mount, mount_rel)
         real_full = os.path.realpath(full)
-        real_mount = os.path.realpath(self.mount)
+        real_mount = self._real_mount
         # Normalise the separator so the prefix check also holds when the mount
         # IS the filesystem root ("/"), where real_mount + os.sep would be "//".
         prefix = real_mount if real_mount.endswith(os.sep) else real_mount + os.sep
@@ -2767,11 +3027,24 @@ class DedupDB:
 # ════════════════════════════════════════════════════════════════════════════
 # SSH REMOTE — connection, parsing, remote operations
 # ════════════════════════════════════════════════════════════════════════════
-try:
-    import paramiko
-    _has_paramiko = True
-except ImportError:
-    _has_paramiko = False
+# paramiko costs ~160ms to import and local copies never touch it — load it
+# on first SSH use instead of at startup. `_has_paramiko` is tri-state:
+# None = not attempted yet; always gate through _load_paramiko().
+paramiko = None
+_has_paramiko = None
+
+
+def _load_paramiko():
+    """Import paramiko on demand. Returns True when available."""
+    global paramiko, _has_paramiko
+    if _has_paramiko is None:
+        try:
+            import paramiko as _paramiko_mod
+            paramiko = _paramiko_mod
+            _has_paramiko = True
+        except ImportError:
+            _has_paramiko = False
+    return _has_paramiko
 
 RemoteSpec = namedtuple("RemoteSpec", ["user", "host", "port", "path"])
 REMOTE_MANIFEST_NAME = ".blitcp_manifest.json"
@@ -2797,8 +3070,6 @@ def parse_remote_path(path_str):
     path = m.group(3)
     return RemoteSpec(user=user, host=host, port=22, path=path)
 
-
-_ParamikoHostKeyBase = paramiko.MissingHostKeyPolicy if _has_paramiko else object
 
 # When True, unknown SSH host keys are rejected outright (no interactive TOFU
 # prompt). Set from --ssh-strict-host-key-checking for automated/CI use.
@@ -2838,8 +3109,13 @@ def _chown_to_sudo_user(path):
         pass
 
 
-class _InteractiveHostKeyPolicy(_ParamikoHostKeyBase):
-    """Prompts the user to accept unknown host keys, like OpenSSH does."""
+class _InteractiveHostKeyPolicy:
+    """Prompts the user to accept unknown host keys, like OpenSSH does.
+
+    Duck-typed paramiko host-key policy: SSHClient.set_missing_host_key_policy
+    stores the instance without any isinstance check and only ever calls
+    missing_host_key(), so no paramiko base class is needed — which keeps the
+    paramiko import lazy (see _load_paramiko)."""
 
     def missing_host_key(self, client, hostname, key):
         key_type = key.get_name()
@@ -2880,7 +3156,14 @@ class _InteractiveHostKeyPolicy(_ParamikoHostKeyBase):
 class SSHConnection:
     """Paramiko SSH wrapper with exec, SFTP, and capability detection."""
 
-    def __init__(self, spec, port=22, key_path=None, password=None, compress=False):
+    def __init__(self, spec, port=22, key_path=None, password=None, compress=False,
+                 sftp_only=False):
+        # Choke point for the lazy paramiko import — every classic-SSH flow
+        # builds one of these, so no caller can reach paramiko unloaded.
+        if not _load_paramiko():
+            print(f"  {C.RED}Error: SSH support requires paramiko. "
+                  f"Install: python -m pip install paramiko{C.RESET}")
+            sys.exit(1)
         self.spec = spec._replace(port=port)
         self.key_path = key_path
         self.password = password
@@ -2888,6 +3171,9 @@ class SSHConnection:
         self.client = None
         self.sftp = None
         self.caps = {}
+        # SFTP-only servers (managed gateways) close the exec channel — never
+        # run remote commands on them: no capability probes, no tar, no df.
+        self.sftp_only = sftp_only
 
     def __repr__(self):
         # Explicit repr so the default one never serializes self.password into a
@@ -2973,7 +3259,11 @@ class SSHConnection:
         transport.default_window_size = 16 * 1024 * 1024      # 16 MB
         transport.default_max_packet_size = 512 * 1024         # 512 KB
 
-        self._detect_capabilities()
+        if self.sftp_only:
+            self.caps = {t: False for t in
+                         ("gnu_find", "tar", "python3", "sha256sum")}
+        else:
+            self._detect_capabilities()
         return self
 
     MAX_CMD_OUTPUT = 100 * 1024 * 1024  # 100 MB cap on command output
@@ -3035,7 +3325,13 @@ class SSHConnection:
             ("python3", "python3 --version 2>/dev/null"),
             ("sha256sum", "sha256sum --version 2>/dev/null"),
         ]:
-            _, _, rc = self.exec_cmd(cmd, timeout=10)
+            # A server without an exec channel (SFTP-only gateway) kills the
+            # session on exec — treat that as "tool missing", not a fatal error.
+            try:
+                _, _, rc = self.exec_cmd(cmd, timeout=10)
+            except (paramiko.SSHException, EOFError, OSError):
+                self.caps[tool] = False
+                continue
             self.caps[tool] = (rc == 0)
 
     def close(self):
@@ -3045,8 +3341,94 @@ class SSHConnection:
             self.client.close()
 
 
-def check_remote_space(ssh, remote_path, required_bytes, force=False):
-    """Check free space on remote via df. Walks up to parent if path doesn't exist."""
+def _sftp_mkdir_p(sftp, path):
+    """mkdir -p over SFTP (no shell): create each missing path component."""
+    parts = [p for p in path.split("/") if p]
+    cur = "/" if path.startswith("/") else ""
+    for p in parts:
+        cur = cur + p if cur in ("", "/") else cur + "/" + p
+        try:
+            sftp.stat(cur)
+        except IOError:
+            try:
+                sftp.mkdir(cur)
+            except IOError:
+                pass  # raced / exists / will surface on the first write instead
+
+
+def _sftp_walk_files(sftp, root):
+    """Recursive file listing over SFTP. Returns {rel_path: size}."""
+    result = {}
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            attrs = sftp.listdir_attr(d)
+        except IOError:
+            continue
+        for a in attrs:
+            full = posixpath.join(d, a.filename)
+            if stat.S_ISDIR(a.st_mode or 0):
+                stack.append(full)
+            elif stat.S_ISREG(a.st_mode or 0):
+                result[posixpath.relpath(full, root)] = a.st_size or 0
+    return result
+
+
+def _sftp_hash_remote(ssh, remote_root, rel_paths):
+    """Hash remote files by streaming them down over SFTP (no shell).
+    Returns {rel_path: sha256_hex} — same contract as remote_hash_files."""
+    sftp = ssh.open_sftp()
+    result = {}
+    for i, rp in enumerate(rel_paths):
+        h = hashlib.sha256()
+        try:
+            with sftp.open(posixpath.join(remote_root, rp), "rb") as f:
+                f.prefetch()
+                while True:
+                    c = f.read(1048576)
+                    if not c:
+                        break
+                    h.update(c)
+        except IOError:
+            continue
+        result[rp] = h.hexdigest()
+        if len(rel_paths) > 20 and (i + 1) % 20 == 0:
+            print(f"\r  {C.DIM}Hashed {i + 1}/{len(rel_paths)} files over "
+                  f"SFTP...{C.RESET}", end="", flush=True)
+    if len(rel_paths) > 20:
+        print()
+    return result
+
+
+def check_remote_space(ssh, remote_path, required_bytes, force=False,
+                       entries=None):
+    """Check free space on remote via df. Walks up to parent if path doesn't
+    exist. When `entries` is given, the requirement is rounded up to the
+    remote filesystem's block size (same block-overhead fix as local)."""
+    if getattr(ssh, "sftp_only", False):
+        # No shell → no df. SFTP has no portable statvfs; skip like a failed df.
+        print("  " + C.YELLOW + _tr("Could not check remote space — continuing anyway") + C.RESET)
+        return True
+    if entries:
+        out, _, rc = ssh.exec_cmd(
+            f"stat -f -c %S {shlex.quote(remote_path)} 2>/dev/null || "
+            f"stat -f -c %S / 2>/dev/null", timeout=10)
+        try:
+            rblock = int(out.strip())
+            if not (512 <= rblock <= 16 * 1024 * 1024):
+                rblock = 4096
+        except (ValueError, AttributeError):
+            rblock = 4096   # estimate — GNU stat missing on the remote
+        ndirs = len({posixpath.dirname(e.rel) for e in entries
+                     if posixpath.dirname(e.rel)})
+        fs_alloc = sum(_block_rounded(e.size, rblock) for e in entries)
+        rounded = fs_alloc + _space_overhead_margin(fs_alloc, ndirs, rblock)
+        if rounded > required_bytes:
+            print(f"  {C.DIM}On-disk requirement: {fmt_size(rounded)} "
+                  f"(+{fmt_size(rounded - required_bytes)} block/metadata "
+                  f"overhead, {fmt_size(rblock)} blocks){C.RESET}")
+            required_bytes = rounded
     # Try the path itself, then walk up to find an existing parent
     check_path = remote_path
     for _ in range(10):
@@ -3110,6 +3492,40 @@ def check_remote_space(ssh, remote_path, required_bytes, force=False):
     return True
 
 
+def ensure_remote_root(ssh, remote_root):
+    """Create the destination root on the remote and prove it is writable.
+
+    Without this, an uncreatable destination first shows up as a tar error
+    deep inside Phase 5 — after megabytes have been streamed into a channel
+    that discards them, with a progress bar that already reached 100%. A user
+    who mistyped one character of the path got a copy that "ran" and a remote
+    that stayed empty (issue #4). The local path has always failed fast here
+    (_makedirs_or_die); this is the remote equivalent.
+
+    Returns None when the destination is ready, else a one-line reason."""
+    if getattr(ssh, "sftp_only", False):
+        # No shell: mkdir over SFTP and let the write test be the upload
+        # itself — SFTP has no cheap "is writable" probe.
+        try:
+            _sftp_mkdir_p(ssh.open_sftp(), remote_root)
+            return None
+        except Exception as e:
+            return str(e).splitlines()[0][:200]
+    q = shlex.quote(remote_root)
+    probe = shlex.quote(posixpath.join(
+        remote_root, ".blitcp_wprobe_%s" % os.urandom(6).hex()))
+    out, err, rc = ssh.exec_cmd(
+        f"mkdir -p {q} && : > {probe} && rm -f {probe}", timeout=30)
+    if rc == 0:
+        return None
+    detail = (err or out or "").strip().splitlines()
+    if detail:
+        # mkdir's own words ("Permission denied", "Read-only file system")
+        # beat anything we could invent.
+        return detail[0].replace("mkdir: ", "")[:200]
+    return _tr("cannot create it or it is not writable")
+
+
 def ensure_remote_dirs(ssh, remote_root, entries):
     """Create all needed directories on remote in one SSH call."""
     dirs = sorted(set(
@@ -3117,6 +3533,13 @@ def ensure_remote_dirs(ssh, remote_root, entries):
         for e in entries if posixpath.dirname(e.rel)
     ))
     if not dirs:
+        return
+    if getattr(ssh, "sftp_only", False):
+        # sorted() puts parents before children, so each mkdir needs at most
+        # the missing leaf component — _sftp_mkdir_p handles the rest.
+        sftp = ssh.open_sftp()
+        for d in dirs:
+            _sftp_mkdir_p(sftp, d)
         return
     # Batch mkdir -p
     dir_args = " ".join(shlex.quote(d) for d in dirs)
@@ -3263,16 +3686,163 @@ def save_remote_manifest(ssh, remote_root, entries, link_map):
     _write_remote_file(ssh, manifest_path, json.dumps(manifest))
 
 
-def scan_remote_destination(ssh, remote_root):
-    """Get file listing from remote in one SSH call. Returns {rel_path: size}."""
+_REMOTE_SCAN_TIMEOUT = 300      # exec_cmd's default, named so the message can cite it
+_TARGETED_SCAN_MAX = 1000       # above this, one listing beats N stat calls
+
+
+def _is_timeout(exc):
+    """socket.timeout IS TimeoutError from 3.10 on, a plain OSError before."""
+    return isinstance(exc, TimeoutError) or type(exc).__name__ == "timeout"
+
+
+def _stat_remote_paths(ssh, remote_root, rels):
+    """{rel: size} for whichever of `rels` exist on the remote.
+
+    Returns None when the remote has no stat(1) that speaks -c, so the caller
+    can fall back to the full listing rather than conclude "nothing is there"
+    and re-copy everything."""
+    fmt = 'stat -c "%%s %%n" -- %s 2>/dev/null'
+    # Probe with a path that definitely exists; empty output means the tool is
+    # missing or uses the BSD -f dialect. Cached on the connection: this runs
+    # once per scan and a run scans twice (incremental, then verify), so an
+    # uncached probe spends two extra round trips saying the same thing.
+    have = getattr(ssh, "_blitcp_stat_c", None)
+    if have is None:
+        try:
+            probe, _e, _rc = _exec_listing(
+                ssh, fmt % shlex.quote(remote_root), remote_root, timeout=15)
+        except TimeoutError:
+            # A probe that hangs is not a reason to abandon the run: the full
+            # listing has twenty times the budget and its own clear message if
+            # it fails too. Not cached either — this says nothing about whether
+            # stat(1) exists.
+            return None
+        have = bool((probe or "").strip())
+        if have:
+            # Only a positive answer is cached. "No stat -c" costs one extra
+            # round trip on the second scan, which is cheap insurance against a
+            # single odd reply pinning the whole run to the full listing.
+            try:
+                ssh._blitcp_stat_c = True
+            except AttributeError:
+                pass                    # a stub connection object; re-probe
+    if not have:
+        return None
+    result = {}
+    rels = list(rels)
+    for i in range(0, len(rels), 100):     # keep the argv well inside ARG_MAX
+        args = " ".join(shlex.quote(posixpath.join(remote_root, r))
+                        for r in rels[i:i + 100])
+        out, _e, _rc = _exec_listing(ssh, fmt % args, remote_root,
+                                     timeout=60)
+        for line in (out or "").splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            try:
+                size = int(parts[0])
+            except ValueError:
+                continue
+            result[posixpath.relpath(parts[1], remote_root)] = size
+    return result
+
+
+def _scan_note(remote_files, targeted, asked):
+    """Describe what was actually asked, not what the old message assumed.
+
+    A targeted lookup knows nothing about the rest of the destination, so
+    calling it a scan of N files would misreport a partial answer as a survey
+    of the whole tree. It also has to count the paths QUESTIONED, not the ones
+    that came back: asking about two files and finding one is not "checked 1
+    path"."""
+    # "{n} path(s)", matching the file(s) wording already used elsewhere:
+    # build.compile_locales() cannot parse msgid_plural, so a real ngettext
+    # entry would compile away to English in all six catalogs.
+    if targeted:
+        return _tr("Checked {n} remote path(s)").format(n=asked)
+    return _tr("Scanned remote ({n} files)").format(n=len(remote_files))
+
+
+def _exec_listing(ssh, cmd, remote_root, timeout=None):
+    """Run a destination-inspecting command, and say something useful when it
+    does not finish.
+
+    paramiko raises a bare socket.timeout — no message, no path, and it is an
+    OSError subclass, so the flow handlers printed it as the single word
+    "Error:". Name what timed out and what to do instead. Every command in this
+    phase goes through here, not just the big listing: an existence probe that
+    hangs is the same dead end for the user."""
+    try:
+        if timeout is None:
+            return ssh.exec_cmd(cmd)
+        return ssh.exec_cmd(cmd, timeout=timeout)
+    except OSError as e:
+        if not _is_timeout(e):
+            raise
+        raise TimeoutError(
+            "inspecting %s did not finish within %ds. The destination tree is "
+            "too large to enumerate over SSH — a directory holding a million "
+            "files answers with over a hundred megabytes of listing. Copy into "
+            "a more specific directory, or pass --overwrite to skip the "
+            "incremental check entirely."
+            % (remote_root,
+               _REMOTE_SCAN_TIMEOUT if timeout is None else timeout)) from e
+
+
+def scan_remote_destination(ssh, remote_root, want_rels=None):
+    """Destination file sizes. Returns ({rel_path: size}, targeted).
+
+    The full listing costs one line per file ANYWHERE under remote_root. A home
+    directory holding 1.26M files answers with 124 MB of text, which does not
+    arrive inside the command timeout: uploading a single 12 KB file to
+    /home/kai died in this phase, after paramiko spent five minutes receiving
+    a listing nobody needed.
+
+    Every caller only ever looks up rels it already knows, so when there are
+    few of them the honest question is about those paths — O(sources) instead
+    of O(destination). `targeted` says which question was asked, so the caller
+    does not report a partial answer as a full scan.
+    """
+    if getattr(ssh, "sftp_only", False):
+        sftp = ssh.open_sftp()
+        try:
+            st = sftp.stat(remote_root)
+        except IOError:
+            return {}, False  # directory doesn't exist yet — nothing to compare
+        if not stat.S_ISDIR(st.st_mode or 0):
+            return {}, False
+        return _sftp_walk_files(sftp, remote_root), False
     # Check if remote directory exists first
-    _, _, rc = ssh.exec_cmd(f'test -d {shlex.quote(remote_root)}', timeout=10)
+    _, _, rc = _exec_listing(ssh, f'test -d {shlex.quote(remote_root)}',
+                             remote_root, timeout=10)
     if rc != 0:
-        return {}  # directory doesn't exist yet — nothing to compare
+        return {}, False  # directory doesn't exist yet — nothing to compare
+
+    if want_rels is not None:
+        # Never join an unvalidated rel onto the remote root. On a pull or a
+        # relay these come from the SOURCE's listing, which is not ours: a
+        # '../..' would stat outside the destination, leaking whether a path
+        # exists and how big it is — and a hit would make the incremental check
+        # SKIP the file. The whole-tree listing could never reach outside
+        # remote_root, so this is a hole the targeted question opened.
+        #
+        # Dropping them (rather than refusing) keeps this agreeing with the
+        # copy: _validate_rel_path already filters the tar batches, so such an
+        # entry is never written. Absent from the answer means "not there",
+        # the copy declines it, and verify reports it missing — all consistent.
+        want_rels = [r for r in want_rels if _validate_rel_path(r) is True]
+        if not want_rels:
+            # Nothing to ask about. Falling through would enumerate the entire
+            # destination to answer a question with no subject.
+            return {}, True
+        if len(want_rels) <= _TARGETED_SCAN_MAX:
+            targeted = _stat_remote_paths(ssh, remote_root, want_rels)
+            if targeted is not None:
+                return targeted, True
 
     if ssh.caps.get("gnu_find"):
         cmd = f'find {shlex.quote(remote_root)} -type f -printf "%s\\t%p\\n" 2>/dev/null'
-        out, _, rc = ssh.exec_cmd(cmd)
+        out, _, rc = _exec_listing(ssh, cmd, remote_root)
         result = {}
         for line in out.strip().split("\n"):
             if not line:
@@ -3286,14 +3856,14 @@ def scan_remote_destination(ssh, remote_root):
                     result[rel] = size
                 except (ValueError, TypeError):
                     continue
-        return result
+        return result, False
     else:
         # Portable fallback: find + stat (Linux stat -c, not BSD stat -f)
         cmd = (f'find {shlex.quote(remote_root)} -type f '
                f'-exec stat -c "%s %n" {{}} + 2>/dev/null || '
                f'find {shlex.quote(remote_root)} -type f '
                f'-exec stat -f "%z %N" {{}} + 2>/dev/null')
-        out, _, rc = ssh.exec_cmd(cmd)
+        out, _, rc = _exec_listing(ssh, cmd, remote_root)
         result = {}
         for line in out.strip().split("\n"):
             if not line:
@@ -3307,13 +3877,17 @@ def scan_remote_destination(ssh, remote_root):
                     result[rel] = size
                 except (ValueError, TypeError):
                     continue
-        return result
+        return result, False
 
 
 def remote_hash_files(ssh, remote_root, rel_paths):
     """Hash files on remote in batches. Returns {rel_path: hash_hex}."""
     if not rel_paths:
         return {}
+
+    if getattr(ssh, "sftp_only", False):
+        # No shell to hash on the server — stream the bytes down and hash here.
+        return _sftp_hash_remote(ssh, remote_root, rel_paths)
 
     BATCH_SIZE = 5000  # files per SSH command to avoid channel timeouts
     result = {}
@@ -3926,7 +4500,13 @@ def filter_unchanged_remote(entries, link_map, ssh, remote_root,
     # ALWAYS scan the actual remote — never trust the manifest for existence.
     # The manifest is a cache from a previous run; the user may have deleted
     # or moved files since then. Truth is the filesystem.
-    remote_files = scan_remote_destination(ssh, remote_root)
+    # Ask about the paths this run cares about. Enumerating the whole tree to
+    # answer "does this one file exist" is what timed out on a 1.26M-file home
+    # directory; falls back to the full listing on its own when the remote has
+    # no usable stat(1) or there are too many sources for it to pay off.
+    want = _wanted_rels(entries, link_map)
+    remote_files, targeted = scan_remote_destination(ssh, remote_root,
+                                                     want_rels=want)
 
     # Load the manifest (if present) ONLY as a hash cache, and only trust
     # entries whose size matches what's currently on the remote (otherwise
@@ -3941,11 +4521,11 @@ def filter_unchanged_remote(entries, link_map, ssh, remote_root,
                 if h:
                     remote_hashes[k] = h
                     valid_cached += 1
-        print(f"\r  {C.DIM}Scanned remote ({len(remote_files)} files), "
-              f"manifest cache hits: {valid_cached}{C.RESET}          ")
+        print(f"\r  {C.DIM}{_scan_note(remote_files, targeted, len(want))}, "
+              f"manifest cache hits: {valid_cached}{C.RESET}{C.CLR}")
     else:
-        print(f"\r  {C.DIM}Scanned remote ({len(remote_files)} files), "
-              f"no manifest{C.RESET}          ")
+        print(f"\r  {C.DIM}{_scan_note(remote_files, targeted, len(want))}, "
+              f"no manifest{C.RESET}{C.CLR}")
 
     need_copy = []
     need_hash = []
@@ -4043,6 +4623,58 @@ def _makedirs_or_die(path, what="destination"):
     except OSError as e:
         raise SystemExit(f"Error: cannot create {what} {path!r}: "
                          f"{e.strerror or e}")
+    # Creating it is not the same as being able to write in it: an existing
+    # read-only directory, a full-disk quota or a Windows ACL all pass
+    # makedirs and then fail file by file, mid-copy. Probe for real —
+    # os.access lies (see _dir_really_writable).
+    if not _dir_really_writable(path):
+        raise SystemExit(f"Error: {what} {path!r} is not writable")
+
+
+def _dest_block_size(dst):
+    """Allocation unit of the destination filesystem, in bytes.
+
+    Every file occupies whole blocks on disk, so 40k tiny files can need
+    hundreds of MB more than their logical size — a space check that ignores
+    this passes doomed jobs (seen in UAT: '+44MB headroom' → ENOSPC at 86%).
+    Falls back to 4096 when the platform doesn't expose the real value."""
+    try:
+        if hasattr(os, "statvfs"):
+            st = os.statvfs(dst)
+            bs = st.f_frsize or st.f_bsize
+            if bs and 512 <= bs <= 16 * 1024 * 1024:
+                return int(bs)
+    except OSError:
+        pass
+    if _system == "Windows":
+        try:
+            import ctypes
+            spc = ctypes.c_ulong()
+            bps = ctypes.c_ulong()
+            fc = ctypes.c_ulong()
+            tc = ctypes.c_ulong()
+            root = os.path.splitdrive(os.path.abspath(dst))[0] + "\\"
+            if ctypes.windll.kernel32.GetDiskFreeSpaceW(
+                    ctypes.c_wchar_p(root), ctypes.byref(spc), ctypes.byref(bps),
+                    ctypes.byref(fc), ctypes.byref(tc)):
+                bs = spc.value * bps.value
+                if 512 <= bs <= 16 * 1024 * 1024:
+                    return bs
+        except Exception:
+            pass
+    return 4096
+
+
+def _block_rounded(nbytes, block):
+    """Disk space nbytes of file data actually occupy: whole blocks."""
+    return ((nbytes + block - 1) // block) * block if nbytes > 0 else 0
+
+
+def _space_overhead_margin(fs_alloc, ndirs, block):
+    """Directories + inode/metadata allowance: one block per new directory
+    plus 1% (min 1MB) — deliberately a touch conservative, because dying at
+    86% with a full disk costs far more than a rejected borderline job."""
+    return ndirs * block + max(1024 * 1024, fs_alloc // 100)
 
 
 def check_destination_space(dst, required_bytes, force=False):
@@ -5339,19 +5971,172 @@ def _volume_seek_penalty_windows(path):
         return None
 
 
-def _volume_seek_penalty_linux(path):
-    """Seek penalty via /sys rotational flag. True/False/None as above."""
+# Filesystems that live in RAM: no block device to ask, and by definition no
+# seek to save. Without this they answer "unknown" and drag the whole source
+# into the physical-mapping phase for nothing.
+_MEMORY_FS = frozenset(("tmpfs", "ramfs", "devtmpfs"))
+
+
+def _fstype_linux(path):
+    """Filesystem type of the mount holding `path`, or None."""
+    try:
+        target = os.path.realpath(path)
+        best, best_type = "", None
+        with open("/proc/self/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp = parts[1].replace("\\040", " ")
+                if (target == mp or target.startswith(mp.rstrip("/") + "/")) \
+                        and len(mp) > len(best):
+                    best, best_type = mp, parts[2]
+        return best_type
+    except OSError:
+        return None
+
+
+def _is_usb_backed(sysfs_base):
+    """True when the block device hangs off a USB bus. USB-SATA bridges do not
+    pass the drive's rotation-rate word through, so every SSD behind one
+    reports rotational=1 — the flag has to be checked another way."""
+    try:
+        # The bus shows up as a numbered controller component: .../usb4/4-3/...
+        return any(re.fullmatch(r"usb\d*", c)
+                   for c in os.path.realpath(sysfs_base).lower().split("/"))
+    except OSError:
+        return False
+
+
+# How many candidate paths the seek probe may look through. It needs only a
+# couple of dozen readable files of a usable size, but has to be free to walk
+# past the small ones to find them.
+_PROBE_SAMPLE_POOL = 20000
+
+
+def _probe_seek_penalty(path, samples=24, budget=0.8, sample_files=None):
+    """Measure whether seeking costs anything, by timing cold random reads.
+
+    Used only where the /sys flag is known to be unreliable. Reads go through
+    O_DIRECT so they reach the device instead of the page cache: the first
+    version used POSIX_FADV_DONTNEED to evict first, which is a no-op on ntfs3
+    — a warm cache then made a 10 ms/seek hard disk look like flash, the one
+    verdict that must never be wrong.
+
+    A rotational disk lands around 8-12 ms per seek, flash around 0.1-0.3 ms.
+    Returns True (seeks cost), False (they do not), or None when the reads
+    could not be trusted — in which case the caller keeps the /sys flag.
+    """
+    import mmap
+    import random
+
+    if not hasattr(os, "O_DIRECT"):
+        return None
+    files = []
+    want = max(samples * 4, 64)
+    if sample_files:
+        # The caller already knows which files are about to be read; probing
+        # those is both free and exactly representative. Walking from one
+        # entry's parent directory instead used to find too few files in a leaf
+        # folder, give up, and fall back to the very flag we came here to doubt.
+        #
+        # Keep scanning until enough usable files turn up rather than stopping
+        # after a fixed slice: source order is directory order, and a tree whose
+        # first few hundred files are all tiny would otherwise blind the probe.
+        for fp in sample_files:
+            try:
+                sz = os.stat(fp).st_size
+            except OSError:
+                continue
+            if sz >= 8192:
+                files.append((fp, sz))
+                if len(files) >= want:
+                    break
+    else:
+        try:
+            for root, _dirs, names in os.walk(path):
+                for n in names:
+                    fp = os.path.join(root, n)
+                    try:
+                        sz = os.stat(fp).st_size
+                    except OSError:
+                        continue
+                    if sz >= 8192:      # room for an aligned 4 KB read
+                        files.append((fp, sz))
+                        if len(files) >= want:
+                            raise StopIteration
+        except StopIteration:
+            pass
+        except OSError:
+            return None
+    if len(files) < 8:
+        return None
+
+    rnd = random.Random(0)              # deterministic: same tree, same verdict
+    buf = mmap.mmap(-1, 4096)           # page-aligned, as O_DIRECT requires
+    times = []
+    refused = 0
+    deadline = time.time() + budget
+    try:
+        for _ in range(samples):
+            if time.time() > deadline:
+                break
+            fp, sz = files[rnd.randrange(len(files))]
+            off = rnd.randrange(0, sz - 4096) & ~4095
+            try:
+                fd = os.open(fp, os.O_RDONLY | os.O_DIRECT)
+            except OSError as e:
+                if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+                    return None         # filesystem refuses O_DIRECT — don't guess
+                refused += 1            # this one file: permissions, races, ACLs
+                continue
+            try:
+                t0 = time.perf_counter()
+                if os.preadv(fd, [buf], off) <= 0:
+                    continue
+                times.append(time.perf_counter() - t0)
+            except OSError:
+                refused += 1
+                continue
+            finally:
+                os.close(fd)
+    finally:
+        buf.close()
+    if len(times) < 8:
+        return None
+    if refused > len(times):
+        # More samples were rejected than measured: a filesystem or permission
+        # problem, not a couple of awkward files. The few timings that did land
+        # are not a fair picture of the device, so keep the /sys flag.
+        return None
+    times.sort()
+    # 1 ms sits an order of magnitude clear of both populations.
+    return times[len(times) // 2] >= 0.001
+
+
+def _volume_seek_penalty_linux(path, sample_files=None):
+    """Seek penalty for the volume holding `path`. True/False/None as above."""
+    if _fstype_linux(path) in _MEMORY_FS:
+        return False
     try:
         st = os.stat(path)
         base = "/sys/dev/block/%d:%d" % (os.major(st.st_dev),
                                          os.minor(st.st_dev))
-        # A partition's queue lives on its parent disk (base/..).
+        flag = None
         for p in (base + "/queue/rotational", base + "/../queue/rotational"):
             try:
                 with open(p) as f:
-                    return f.read().strip() == "1"
+                    flag = f.read().strip() == "1"
+                    break
             except OSError:
                 continue
+        # "Not rotational" is never a lie — no bridge invents that. "Rotational"
+        # from a USB-attached device usually is, so measure instead of trusting.
+        if flag is True and _is_usb_backed(base):
+            probed = _probe_seek_penalty(path, sample_files=sample_files)
+            if probed is not None:
+                return probed
+        return flag
     except (OSError, ValueError):
         pass
     return None
@@ -5385,16 +6170,33 @@ def _skip_physical_mapping(entries):
                     for d, v in sorted(results.items())]
         return all(v is False for v in results.values()), verdicts
     if _system == "Linux":
-        dirs = {os.path.dirname(os.path.abspath(e.src)) for e in entries}
-        # One representative dir per device is enough for the /sys lookup.
+        # Stat each distinct directory once. Doing it per entry meant a
+        # million extra stats on a million-file tree, on the very source whose
+        # seek cost this function exists to avoid paying.
+        # entries arrive in walk order, so files from one directory are
+        # contiguous: remembering just the previous one captures nearly every
+        # repeat at O(1) memory. A dict keyed by path would hold one string per
+        # directory — tens of MB on the deep million-file trees this is for.
+        last_dir = last_dev = None
+        by_dev = {}
+        for e in entries:
+            d = os.path.dirname(os.path.abspath(e.src))
+            if d == last_dir:
+                dev = last_dev
+            else:
+                try:
+                    dev = os.stat(d).st_dev
+                except OSError:
+                    return False, ["stat failed: %s" % d]
+                last_dir, last_dev = d, dev
+            bucket = by_dev.setdefault(dev, [])
+            if len(bucket) < _PROBE_SAMPLE_POOL:
+                bucket.append(e.src)
         seen = {}
-        for d in dirs:
-            try:
-                dev = os.stat(d).st_dev
-            except OSError:
-                return False, ["stat failed: %s" % d]
-            if dev not in seen:
-                seen[dev] = _volume_seek_penalty_linux(d)
+        for dev, srcs in by_dev.items():
+            seen[dev] = _volume_seek_penalty_linux(
+                os.path.dirname(os.path.abspath(srcs[0])),
+                sample_files=srcs)
         verdicts = ["dev%s=%s" % (dev, _PENALTY_LABEL[v])
                     for dev, v in sorted(seen.items())]
         return all(v is False for v in seen.values()), verdicts
@@ -5458,6 +6260,7 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
     symlink_warnings = []
     rejected_symlinks = []
     excluded_default = [0]   # count of default-excluded (node_modules) dirs pruned
+    file_jobs = []           # (src_path, rel_path) — stat'ed after the walk
     for root, dirs, files in os.walk(walk_src, followlinks=follow_links_setting, onerror=on_walk_error):
         # Circular symlink protection
         try:
@@ -5511,39 +6314,76 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
                 errors.append((_strip_long_path(src_path),
                                f"cross-mount path skipped ({e})"))
                 continue
+            file_jobs.append((src_path, rel_path))
+
+    # ── Stat phase ────────────────────────────────────────────────────
+    # The walk above only LISTS; the per-file stats happen here so they can
+    # run in a thread pool (os.lstat releases the GIL). Cold metadata stats
+    # dominate large-tree scans on SSD/NVMe/network filesystems; on a
+    # rotating disk parallel stats would just fight the head, so HDD keeps
+    # the sequential order.
+    def _stat_one(job):
+        src_path, rel_path = job
+        try:
+            lst = os.lstat(src_path)
+        except OSError as e:
+            return ("err", (_strip_long_path(src_path), str(e)))
+        # Symlink in source: refuse outright when running elevated.
+        # Otherwise, allow only if its realpath stays inside the source.
+        if stat.S_ISLNK(lst.st_mode):
+            if elevated:
+                return ("rej", _strip_long_path(src_path))
             try:
-                lst = os.lstat(src_path)
+                real_target = os.path.realpath(src_path)
+            except OSError:
+                return ("rej", _strip_long_path(src_path))
+            if not (real_target == src_real or
+                    real_target.startswith(src_real + os.sep)):
+                return ("rej", _strip_long_path(src_path))
+            try:
+                st = os.stat(src_path)   # follow the (vetted) link
             except OSError as e:
-                errors.append((_strip_long_path(src_path), str(e)))
-                continue
-            # Symlink in source: refuse outright when running elevated.
-            # Otherwise, allow only if its realpath stays inside the source.
-            if stat.S_ISLNK(lst.st_mode):
-                if elevated:
-                    rejected_symlinks.append(_strip_long_path(src_path))
-                    continue
-                try:
-                    real_target = os.path.realpath(src_path)
-                except OSError:
-                    rejected_symlinks.append(_strip_long_path(src_path))
-                    continue
-                if not (real_target == src_real or
-                        real_target.startswith(src_real + os.sep)):
-                    rejected_symlinks.append(_strip_long_path(src_path))
-                    continue
-            try:
-                st = os.stat(src_path)
-                alloc = _detect_sparse_alloc(st)
-                entries.append(FileEntry(
-                    src=src_path, rel=rel_path, size=st.st_size,
-                    physical_offset=0, content_hash=None,
-                    alloc_size=alloc,
-                ))
+                return ("err", (_strip_long_path(src_path), str(e)))
+        else:
+            st = lst                     # not a link → lstat IS the stat
+        return ("ok", FileEntry(
+            src=src_path, rel=rel_path, size=st.st_size,
+            physical_offset=0, content_hash=None,
+            alloc_size=_detect_sparse_alloc(st)))
+
+    def _consume(results_iter):
+        nonlocal scan_count
+        for kind, val in results_iter:
+            if kind == "ok":
+                entries.append(val)
                 scan_count += 1
                 if scan_count % 1000 == 0:
                     print("\r  " + C.DIM + _tr("Scanning... {n} files").format(n=scan_count) + C.RESET, end="", flush=True)
-            except OSError as e:
-                errors.append((_strip_long_path(src_path), str(e)))
+            elif kind == "err":
+                errors.append(val)
+            else:
+                rejected_symlinks.append(val)
+
+    try:
+        _scan_hdd = _classify_storage(src_root) == "hdd"
+    except Exception:
+        _scan_hdd = False
+    # Adaptive: time a sequential sample first. Hot-cache/tmpfs stats run in
+    # ~1µs — a pool is pure dispatch overhead there. Cold/network metadata
+    # runs 100µs–ms per stat — that's where 32 threads collapse the wall time.
+    # HDDs stay sequential regardless (parallel stats just fight the head).
+    sample_n = min(256, len(file_jobs))
+    _t0 = time.monotonic()
+    _consume(map(_stat_one, file_jobs[:sample_n]))
+    _per_stat = (time.monotonic() - _t0) / sample_n if sample_n else 0
+    rest = file_jobs[sample_n:]
+    if rest:
+        if _scan_hdd or _per_stat < 20e-6:
+            _consume(map(_stat_one, rest))
+        else:
+            with ThreadPoolExecutor(max_workers=min(
+                    32, (os.cpu_count() or 4) * 4)) as _scan_pool:
+                _consume(_scan_pool.map(_stat_one, rest, chunksize=64))
     if rejected_symlinks:
         reason = ("running as root — symlinks not followed" if elevated
                   else "target escapes source tree")
@@ -5604,6 +6444,12 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
 
 def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     """Query physical offsets in parallel, return entries sorted by disk position."""
+    # Nothing to copy (everything deduped to links, or all files unchanged):
+    # there is no layout to map. Falling through would print "0/0 files
+    # mapped" and then warn that mapping FAILED — a scary yellow line on a
+    # run where nothing went wrong at all.
+    if not entries:
+        return entries
     # Flash sources have no read head: physical ordering cannot speed them
     # up, and the per-file probes are pure cost (minutes on Windows). Skip
     # the whole pass and use the size-sorted fallback order instead.
@@ -5611,13 +6457,28 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     if skip:
         print(f"  {C.GREEN}Source is solid-state (no seek penalty) — "
               f"physical ordering skipped.{C.RESET}")
-        return sorted(entries, key=lambda e: e.size, reverse=True)
+        # Scan order as-is: with no read head to please, any order works, and
+        # sorting a million-entry list is pure cost. The small/large engine
+        # split downstream doesn't depend on this order.
+        return entries
     if verdicts:
         # Diagnostic: WHY the mapping still runs (which volume was HDD or
         # couldn't be identified). One dim line, invaluable when the skip
         # doesn't fire where the user expected it to.
         print(f"  {C.DIM}Seek-penalty check: {', '.join(verdicts)} — "
               f"mapping physical layout.{C.RESET}")
+
+    # Fail-fast: filesystems with no physical-offset support (tmpfs, most
+    # network/virtual FS) return 0 for EVERY file — detect that with a handful
+    # of probes instead of paying one ioctl per file across the whole tree.
+    nonempty = [e for e in entries if e.size > 0]
+    if len(nonempty) >= 4:
+        step = max(1, len(nonempty) // 8)
+        probe_sample = nonempty[::step][:8]
+        if all(get_physical_offset(e.src) == 0 for e in probe_sample):
+            print(f"  {C.YELLOW}Filesystem reports no physical offsets "
+                  f"(probe) — skipping layout mapping.{C.RESET}")
+            return entries
 
     print(f"  {C.DIM}Reading disk layout ({_system})...{C.RESET}", end="", flush=True)
 
@@ -5668,7 +6529,8 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
 # ════════════════════════════════════════════════════════════════════════════
 
 def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
-                fs_strategy=None, dedup_inplace=False, dry_run=False):
+                fs_strategy=None, dedup_inplace=False, dry_run=False,
+                selective=True):
     """
     Content-aware deduplication:
       1. Hash ALL files (using cache when available)
@@ -5685,18 +6547,111 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     if dedup_db:
         print(f"  {C.DIM}Hash cache: enabled (cross-run dedup){C.RESET}")
 
-    # ── Step 1: Hash ALL files (cache-aware) ──────────────────────────
+    # ── Step 1: Hash the files that can actually BE duplicates ───────
+    # A file whose size is unique within this transfer AND unknown to the
+    # cross-run index cannot match anything — pre-hashing it is a pure second
+    # read of the whole source (the copy reads it anyway). Same-size groups
+    # get a cheap 64KB prefix check first: different prefixes prove the files
+    # differ without reading them whole. Only prefix-collisions and files
+    # size-matched against the existing index need a full pre-copy hash.
     total = len(entries)
-    print("  " + _tr("Hashing {n} files...").format(n=total))
-
     hashes = [None] * total
+
+    size_counts = defaultdict(int)
+    for e in entries:
+        size_counts[e.size] += 1
+    _db_size_hit = {}
+
+    def _db_size_match(sz):
+        if sz not in _db_size_hit:
+            try:
+                _db_size_hit[sz] = bool(dedup_db and dedup_db.size_known(sz))
+            except Exception:
+                _db_size_hit[sz] = False
+        return _db_size_hit[sz]
+
+    full_idx = []      # need a full hash (existing-index size match)
+    prefix_idx = []    # same size within the transfer → prefix prefilter
+    for i, e in enumerate(entries):
+        if not selective:
+            # Remote-destination mode: hash everything, exactly as before —
+            # the manifest needs every hash for future incremental runs.
+            full_idx.append(i)
+            continue
+        if e.size == 0:
+            continue
+        if _db_size_match(e.size):
+            full_idx.append(i)
+        elif size_counts[e.size] > 1:
+            prefix_idx.append(i)
+    skipped_pre = total - len(full_idx) - len(prefix_idx)
+    if skipped_pre > 0:
+        print("  " + _tr("Hashing: {cand} dedup candidates — {skip} unique-size files need no pre-copy hash").format(
+            cand=len(full_idx) + len(prefix_idx), skip=skipped_pre))
+    else:
+        print("  " + _tr("Hashing {n} files...").format(n=total))
+
     cache_hits = [0]
+    # Pull the cache into memory up front — see DedupDB.preload_source_cache.
+    _src_cache = dedup_db.preload_source_cache() if dedup_db else None
+
+    def _cached_hash(src, size, mtime_ns):
+        if not mtime_ns:
+            return None
+        if _src_cache is not None:
+            return _src_cache.get((src, size, mtime_ns))
+        return dedup_db.lookup(src, size, mtime_ns) if dedup_db else None
+
     new_hashes = []  # (rel, size, mtime_ns, hash) for source cache
     done_count = [0]
-    total_bytes = sum(e.size for e in entries)
     bdone = [0]
     last_emit = [0]
     lock = threading.Lock()
+
+    # ── Step 1a: prefix prefilter for same-size groups ────────────────
+    if prefix_idx:
+        prefix_of = {}
+
+        def _do_prefix(idx):
+            entry = entries[idx]
+            # A valid cached FULL hash saves the full read later — but the
+            # prefix is still computed and grouped: a cache-hit that skipped
+            # grouping would leave an UNCACHED identical twin alone in its
+            # prefix group, unpromoted, and the duplicate pair would silently
+            # copy instead of link (caught by the v4.1.0 link audit).
+            try:
+                mt = os.stat(entry.src).st_mtime_ns
+            except OSError:
+                mt = 0
+            if dedup_db and mt:
+                cached = _cached_hash(entry.src, entry.size, mt)
+                if cached:
+                    hashes[idx] = cached
+                    with lock:
+                        cache_hits[0] += 1
+            prefix_of[idx] = _hash_file_prefix(entry.src)
+
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            for f in as_completed([pool.submit(_do_prefix, i)
+                                   for i in prefix_idx]):
+                f.result()
+
+        pgroups = defaultdict(list)
+        for idx, ph in prefix_of.items():
+            if ph is not None:
+                pgroups[(entries[idx].size, ph)].append(idx)
+        # Promote every member of a colliding prefix group that doesn't already
+        # carry a full hash from the cache (cached members are group anchors —
+        # they cost nothing more and their uncached twins MUST be full-hashed).
+        promoted = [idx for grp in pgroups.values() if len(grp) > 1
+                    for idx in grp if hashes[idx] is None]
+        full_idx.extend(promoted)
+        cleared = sum(1 for idx in prefix_of
+                      if hashes[idx] is None) - len(promoted)
+        if cleared > 0:
+            print(f"  {C.DIM}" + _tr("Prefix check: {n} same-size files proven unique (no full hash needed)").format(n=cleared) + C.RESET)
+
+    total_bytes = sum(entries[i].size for i in full_idx)
 
     def _hprog(nbytes):
         # Mid-file byte progress so a few HUGE files (e.g. 12 x 5 GB archives)
@@ -5720,7 +6675,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
             mtime_ns_before = 0
         # Try cache first
         if dedup_db and mtime_ns_before:
-            cached = dedup_db.lookup(cache_key, entry.size, mtime_ns_before)
+            cached = _cached_hash(cache_key, entry.size, mtime_ns_before)
             if cached:
                 hashes[idx] = cached
                 with lock:
@@ -5740,18 +6695,19 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                 with lock:
                     new_hashes.append((cache_key, entry.size, mtime_ns_before, h))
 
+    nfull = len(full_idx)
     with ThreadPoolExecutor(max_workers=threads) as pool:
-        futures = [pool.submit(do_hash, i) for i in range(total)]
+        futures = [pool.submit(do_hash, i) for i in full_idx]
         for f in as_completed(futures):
             f.result()
             with lock:
                 done_count[0] += 1
                 # Emit per file when few files (each may be huge), else throttle.
-                if done_count[0] % 100 == 0 or total <= 200:
-                    _phase_emit("Hashing", done_count[0], total,
+                if done_count[0] % 100 == 0 or nfull <= 200:
+                    _phase_emit("Hashing", done_count[0], nfull,
                                 bytes_done=bdone[0], bytes_total=total_bytes)
-    if total:
-        _phase_emit("Hashing", total, total,
+    if nfull:
+        _phase_emit("Hashing", nfull, nfull,
                     bytes_done=total_bytes, bytes_total=total_bytes)
 
     # Store newly computed hashes in source cache
@@ -5760,7 +6716,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
 
     if cache_hits[0] > 0:
         print(f"\r  {C.GREEN}Cache: {cache_hits[0]}/{total} hashes from DB "
-              f"({total - cache_hits[0]} computed){C.RESET}          ")
+              f"({total - cache_hits[0]} computed){C.RESET}{C.CLR}")
 
     # Update all entries with hashes
     hashed_entries = [
@@ -5910,7 +6866,11 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                   f"(physical order){C.RESET}                    ")
 
     total_groups = len(hash_groups)
-    print(f"  {C.DIM}Cross-referencing {total_groups} unique sizes/hashes against drive...{C.RESET}",
+    # Leading \r: this used to print wherever the cursor happened to be. The
+    # hashing progress line above ends without a newline, so the two ran
+    # together into one 78-column line, and the fixed-width pad that overwrote
+    # it next was sized for this message alone — leaving a tail on screen.
+    print(f"\r  {C.DIM}Cross-referencing {total_groups} unique sizes/hashes against drive...{C.RESET}{C.CLR}",
           end="", flush=True)
 
     for key, group in hash_groups.items():
@@ -5923,6 +6883,13 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
                 # Resolve + validate the cached path stays within the mount.
                 full_path = dedup_db.safe_full_path(mount_rel)
                 if full_path is None:
+                    continue
+                # Stay inside this destination unless explicitly widened.
+                # Re-copying into the same folder still links (that is the
+                # incremental case people want); a second backup in a new
+                # folder gets its own inodes.
+                if not dedup_db.link_scope_drive_wide and not _within(
+                        full_path, dedup_db.dst_root):
                     continue
                 # Fresh lstat: never follow a symlink (TOCTOU), and require the
                 # file to still be a REGULAR file of the recorded size.
@@ -6027,7 +6994,10 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     within_run = dup_count - crossrun_count
     total_files = len(entries)
 
-    print(f"\r  {C.GREEN}Dedup complete:{C.RESET}                                                  ")
+    # C.CLR, not a hand-counted run of spaces: the padding has to be at least
+    # as wide as whatever happens to be on the line, which is a guess that has
+    # to be re-checked every time a message or a translation changes.
+    print(f"\r  {C.GREEN}Dedup complete:{C.RESET}{C.CLR}")
     print(f"    Unique files:    {C.BOLD}{len(unique_entries)}{C.RESET}")
     if within_run > 0:
         print(f"    Within-run dups: {C.BOLD}{within_run}{C.RESET} files "
@@ -6328,6 +7298,128 @@ def resolve_case_conflicts(entries, link_map, dst):
 # default human output is unchanged when this stays False. Consumed by the GUI.
 PROGRESS_JSON = False
 
+# ── Quiet mode (--quiet) ────────────────────────────────────────────────────
+# Built for scripts and cron: no progress bar, no banners, one final line and
+# a meaningful exit code. Suppressed output is not discarded but kept in a
+# bounded ring, so a run that FAILS can still say why on stderr — quiet must
+# never mean silent about a failure, which is the whole reason a caller could
+# not simply redirect stdout to /dev/null.
+QUIET = False
+QUIET_PROGRESS = False       # --progress: keep the bar, suppress everything else
+_REAL_STDOUT = sys.stdout
+_QUIET_STATS = {}            # filled by Progress.finish(): files/bytes/elapsed
+_QUIET_MAX_ERRORS = 20       # per-file errors listed on stderr before eliding
+_BAR_DIRTY = False           # bar left the cursor mid-line (it renders with \r)
+
+
+def _bar_out():
+    """Where the progress bar writes. In quiet mode stdout is the sink that
+    swallows everything, so the bar — the one thing --progress keeps — has to
+    bypass it and go to the real stdout."""
+    return _REAL_STDOUT if QUIET else sys.stdout
+
+
+class _QuietSink:
+    """stdout stand-in for --quiet: swallows writes, remembering the tail.
+
+    Only write/flush/isatty are ever used on sys.stdout in this program, so
+    that is the whole contract. isatty() is False: anything that formats for
+    a terminal should not bother while we are throwing the output away."""
+
+    def __init__(self, limit=64 * 1024):
+        self._parts = []
+        self._size = 0
+        self._limit = limit
+
+    def write(self, s):
+        s = str(s)
+        self._parts.append(s)
+        self._size += len(s)
+        while self._size > self._limit and len(self._parts) > 1:
+            self._size -= len(self._parts.pop(0))
+        return len(s)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    def tail(self):
+        return "".join(self._parts)
+
+
+def _quiet_enable(keep_progress=False):
+    global QUIET, QUIET_PROGRESS, PROGRESS_JSON
+    QUIET = True
+    QUIET_PROGRESS = keep_progress
+    PROGRESS_JSON = False     # a machine-readable progress stream defeats it
+    sys.stdout = _QuietSink()
+
+
+def _quiet_reason_lines(sink):
+    """The error lines out of the captured output, for a systemic failure that
+    produced no per-file error. Dumping the whole tail would bury the reason
+    under banners and phase headers, which is exactly what --quiet exists to
+    get rid of; blitcp's convention is a single-line "Error: ..." message, so
+    those lines are the reason. Falls back to the last few lines if the
+    failure never printed one."""
+    if not isinstance(sink, _QuietSink):
+        return []
+    lines = [ln.rstrip() for ln in _strip_ansi(sink.tail()).splitlines()
+             if ln.strip()]
+    errs = [ln for ln in lines if re.search(r"\berror\b", ln, re.I)]
+    return (errs or lines[-3:])[-_QUIET_MAX_ERRORS:]
+
+
+def _quiet_finish(code, reason_shown=False):
+    """Restore stdout and print the single line --quiet promises.
+
+    On failure, stderr gets the per-file errors first (structured, and the
+    thing a caller actually needs); the captured output is mined for a reason
+    only when there were none, so the two never duplicate each other.
+    reason_shown=True means the caller already printed the reason."""
+    global QUIET
+    if not QUIET:
+        return
+    sink, QUIET = sys.stdout, False
+    sys.stdout = _REAL_STDOUT
+    if _BAR_DIRTY:
+        _REAL_STDOUT.write("\n")
+        _REAL_STDOUT.flush()
+    failed = code not in (0, None)
+    if failed:
+        listed = list(_COPY_ERRORS.items())[:_QUIET_MAX_ERRORS]
+        for rel, (msg, _src) in listed:
+            sys.stderr.write(f"  {rel}: {msg}\n")
+        hidden = len(_COPY_ERRORS) - len(listed)
+        if hidden > 0:
+            sys.stderr.write(f"  ... and {hidden} more\n")
+        if not listed and not reason_shown:
+            for ln in _quiet_reason_lines(sink):
+                sys.stderr.write(ln + "\n")
+    # Status tokens stay untranslated on purpose: this line is a contract for
+    # scripts that grep it, and a locale-dependent word would break them.
+    n = _QUIET_STATS.get("files")
+    if failed:
+        errs = len(_COPY_ERRORS)
+        detail = f"{errs} file error{'' if errs == 1 else 's'}, " if errs else ""
+        sys.stderr.write(f"FAILED: {detail}exit {code}\n")
+    else:
+        if n is not None:
+            # "copied" is deliberate: dedup links and unchanged-file skips are
+            # not copies, and reporting them as such would overstate the run.
+            print(f"OK: copied {n} file{'' if n == 1 else 's'}, "
+                  f"{fmt_size(_QUIET_STATS.get('bytes', 0))} "
+                  f"in {fmt_time(_QUIET_STATS.get('elapsed', 0))}")
+        else:
+            print("OK")
+
+
+def _strip_ansi(text):
+    """Colour codes are noise in a log file the caller will grep."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
 
 class Progress:
     def __init__(self, total_bytes, total_files):
@@ -6396,6 +7488,8 @@ class Progress:
             self._eta_ts = None
 
     def display(self):
+        if QUIET and not QUIET_PROGRESS:
+            return
         now = time.time()
         if now - self._last_print < 0.08:
             return
@@ -6503,18 +7597,27 @@ class Progress:
         filled = int(bar_w * min(pct, 100) / 100)
         bar = "█" * filled + "░" * (bar_w - filled)
 
-        sys.stdout.write(
+        global _BAR_DIRTY
+        out = _bar_out()
+        out.write(
             f"\r  {C.CYAN}{bar}{C.RESET} {pct:5.1f}%  "
             f"{fmt_size(bytes_done)}/{fmt_size(self.total_bytes)}  "
             f"{C.GREEN}{fmt_speed(speed)}{C.RESET}  "
             f"{files_done}/{self.total_files} files  "
             f"ETA {fmt_time(eta) if eta is not None else '—'}   "
         )
-        sys.stdout.flush()
+        out.flush()
+        _BAR_DIRTY = True
 
     def finish(self):
         elapsed = time.time() - self.start
         speed = self.bytes_done / elapsed if elapsed > 0 else 0
+        # Every copy mode drives a Progress, so this is the one hook that
+        # gives --quiet its totals without touching five summary blocks.
+        _QUIET_STATS.update(files=self.files_done, bytes=self.bytes_done,
+                            elapsed=elapsed)
+        if QUIET and not QUIET_PROGRESS:
+            return
         if PROGRESS_JSON:
             sys.stdout.write(json.dumps({
                 "t": "done",
@@ -6528,10 +7631,18 @@ class Progress:
             }) + "\n")
             sys.stdout.flush()
             return
-        print(f"\r  {C.GREEN}{'█' * 30}{C.RESET} 100%  "
-              f"{fmt_size(self.bytes_done)} in {fmt_time(elapsed)}  "
-              f"avg {C.GREEN}{fmt_speed(speed)}{C.RESET}  "
-              f"{self.files_done} files                ")
+        global _BAR_DIRTY
+        out = _bar_out()
+        # No time or average here. The bar stops when the last byte is handed
+        # to the page cache; the summary stops after the destination is
+        # flushed, and the two disagreed by 3x on a USB disk — one output
+        # should not carry two answers to the same question. The live bar above
+        # still shows a running rate while the copy is in flight.
+        out.write(f"\r  {C.GREEN}{'█' * 30}{C.RESET} 100%  "
+                  f"{fmt_size(self.bytes_done)}  "
+                  f"{self.files_done} files{C.CLR}\n")
+        out.flush()
+        _BAR_DIRTY = False
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -6749,6 +7860,264 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
                 os.close(fd)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# SMALL FILES — io_uring engine (Linux)
+# ════════════════════════════════════════════════════════════════════════════
+# The thread-pool engine pays Python/GIL overhead per file (~0.2ms) across 32
+# workers. io_uring keeps ONE thread and batches the data plane instead: many
+# files in flight, one syscall submits/reaps whole batches of reads+writes.
+# Opens stay synchronous through _safe_open_* — that is the security surface
+# (O_NOFOLLOW, symlink rejection) and it stays identical to the pool engine.
+_URING_LIB = None       # loaded liburing-ffi, or False after a failed probe
+_URING_DEPTH = 256      # ring entries
+_URING_WINDOW = 64      # files in flight (each holds a ≤1MB buffer)
+
+
+class _UringCqe(ctypes.Structure):
+    _fields_ = [("user_data", ctypes.c_uint64),
+                ("res", ctypes.c_int32),
+                ("flags", ctypes.c_uint32)]
+
+
+def _uring_lib():
+    """Load liburing-ffi (the FFI build exports the inline helpers). Returns
+    the CDLL or None. Cached; BLITCP_NO_URING=1 disables the engine."""
+    global _URING_LIB
+    if _URING_LIB is not None:
+        return _URING_LIB or None
+    if _system != "Linux" or os.environ.get("BLITCP_NO_URING"):
+        _URING_LIB = False
+        return None
+    try:
+        lib = ctypes.CDLL("liburing-ffi.so.2", use_errno=True)
+        lib.io_uring_queue_init.argtypes = [ctypes.c_uint, ctypes.c_void_p,
+                                            ctypes.c_uint]
+        lib.io_uring_queue_init.restype = ctypes.c_int
+        lib.io_uring_queue_exit.argtypes = [ctypes.c_void_p]
+        lib.io_uring_get_sqe.argtypes = [ctypes.c_void_p]
+        lib.io_uring_get_sqe.restype = ctypes.c_void_p
+        lib.io_uring_prep_read.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                           ctypes.c_void_p, ctypes.c_uint,
+                                           ctypes.c_uint64]
+        lib.io_uring_prep_write.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                            ctypes.c_void_p, ctypes.c_uint,
+                                            ctypes.c_uint64]
+        lib.io_uring_sqe_set_data64.argtypes = [ctypes.c_void_p,
+                                                ctypes.c_uint64]
+        lib.io_uring_submit.argtypes = [ctypes.c_void_p]
+        lib.io_uring_submit.restype = ctypes.c_int
+        lib.io_uring_submit_and_wait.argtypes = [ctypes.c_void_p,
+                                                 ctypes.c_uint]
+        lib.io_uring_submit_and_wait.restype = ctypes.c_int
+        lib.io_uring_peek_cqe.argtypes = [ctypes.c_void_p,
+                                          ctypes.POINTER(ctypes.c_void_p)]
+        lib.io_uring_peek_cqe.restype = ctypes.c_int
+        lib.io_uring_cqe_seen.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        _URING_LIB = lib
+        return lib
+    except OSError:
+        _URING_LIB = False
+        return None
+
+
+def copy_small_uring(small_entries, dst_root, progress, cancel_check=None):
+    """Copy small files via io_uring. Returns True when the engine ran (files
+    copied / per-file errors logged like the pool engine), False when the ring
+    could not be set up at all — caller falls back to the thread pool."""
+    lib = _uring_lib()
+    if lib is None:
+        return False
+    ring = ctypes.create_string_buffer(512)   # opaque struct io_uring
+    if lib.io_uring_queue_init(_URING_DEPTH, ring, 0) < 0:
+        return False
+
+    small_size = sum(e.size for e in small_entries)
+    progress.set_current(
+        "%d small files (io_uring)" % len(small_entries),
+        small_size, nfiles=len(small_entries), stage=True)
+    progress.reset_rate_window()
+
+    os.makedirs(_long_path(dst_root), exist_ok=True)
+    # One mkdir per distinct directory instead of one per file.
+    for d in sorted({os.path.dirname(e.rel) for e in small_entries
+                     if os.path.dirname(e.rel)}):
+        os.makedirs(_long_path(os.path.join(dst_root, d)), exist_ok=True)
+
+    READ, WRITE = 0, 1
+    slots = {}                       # slot id → state dict
+    free_ids = list(range(_URING_WINDOW))
+    bufs = [ctypes.create_string_buffer(SMALL_FILE_THRESHOLD)
+            for _ in range(_URING_WINDOW)]
+    pending = deque(small_entries)
+    ok_count = [0]
+    unsubmitted = [0]
+
+    def _fail(entry, err, counted=0, benign_src=False, dst_path=None):
+        _log("error", entry.rel, entry.size, error=str(err),
+             source_read=benign_src)
+        if dst_path:
+            try:
+                os.remove(dst_path)
+            except OSError:
+                pass
+        progress.update(max(0, entry.size - counted), 1)
+
+    def _open_next():
+        """Open fds for the next pending entry → slot id, or None."""
+        while pending:
+            entry = pending.popleft()
+            dst_path = os.path.join(dst_root, entry.rel)
+            try:
+                src_fd = _safe_open_read_fd(entry.src)
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    _log("error", entry.rel, entry.size,
+                         error="symlink in source (elevated)")
+                    progress.update(entry.size, 1)
+                else:
+                    _fail(entry, e, benign_src=_is_benign_source_read(e))
+                continue
+            try:
+                dst_fd = _safe_open_write_fd(dst_path, truncate=True)
+            except OSError as e:
+                os.close(src_fd)
+                if e.errno == errno.ELOOP:
+                    _log("error", entry.rel, entry.size,
+                         error="symlink at destination")
+                    progress.update(entry.size, 1)
+                else:
+                    _fail(entry, e)
+                continue
+            if entry.size == 0:
+                # Nothing to transfer — finish inline.
+                _finish_ok(entry, src_fd, dst_fd, dst_path)
+                continue
+            sid = free_ids.pop()
+            slots[sid] = {"e": entry, "sf": src_fd, "df": dst_fd,
+                          "p": dst_path, "stage": READ, "off": 0,
+                          "want": min(entry.size, SMALL_FILE_THRESHOLD)}
+            return sid
+        return None
+
+    def _finish_ok(entry, src_fd, dst_fd, dst_path):
+        try:
+            st = os.fstat(src_fd)
+            _safe_apply_meta(dst_fd, dst_path, st, src_path=entry.src)
+        except OSError:
+            pass
+        os.close(src_fd)
+        os.close(dst_fd)
+        _log("copied", entry.rel, entry.size, method="uring_small")
+        ok_count[0] += 1
+        progress.update(0, 1)
+
+    def _submit(sid, op):
+        sqe = lib.io_uring_get_sqe(ring)
+        while not sqe:
+            lib.io_uring_submit(ring)
+            sqe = lib.io_uring_get_sqe(ring)
+        s = slots[sid]
+        n = s["want"] - s["off"]
+        buf_ptr = ctypes.byref(bufs[sid], s["off"])
+        if op == READ:
+            lib.io_uring_prep_read(sqe, s["sf"], buf_ptr, n, s["off"])
+        else:
+            lib.io_uring_prep_write(sqe, s["df"], buf_ptr, n, s["off"])
+        lib.io_uring_sqe_set_data64(sqe, sid)
+        unsubmitted[0] += 1
+
+    def _release(sid, err=None, counted=0, benign_src=False):
+        s = slots.pop(sid)
+        os.close(s["sf"])
+        os.close(s["df"])
+        if err is not None:
+            _fail(s["e"], err, counted=counted, benign_src=benign_src,
+                  dst_path=s["p"])
+        free_ids.append(sid)
+
+    cqe_ptr = ctypes.c_void_p()
+    cancelled = False
+    while (pending or slots) and not cancelled:
+        if cancel_check and cancel_check():
+            cancelled = True
+            break
+        # Keep the window full.
+        while len(slots) < _URING_WINDOW and pending:
+            sid = _open_next()
+            if sid is None:
+                break
+            _submit(sid, READ)
+        if not slots:
+            continue    # everything pending failed at open — loop
+        # Submits anything queued and blocks for ≥1 completion — no busy
+        # spinning when the ring is already fully submitted.
+        lib.io_uring_submit_and_wait(ring, 1)
+        unsubmitted[0] = 0
+        # Drain completions.
+        while lib.io_uring_peek_cqe(ring, ctypes.byref(cqe_ptr)) == 0:
+            cqe = ctypes.cast(cqe_ptr, ctypes.POINTER(_UringCqe)).contents
+            sid, res = int(cqe.user_data), int(cqe.res)
+            lib.io_uring_cqe_seen(ring, cqe_ptr)
+            s = slots.get(sid)
+            if s is None:
+                continue
+            if res < 0:
+                _release(sid, err=os.strerror(-res), counted=s["off"]
+                         if s["stage"] == WRITE else 0,
+                         benign_src=(s["stage"] == READ and -res == errno.EACCES))
+                continue
+            if res == 0 and s["stage"] == READ:
+                # Source shrank mid-copy: write what we have.
+                s["want"] = s["off"]
+            else:
+                s["off"] += res
+            if s["off"] < s["want"]:
+                _submit(sid, s["stage"])          # short op — continue it
+                continue
+            if s["stage"] == READ:
+                # Whole file is now in bufs[sid][:want] — hash it here, where
+                # the bytes cost nothing extra, so Phase 6 only re-reads the
+                # destination.
+                if _SRC_DIGESTS.enabled:
+                    _h = new_hasher()
+                    if s["want"]:
+                        _h.update(memoryview(bufs[sid])[:s["want"]])
+                    _SRC_DIGESTS.put(s["e"].rel, _h.hexdigest())
+                s["stage"], s["off"] = WRITE, 0
+                if s["want"] == 0:                # empty after shrink
+                    entry, sf, df, p = s["e"], s["sf"], s["df"], s["p"]
+                    slots.pop(sid)
+                    free_ids.append(sid)
+                    _finish_ok(entry, sf, df, p)
+                    continue
+                _submit(sid, WRITE)
+            else:
+                progress.update(s["want"], 0)
+                progress.display()
+                entry, sf, df, p = s["e"], s["sf"], s["df"], s["p"]
+                slots.pop(sid)
+                free_ids.append(sid)
+                _finish_ok(entry, sf, df, p)
+
+    # Cancelled: close whatever is in flight without logging bogus errors.
+    for sid in list(slots):
+        s = slots.pop(sid)
+        os.close(s["sf"])
+        os.close(s["df"])
+    lib.io_uring_queue_exit(ring)
+    progress.set_current(None)
+
+    failed = len(small_entries) - ok_count[0]
+    if cancelled:
+        return True
+    if failed:
+        print(f"\r  {C.YELLOW}Copied {ok_count[0]} small files, "
+              f"{failed} errors{C.RESET}{C.CLR}")
+    else:
+        print(f"\r  {C.GREEN}Copied {ok_count[0]} small files{C.RESET}{C.CLR}")
+    return True
+
+
 def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
                         threads=DEFAULT_THREADS):
     """Copy small files with a thread pool (LOCAL destinations).
@@ -6769,8 +8138,6 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
     # CPU). Cap 128: past that, NTFS metadata contention and AV scan queues
     # give it back, and each worker holds a 256KB buffer + 2 handles.
     workers = min(128, max(1, threads * 4))
-    print(f"  {C.CYAN}Copying {len(small_entries)} small files "
-          f"({fmt_size(small_size)}) with {workers} parallel writers...{C.RESET}")
 
     os.makedirs(_long_path(dst_root), exist_ok=True)
     cancelled = threading.Event()
@@ -6813,14 +8180,20 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
             buf = bytearray(256 * 1024)
             with os.fdopen(src_fd, "rb") as fin, os.fdopen(dst_fd, "wb") as fout:
                 keep_fd = fout.fileno()
+                _dig = _digest_sink()
                 while True:
                     n = fin.readinto(buf)
                     if not n:
                         break
-                    fout.write(memoryview(buf)[:n])
+                    _mv = memoryview(buf)[:n]
+                    if _dig is not None:
+                        _dig.update(_mv)
+                    fout.write(_mv)
                     counted += n
                     progress.update(n)
                     progress.display()
+                if _dig is not None:
+                    _SRC_DIGESTS.put(entry.rel, _dig.hexdigest())
                 # Flush BEFORE utime: a <8KB file still sits in the
                 # BufferedWriter, and the flush-at-close would land after
                 # _safe_apply_meta and clobber the copied mtime.
@@ -7020,6 +8393,11 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             # Try reflink first when the destination FS supports it.
             # Reflinks are O(1) metadata operations — instant for any size.
             if fs_strategy == "reflink" and _try_reflink(entry.src, dst_path):
+                # A CoW clone shares the source extents outright — the
+                # filesystem guarantees the content, and no bytes ever pass
+                # through userspace to hash. Content verification would mean a
+                # gratuitous full read of a copy that took milliseconds.
+                _SRC_DIGESTS.mark_fs_guaranteed(entry.rel)
                 # Preserve timestamps and permissions even on reflink.
                 # _try_reflink creates dst_path itself; verify it's not a symlink before chmod.
                 try:
@@ -7052,6 +8430,12 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     continue
                 if not ok:
                     return  # cancelled — abort the batch
+                # Sparse copy walks data extents and never reads the holes, so
+                # there is no whole-file digest to compare against. Verifying
+                # content here would mean materialising the logical size on both
+                # sides — hours for a 2.3 TB image whose real data is 12 GB.
+                # These stay on existence + size, and say so.
+                _SRC_DIGESTS.mark_not_applicable(entry.rel)
             else:
                 try:
                     src_fd_raw = _safe_open_read_fd(entry.src)
@@ -7081,6 +8465,9 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     raise
                 with os.fdopen(src_fd_raw, "rb") as fin, os.fdopen(dst_fd_raw, "wb") as fout:
                     dst_fd_keep = fout.fileno()
+                    # Hash the source as it streams past — the bytes are already
+                    # in the buffer, so this is the cheap half of verification.
+                    _dig = _digest_sink()
                     while True:
                         # Check for cancellation during large file copy
                         if cancel_check and cancel_check():
@@ -7093,9 +8480,13 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                         n = fin.readinto(buf)
                         if not n:
                             break
+                        if _dig is not None:
+                            _dig.update(mv[:n])
                         fout.write(mv[:n])
                         progress.update(n)
                         progress.display()
+                    if _dig is not None:
+                        _SRC_DIGESTS.put(entry.rel, _dig.hexdigest())
                     try:
                         st = os.fstat(fin.fileno())
                         _safe_apply_meta(dst_fd_keep, dst_path, st, src_path=entry.src)
@@ -7202,9 +8593,22 @@ def copy_hybrid(entries, dst_root, progress, buf_size, cancel_check=None,
             copy_block_stream(small, dst_root, progress, cancel_check)
             progress.set_current(None)
         else:
-            print(f"  {C.BOLD}── Small files (parallel) ──{C.RESET}")
-            copy_small_parallel(small, dst_root, progress, cancel_check,
-                                threads=threads)
+            # io_uring first (Linux + liburing-ffi): one thread, batched
+            # submissions, no GIL contention. Falls back to the thread pool
+            # when the ring can't be set up (old kernel, seccomp, no lib).
+            if _uring_lib() is not None:
+                print(f"  {C.BOLD}── Small files (io_uring) ──{C.RESET}")
+                if not copy_small_uring(small, dst_root, progress,
+                                        cancel_check):
+                    print(f"  {C.DIM}io_uring unavailable — using the "
+                          f"thread pool.{C.RESET}")
+                    print(f"  {C.BOLD}── Small files (parallel) ──{C.RESET}")
+                    copy_small_parallel(small, dst_root, progress,
+                                        cancel_check, threads=threads)
+            else:
+                print(f"  {C.BOLD}── Small files (parallel) ──{C.RESET}")
+                copy_small_parallel(small, dst_root, progress, cancel_check,
+                                    threads=threads)
         if cancel_check and cancel_check():
             return
         print()
@@ -7396,10 +8800,19 @@ def _stream_tar_batch_to_remote(batch, ssh, remote_root, progress):
 
     if rc != 0:
         stderr = channel.recv_stderr(4096).decode("utf-8", errors="replace")
-        print(f"\n  {C.YELLOW}Remote tar exited {rc}: {stderr[:200]}{C.RESET}")
+        print(f"\n  {C.RED}Error: remote tar exited {rc}: {stderr[:200]}{C.RESET}")
+        # The extractor died, so NOTHING in this batch landed — record every
+        # file, not just the ones that raised locally. Verification would
+        # catch the missing files anyway, but the summary must not go on
+        # claiming their bytes were sent.
+        for entry in batch:
+            if entry.rel not in _COPY_ERRORS:
+                _log("error", entry.rel, entry.size,
+                     error=f"remote tar exited {rc}")
+                errors += 1
 
     if errors:
-        print(f"  {C.YELLOW}{errors} files failed to stream{C.RESET}")
+        print(f"  {C.RED}{errors} files failed to stream{C.RESET}")
 
     channel.close()
     return writer.written
@@ -7445,7 +8858,10 @@ def copy_hybrid_remote(entries, ssh, remote_root, progress, buf_size):
         copy_block_stream_remote(entries, ssh, remote_root, progress)
     else:
         # Fallback: SFTP for everything if tar not available
-        print(f"  Strategy (no remote tar — using SFTP):")
+        if getattr(ssh, "sftp_only", False):
+            print(f"  Strategy (SFTP-only mode):")
+        else:
+            print(f"  Strategy (no remote tar — using SFTP):")
         print(f"    {C.BOLD}{len(entries)}{C.RESET} files, "
               f"{C.BOLD}{fmt_size(total_size)}{C.RESET}")
         print()
@@ -7455,6 +8871,12 @@ def copy_hybrid_remote(entries, ssh, remote_root, progress, buf_size):
 def create_links_remote(ssh, link_map, remote_root):
     """Create hard links on remote via a single Python script over SSH."""
     if not link_map:
+        return
+    if getattr(ssh, "sftp_only", False):
+        # Shouldn't be reached — SFTP-only mode uploads duplicates in full —
+        # but never try to run a remote script on an exec-less server.
+        print(f"  {C.YELLOW}Skipping {len(link_map)} remote links "
+              f"(SFTP-only server has no shell){C.RESET}")
         return
 
     print(f"  {C.DIM}Creating {len(link_map)} links on remote...{C.RESET}", end="", flush=True)
@@ -7529,7 +8951,8 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
     total_to_check = len(entries) + len(link_map)
     print(f"\n  {C.DIM}Verifying {total_to_check} files on remote...{C.RESET}", end="", flush=True)
 
-    remote_files = scan_remote_destination(ssh, remote_root)
+    remote_files, _targeted = scan_remote_destination(
+        ssh, remote_root, want_rels=_wanted_rels(entries, link_map))
 
     missing = []
     missing_files = []   # raw rels of missing FILES (for exit-code classification)
@@ -7568,8 +8991,12 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
     # files actually present on the remote (exclude missing + grown).
     if not mismatches and entries:
         _missing_set = set(missing_files)
+        # In SFTP-only mode dedup is off, so content_hash may be unset — the
+        # spot-check compares fresh sha256 of both sides and doesn't need it.
+        _sftp_only = getattr(ssh, "sftp_only", False)
         hashed_entries = [e for e in entries
-                          if e.content_hash and e.rel not in grew_rels
+                          if (e.content_hash or _sftp_only)
+                          and e.rel not in grew_rels
                           and e.rel not in _missing_set]
         if hashed_entries:
             import random
@@ -7597,7 +9024,7 @@ def verify_copy_remote(ssh, entries, link_map, remote_root):
             print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK on remote{C.RESET}               ")
         return "ok"
     else:
-        print("\r  " + C.RED + "✗ " + _tr("Verification failed:") + C.RESET)
+        print("\r  " + C.RED + "✗ " + _tr("Verification failed:") + C.RESET + C.CLR)
         for m in missing[:10]:
             print(f"    {C.RED}MISSING: {m}{C.RESET}")
         for rel, exp, act in mismatches[:10]:
@@ -7658,10 +9085,14 @@ def _exit_for_verify(status):
         sys.exit(EXIT_SOURCE_UNREADABLE)
 
 
-def verify_copy(entries, link_map, dst_root):
-    """Check existence + file size for all files (unique + linked). Returns a
-    status string: 'ok' | 'source_skipped' (unreadable source only) | 'corrupt'
-    (size mismatch or unexplained missing). Uses a single os.walk pass."""
+def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
+    """Verify the copy: existence + size for every file (unique + linked), then
+    a content hash comparison for every byte-copied file.
+
+    Returns 'ok' | 'source_skipped' (unreadable source only) | 'corrupt' (size
+    mismatch, content mismatch, or unexplained missing). The existence/size
+    sweep is a single os.walk pass; the content pass re-reads the destination
+    and compares against the digest the copy engine captured on the way in."""
     total_to_check = len(entries) + len(link_map)
     print(f"\n  {C.DIM}Verifying {total_to_check} files...{C.RESET}", end="", flush=True)
 
@@ -7727,7 +9158,99 @@ def verify_copy(entries, link_map, dst_root):
 
     total_checked = len(expected)
 
-    if not missing and not mismatches:
+    # ── Content verification ──────────────────────────────────────────
+    # Size and existence catch a truncated or absent file; they do not catch a
+    # drive that wrote the right number of wrong bytes. The copy engine already
+    # hashed each source file while its bytes were in the buffer, so the only
+    # extra cost here is reading the destination back once.
+    #
+    # Three kinds of file carry no comparable digest and stay on existence+size:
+    #   SKIP — reflink/CoW clone or hard link: the filesystem shares the very
+    #          same extents, so there is nothing to diverge.
+    #   NA   — sparse copy: holes are never read, so no whole-file digest exists.
+    #   absent — copied by a path that does not feed the collector (the tar
+    #          stream mode, remote transfers): fall back to hashing the source.
+    content_bad = []
+    content_checked = [0]
+    content_skipped = 0
+    content_unreadable = []
+    content_nosource = 0
+    # Only the local copy engine feeds the collector. Remote-to-local and the
+    # tar-stream mode arrive here with it disarmed — hashing the destination
+    # there would cost a full read with nothing to compare it against.
+    #
+    # This runs even when something is missing or size-mismatched. Gating it on
+    # a clean size sweep meant one unreadable source file — routine when backing
+    # up system directories — silently downgraded every other file in the run to
+    # an existence check, while the docs promised each one was compared.
+    if _SRC_DIGESTS.enabled:
+        digests = _SRC_DIGESTS.snapshot()
+        todo = []
+        for entry in entries:
+            if entry.rel not in found:
+                continue
+            d = digests.get(entry.rel)
+            if d in (_SourceDigests.SKIP, _SourceDigests.NA):
+                content_skipped += 1
+                continue
+            todo.append((entry, d))
+        if todo:
+            print(f"\r  {C.DIM}" + _tr("Verifying contents of {n} files...")
+                  .format(n=len(todo)) + C.RESET + "          ",
+                  end="", flush=True)
+            clock = threading.Lock()
+
+            def _check(item):
+                entry, expected_digest = item
+                dst_path = os.path.join(dst_root, entry.rel)
+                actual = hash_file(_long_path(dst_path))
+                if actual is None:
+                    # A file just written can still be held briefly — Defender
+                    # on Windows, an SMB/NFS reconnect. Give it one more go
+                    # before calling a transient open failure data corruption.
+                    time.sleep(0.05)
+                    actual = hash_file(_long_path(dst_path))
+                if expected_digest is None:
+                    # No digest captured for this path — hash the source too.
+                    expected_digest = hash_file(_long_path(entry.src))
+                with clock:
+                    content_checked[0] += 1
+                    if content_checked[0] % 500 == 0:
+                        _verify_emit(content_checked[0], len(todo))
+                if actual is None:
+                    # The walk stat'd this file, but it will not open now. On a
+                    # failing drive that IS the corruption, so it must not pass
+                    # as verified just because the hash came back empty.
+                    return ("unreadable", entry.rel)
+                if expected_digest is None:
+                    # Only the source could not be read (fallback path); the
+                    # destination is intact as far as we can tell. Count it,
+                    # do not call it corrupt.
+                    return ("nosource", entry.rel)
+                if actual != expected_digest:
+                    return ("mismatch", entry.rel)
+                return None
+
+            with ThreadPoolExecutor(max_workers=max(8, threads * 2)) as pool:
+                for res in pool.map(_check, todo):
+                    if not res:
+                        continue
+                    kind, rel = res
+                    if kind == "mismatch":
+                        content_bad.append(rel)
+                    elif kind == "unreadable":
+                        content_unreadable.append(rel)
+                    else:
+                        # Source unreadable on the fallback path — not verified,
+                        # but not a link/clone/sparse either, so it must not be
+                        # counted under that label.
+                        content_nosource += 1
+
+    # Everything the run found is reported together. Returning early on a
+    # content failure hid the missing-file list entirely — a backup of /etc as
+    # a normal user could lose the "could NOT be read from the source" report,
+    # and its distinct exit code, because one other file happened to mismatch.
+    if not missing and not mismatches and not content_bad and not content_unreadable:
         if grew:
             print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}"
                   f" {C.YELLOW}({len(grew)} grew during copy){C.RESET}")
@@ -7737,26 +9260,52 @@ def verify_copy(entries, link_map, dst_root):
             if len(grew) > 10:
                 print(f"    ... and {len(grew) - 10} more")
         else:
-            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK{C.RESET}               ")
+            # On a reflink destination every single file lands here, so a bare
+            # "all N files OK" would imply content checking that never ran.
+            notes = []
+            if content_skipped:
+                notes.append(_tr("{n} by existence + size: links, clones and "
+                                 "sparse copies").format(n=content_skipped))
+            if content_nosource:
+                notes.append(_tr("{n} not content-checked: source unreadable")
+                             .format(n=content_nosource))
+            extra = (f" {C.DIM}(" + " · ".join(notes) + f"){C.RESET}"
+                     if notes else "")
+            print(f"\r  {C.GREEN}✓ Verified: all {total_checked} files OK"
+                  f"{C.RESET}{extra}{C.CLR}")
         return "ok"
     else:
-        print("\r  " + C.RED + "✗ " + _tr("Verification failed:") + C.RESET)
+        print("\r  " + C.RED + "✗ " + _tr("Verification failed:") + C.RESET
+              + C.CLR)
         for disp, reason, _ in missing[:10]:
             print(f"    {C.RED}{reason}: {disp}{C.RESET}")
         for rel, exp, act in mismatches[:10]:
             print(f"    {C.RED}corrupted — size {exp} → {act}: {rel}{C.RESET}")
+        for rel in content_bad[:10]:
+            print(f"    {C.RED}" + _tr("content mismatch (hash differs): {rel}")
+                  .format(rel=rel) + C.RESET)
+        # Kept apart from a hash mismatch on purpose: "the bytes differ" and
+        # "the drive would not hand the bytes back" call for different actions.
+        for rel in content_unreadable[:10]:
+            print(f"    {C.RED}" + _tr("could not be read back from the "
+                                       "destination: {rel}").format(rel=rel)
+                  + C.RESET)
         for rel, exp, act in grew[:10]:
             print(f"    {C.YELLOW}GREW DURING COPY: {rel} "
                   f"(+{act - exp} bytes){C.RESET}")
-        shown = min(len(missing), 10) + min(len(mismatches), 10) + min(len(grew), 10)
-        remain = len(missing) + len(mismatches) + len(grew) - shown
+        shown = (min(len(missing), 10) + min(len(mismatches), 10)
+                 + min(len(content_bad), 10) + min(len(content_unreadable), 10)
+                 + min(len(grew), 10))
+        remain = (len(missing) + len(mismatches) + len(content_bad)
+                  + len(content_unreadable) + len(grew) - shown)
         if remain > 0:
             print(f"    ... and {remain} more")
         # Verdict from the actual errors: if EVERY failure is a source-read error
         # (permission denied / locked) and nothing is size-mismatched, say that.
         # Otherwise — a size mismatch, or a missing file with no/other reason (an
         # unknown state) — call it corrupted.
-        only_source_read = (not mismatches and missing
+        only_source_read = (not mismatches and not content_bad
+                            and not content_unreadable and missing
                             and all(src for _, _, src in missing))
         if only_source_read:
             # Not corruption — the source files themselves could not be read.
@@ -7816,9 +9365,24 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     print(f"\r  {C.DIM}Quick check: {len(need_copy)} new/changed, "
           f"{len(need_hash)} same-size need hash check{C.RESET}          ")
 
+    # Filter link_map FIRST — links whose destination already exists are done.
+    # This must run on every exit path: the early return below used to hand
+    # back the unfiltered map, so an unchanged re-run re-created every
+    # duplicate link (14.8s re-linking 25k reflinks in the index-existing UAT).
+    new_link_map = {}
+    skipped_links = 0
+    for dup_rel, canonical_rel in link_map.items():
+        dst_path = os.path.join(dst_root, dup_rel)
+        if os.path.exists(dst_path):
+            _log("skipped", dup_rel, 0, reason="link_exists")
+            skipped_links += 1
+        else:
+            new_link_map[dup_rel] = canonical_rel
+    link_map = new_link_map
+
     if not need_hash:
         # Nothing to hash-check, everything is new
-        return need_copy, link_map, 0, 0
+        return need_copy, link_map, skipped_links, 0
 
     # ── Hash pass: compare content of same-size files ─────────────────
     print("  " + C.DIM + _tr("Hashing {n} files to check for changes...").format(n=len(need_hash)) + C.RESET, end="", flush=True)
@@ -7855,16 +9419,8 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
         else:
             need_copy.append(entry)
 
-    # Also filter link_map — skip links where destination already exists
-    new_link_map = {}
-    skipped_links = 0
-    for dup_rel, canonical_rel in link_map.items():
-        dst_path = os.path.join(dst_root, dup_rel)
-        if os.path.exists(dst_path):
-            _log("skipped", dup_rel, 0, reason="link_exists")
-            skipped_links += 1
-        else:
-            new_link_map[dup_rel] = canonical_rel
+    # (link_map was already filtered above, before the early return.)
+    new_link_map = link_map
 
     print(f"\r  {C.GREEN}Incremental check complete:{C.RESET}                              ")
     print(f"    {_pad(_tr('To copy:'), 11)}{C.BOLD}{len(need_copy)}{C.RESET} {_tr('files')} "
@@ -7894,6 +9450,45 @@ def scan_remote_source(ssh, src_root, excludes=None, include_node_modules=False)
         exclude_patterns.extend(DEFAULT_DIR_EXCLUDES)
     if excludes:
         exclude_patterns.extend(excludes)
+
+    if getattr(ssh, "sftp_only", False):
+        # No shell for find — walk over SFTP, matching find's -name semantics
+        # (basename globs; matching dirs pruned, matching files rejected).
+        sftp = ssh.open_sftp()
+        entries = []
+        stack = [src_root]
+        while stack:
+            d = stack.pop()
+            try:
+                attrs = sftp.listdir_attr(d)
+            except IOError:
+                continue
+            for a in attrs:
+                if any(fnmatch.fnmatch(a.filename, p) for p in exclude_patterns):
+                    continue
+                full = posixpath.join(d, a.filename)
+                if stat.S_ISDIR(a.st_mode or 0):
+                    stack.append(full)
+                elif stat.S_ISREG(a.st_mode or 0):
+                    entries.append(FileEntry(
+                        src=full, rel=posixpath.relpath(full, src_root),
+                        size=a.st_size or 0,
+                        physical_offset=0, content_hash=None,
+                    ))
+                    if len(entries) % 5000 == 0:
+                        print("\r  " + C.DIM + _tr("Scanning... {n} files").format(n=len(entries)) + C.RESET,
+                              end="", flush=True)
+        # A single-FILE source: relpath(file, file) == "." — same fixup input
+        # the find path produces, handled identically by the caller.
+        try:
+            st = sftp.stat(src_root)
+            if stat.S_ISREG(st.st_mode or 0):
+                entries = [FileEntry(src=src_root, rel=".", size=st.st_size or 0,
+                                     physical_offset=0, content_hash=None)]
+        except IOError:
+            pass
+        print(f"\r  {C.GREEN}Found {len(entries)} files on remote{C.RESET}                    ")
+        return entries, []
 
     # Build a -name OR-group used both to prune matching directories and to
     # reject matching files. shlex.quote keeps glob metacharacters intact for
@@ -7952,6 +9547,11 @@ def deduplicate_remote_source(entries, ssh, src_root, threads=DEFAULT_THREADS,
     Returns (unique_entries, link_map, saved_bytes).
     """
     total = len(entries)
+    if getattr(ssh, "sftp_only", False):
+        # Hashing on the source needs a shell; downloading everything twice
+        # to hash locally would defeat the point — skip dedup.
+        print(f"  {C.YELLOW}" + _tr("Skipping dedup — remote hashing needs a shell (SFTP-only mode)") + C.RESET)
+        return entries, {}, 0
     print("  " + _tr("Hashing {n} files on remote source...").format(n=total))
 
     rel_paths = [e.rel for e in entries]
@@ -8248,31 +9848,151 @@ class _ProgressTarExtractor:
         return True
 
 
+class _TarListSender:
+    """Feeds a tar producer its NUL-separated file list on a background thread.
+
+    One implementation because the two callers — the remote->local streamer and
+    the remote->remote relay — are near-copies that kept drifting. The
+    empty-root guard, the traceback containment, the settle-before-read and the
+    per-file failure record each landed in one of them first and had to be
+    chased into the other by a later review, three rounds running. Everything
+    that belongs to "hand a tar its list and find out whether that worked"
+    lives here now, so there is only one place left to fix.
+    """
+
+    CHUNK = 65536
+
+    def __init__(self, channel, rels):
+        self._channel = channel
+        self._payload = ("\0".join(rels) + "\0").encode("utf-8")
+        self.error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def _run(self):
+        # Nothing may escape. An exception leaving a thread reaches Python's
+        # default excepthook, which dumps a traceback into the middle of the
+        # progress output — and the one that actually happens is "Socket is
+        # closed", raised because the tar on the far side already died for its
+        # own reason. That reason is what the caller reports.
+        try:
+            for i in range(0, len(self._payload), self.CHUNK):
+                self._channel.sendall(self._payload[i:i + self.CHUNK])
+        except Exception as e:                              # noqa: BLE001
+            self.error = _fmt_exc(e)
+        finally:
+            try:
+                self._channel.shutdown_write()
+            except Exception:                               # noqa: BLE001
+                pass
+
+    def settle(self, timeout=10):
+        """Wait for the sender before its result is read, and mean it.
+
+        A plain join(timeout) can return while the thread is still mid-write,
+        so the error it is about to record gets missed. By the time a caller
+        asks, the channels are closed and any lingering sendall has already
+        failed; give it a second, shorter chance to say so."""
+        if self._thread.ident is None:
+            return self.error       # never started: join() would raise
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+        return self.error
+
+
+def _tar_batch_reason(sender, **exit_codes):
+    """Why a tar batch failed, in one line, or None if it did not.
+
+    Keyword names become the wording, so `source=1` reads "source tar exited 1".
+    A send failure wins: when the list never arrived, the tar's own exit status
+    is a consequence, not the cause."""
+    if sender.error:
+        return sender.error
+    for who, rc in exit_codes.items():
+        if rc:
+            return "%s tar exited %s" % (who, rc)
+    return None
+
+
+def _safe_batch(entries):
+    """Drop entries whose relative path we would refuse to write, and say so.
+
+    Both tar streamers need this and each had its own version: the relay
+    filtered silently inside its batch loop while the remote->local caller
+    filtered and warned one level up, so the same hostile listing produced a
+    message on one route and silence on the other. A path we will not write is
+    one we must not request, and a file that disappears for that reason has to
+    be explainable afterwards — without a recorded cause verify can only report
+    MISSING, which is the dead end the single-line error rule exists to avoid.
+    """
+    safe, dropped = [], []
+    for e in entries:
+        why = _validate_rel_path(e.rel)
+        (safe if why is True else dropped).append(e if why is True else (e, why))
+    if dropped:
+        print("  " + C.YELLOW
+              + _tr("Skipped {n} entries with unsafe paths").format(n=len(dropped))
+              + C.RESET)
+        for e, why in dropped:
+            _log("error", e.rel, e.size, error="unsafe path: %s" % why,
+                 source_read=False)
+    return safe
+
+
+def _record_batch_failure(entries, reason, delivered=None):
+    """Attach `reason` to every file the batch failed to deliver.
+
+    Without it a failed transfer reaches the user as "MISSING" with no cause,
+    which is exactly the dead end the single-line error rule exists to avoid.
+    source_read=False on purpose: nothing was wrong with READING the source, so
+    verify must treat this as a real failure (exit 1) rather than a benign skip
+    (exit 3).
+
+    `delivered` is the set of rels that DID arrive; they are skipped, because a
+    partly-finished batch must not accuse the files that made it — and these
+    entries also reach the JSON log, which is user-visible output, not just
+    verify's private notes. Each caller works out delivery its own way (a local
+    stat, a remote one), so this stays ignorant of where the destination is."""
+    for e in entries:
+        if delivered and e.rel in delivered:
+            continue
+        _log("error", e.rel, e.size, error=reason, source_read=False)
+
+
+def _wanted_rels(entries, link_map):
+    """The destination paths a run needs answers about, validated once.
+
+    Both the incremental check and the remote verification ask about exactly
+    this set, and both used to build it inline — which is how one of them could
+    have been left unvalidated."""
+    rels = [e.rel for e in entries] + list(link_map.keys())
+    return [r for r in rels if _validate_rel_path(r) is True]
+
+
 def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
                                    case_renames=None):
     """Download one batch of files via tar stream with streaming extraction."""
-    import threading
-
+    # Paths are validated once, by the caller, through _safe_batch(): a second
+    # filter here would be a second place to forget to warn from.
     # Build reverse map: new_rel -> original_rel (for fetching from remote)
     _rev = {v: k for k, v in (case_renames or {}).items()}
-    file_list = "\0".join(_rev.get(e.rel, e.rel) for e in batch) + "\0"
-    file_list_bytes = file_list.encode("utf-8")
+    if not batch:
+        return 0
 
     channel = ssh.open_channel()
     channel.exec_command(
-        f"cd {shlex.quote(src_root)} && tar cf - --null -T -"
+        # `cd ''` is an error in bash ("null directory") though dash allows
+        # it, so an empty root silently broke the transfer on some servers and
+        # not others. "." is what an empty root means: the login directory.
+        f"cd {shlex.quote(src_root or '.')} && tar cf - --null -T -"
     )
 
-    def _send_file_list():
-        try:
-            chunk_size = 65536
-            for i in range(0, len(file_list_bytes), chunk_size):
-                channel.sendall(file_list_bytes[i:i + chunk_size])
-        finally:
-            channel.shutdown_write()
-
-    sender = threading.Thread(target=_send_file_list, daemon=True)
-    sender.start()
+    sender = _TarListSender(
+        channel, [_rev.get(e.rel, e.rel) for e in batch]).start()
 
     # Streaming extraction with byte-level progress for large files (no temp file)
     os.makedirs(_long_path(dst_root), exist_ok=True)
@@ -8303,11 +10023,26 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
     finally:
         reader.close()
 
-    sender.join(timeout=10)
+    sender.settle()
     rc = channel.recv_exit_status()
     if rc != 0:
         stderr = channel.recv_stderr(4096).decode("utf-8", errors="replace")
         print(f"\n  {C.YELLOW}Remote tar exited {rc}: {stderr[:200]}{C.RESET}")
+    if sender.error:
+        print(f"\n  {C.YELLOW}Could not send the file list to the remote tar: "
+              f"{sender.error}{C.RESET}")
+    reason = _tar_batch_reason(sender, remote=rc)
+    if reason:
+        # Extraction is streamed, so a batch can fail partway with earlier
+        # files already written. Ask the local filesystem which those were.
+        delivered = set()
+        for e in batch:
+            try:
+                if os.path.exists(_long_path(os.path.join(dst_root, e.rel))):
+                    delivered.add(e.rel)
+            except OSError:
+                pass
+        _record_batch_failure(batch, reason, delivered=delivered)
     channel.close()
     return extracted
 
@@ -8324,9 +10059,7 @@ def copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress
                                         case_renames=case_renames)
         return
 
-    safe_entries = [e for e in entries if _validate_rel_path(e.rel) is True]
-    if len(safe_entries) < len(entries):
-        print("  " + C.YELLOW + _tr("Skipped {n} entries with unsafe paths").format(n=len(entries) - len(safe_entries)) + C.RESET)
+    safe_entries = _safe_batch(entries)
 
     total_size = sum(e.size for e in safe_entries)
     batches = _batch_by_size(safe_entries)
@@ -8362,7 +10095,10 @@ def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_
         small_size = sum(e.size for e in small)
         large_size = sum(e.size for e in large)
 
-        print(f"  Strategy (no remote tar — using SFTP):")
+        if getattr(ssh, "sftp_only", False):
+            print(f"  Strategy (SFTP-only mode):")
+        else:
+            print(f"  Strategy (no remote tar — using SFTP):")
         print(f"    Small files (<1MB): {C.BOLD}{len(small)}{C.RESET} files, "
               f"{C.BOLD}{fmt_size(small_size)}{C.RESET}")
         print(f"    Large files (≥1MB): {C.BOLD}{len(large)}{C.RESET} files, "
@@ -8422,72 +10158,10 @@ def copy_individual_r2r(entries, src_ssh, dst_ssh, dst_root, progress, buf_size)
             progress.update(entry.size, 1)
 
 
-def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress):
-    """Relay one batch of files via tar pipe: src tar cf → local → dst tar xf."""
-    import threading
-
-    safe_entries = [e for e in batch if _validate_rel_path(e.rel) is True]
-    if not safe_entries:
-        return 0
-    file_list = "\0".join(e.rel for e in safe_entries) + "\0"
-    file_list_bytes = file_list.encode("utf-8")
-
-    # Source: tar producer
-    src_chan = src_ssh.open_channel()
-    src_chan.exec_command(
-        f"cd {shlex.quote(src_root)} && tar cf - --null -T -"
-    )
-
-    def _send_file_list():
-        try:
-            chunk_size = 65536
-            for i in range(0, len(file_list_bytes), chunk_size):
-                src_chan.sendall(file_list_bytes[i:i + chunk_size])
-        finally:
-            src_chan.shutdown_write()
-
-    sender = threading.Thread(target=_send_file_list, daemon=True)
-    sender.start()
-
-    # Destination: tar consumer — use safe extraction flags to mitigate
-    # compromised source servers injecting symlinks or path traversal.
-    # GNU tar already strips leading '/' by default; --no-same-owner and
-    # --no-same-permissions limit privilege escalation.
-    dst_chan = dst_ssh.open_channel()
-    dst_chan.exec_command(
-        f"tar xf - --no-same-owner --no-same-permissions -C {shlex.quote(dst_root)}"
-    )
-
-    # Relay: src → dst (with size limit to prevent source sending infinite data)
-    # Allow 3x the expected batch size for tar overhead
-    expected_size = sum(e.size for e in safe_entries)
-    max_relay = max(expected_size * 3, 100 * 1024 * 1024)  # at least 100 MB
-    relayed = 0
-    while True:
-        data = src_chan.recv(1048576)
-        if not data:
-            break
-        relayed += len(data)
-        if relayed > max_relay:
-            print(f"\n  {C.RED}WARNING: Source tar stream exceeded expected size "
-                  f"({fmt_size(relayed)} > {fmt_size(max_relay)}) — aborting relay{C.RESET}")
-            break
-        dst_chan.sendall(data)
-
-    dst_chan.shutdown_write()
-    sender.join(timeout=10)
-
-    src_rc = src_chan.recv_exit_status()
-    dst_rc = dst_chan.recv_exit_status()
-
-    if src_rc != 0:
-        print(f"\n  {C.YELLOW}Source tar exited {src_rc}{C.RESET}")
-    if dst_rc != 0:
-        stderr = dst_chan.recv_stderr(4096).decode("utf-8", errors="replace")
-        print(f"\n  {C.YELLOW}Dest tar exited {dst_rc}: {stderr[:200]}{C.RESET}")
-
-    # Safety check: remove any symlinks the source may have injected
-    # (GNU tar strips leading '/' but cannot prevent '..' or symlink members)
+def _relay_symlink_sweep(dst_ssh, dst_root):
+    """Delete symlinks a hostile remote source may have smuggled into
+    the relay. GNU tar strips a leading '/' but cannot stop '..' or a
+    symlink member, so the destination is swept afterwards."""
     if dst_ssh.caps.get("python3"):
         check_script = (
             'import os,sys,json\n'
@@ -8524,10 +10198,114 @@ def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress)
             if len(removed) > 10:
                 print(f"    ... and {len(removed) - 10} more")
 
+
+def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress):
+    """Relay one batch of files via tar pipe: src tar cf → local → dst tar xf."""
+
+    # Validated once by the caller through _safe_batch().
+    safe_entries = batch
+    if not safe_entries:
+        return 0
+
+    # Source: tar producer
+    src_chan = src_ssh.open_channel()
+    src_chan.exec_command(
+        # `cd ''` is an error in bash ("null directory") though dash allows
+        # it, so an empty root silently broke the transfer on some servers and
+        # not others. "." is what an empty root means: the login directory.
+        f"cd {shlex.quote(src_root or '.')} && tar cf - --null -T -"
+    )
+
+    sender = _TarListSender(src_chan, [e.rel for e in safe_entries]).start()
+
+    # Destination: tar consumer — use safe extraction flags to mitigate
+    # compromised source servers injecting symlinks or path traversal.
+    # GNU tar already strips leading '/' by default; --no-same-owner and
+    # --no-same-permissions limit privilege escalation.
+    dst_chan = dst_ssh.open_channel()
+    dst_chan.exec_command(
+        f"tar xf - --no-same-owner --no-same-permissions -C {shlex.quote(dst_root)}"
+    )
+
+    # Relay: src → dst (with size limit to prevent source sending infinite data)
+    # Allow 3x the expected batch size for tar overhead
+    expected_size = sum(e.size for e in safe_entries)
+    max_relay = max(expected_size * 3, 100 * 1024 * 1024)  # at least 100 MB
+    relayed = 0
+    while True:
+        data = src_chan.recv(1048576)
+        if not data:
+            break
+        relayed += len(data)
+        if relayed > max_relay:
+            print(f"\n  {C.RED}WARNING: Source tar stream exceeded expected size "
+                  f"({fmt_size(relayed)} > {fmt_size(max_relay)}) — aborting relay{C.RESET}")
+            break
+        dst_chan.sendall(data)
+
+    dst_chan.shutdown_write()
+    sender.settle()
+
+    src_rc = src_chan.recv_exit_status()
+    dst_rc = dst_chan.recv_exit_status()
+
+    if src_rc != 0:
+        print(f"\n  {C.YELLOW}Source tar exited {src_rc}{C.RESET}")
+    if dst_rc != 0:
+        stderr = dst_chan.recv_stderr(4096).decode("utf-8", errors="replace")
+        print(f"\n  {C.YELLOW}Dest tar exited {dst_rc}: {stderr[:200]}{C.RESET}")
+
+    # Safety check: remove any symlinks the source may have injected
+    # (GNU tar strips leading '/' but cannot prevent '..' or symlink members)
+    #
+    # Wrapped, because this runs after a batch that may have failed BECAUSE the
+    # destination connection died — and then the sweep dies too, taking the
+    # whole run with it and losing the report of the failure it followed. But a
+    # security step must never be skipped in silence: say plainly that it did
+    # not run, so the destination is treated as unswept.
+    # Sweeping runs after a batch that may have failed BECAUSE this
+    # connection died, and then the sweep dies too — taking the whole run
+    # with it and losing the report of the failure it follows. But a security
+    # step must never be skipped in silence: if it cannot run, say so, and
+    # say the destination is to be treated as unswept.
+    try:
+        _relay_symlink_sweep(dst_ssh, dst_root)
+    except Exception as e:                                  # noqa: BLE001
+        print(f"\n  {C.RED}WARNING: could not sweep {dst_root} for symlinks "
+              f"injected by the source ({_fmt_exc(e)}) — treat it as "
+              f"unverified until re-checked.{C.RESET}")
+
+    # Only claim what actually moved. This used to log every file as copied
+    # and credit the progress meter with the whole batch no matter what, so a
+    # relay that piped 0 bytes still drew a 100% bar and the summary reported
+    # "12.6 KB relayed" for a transfer that never happened. Verification caught
+    # the missing file and the run exited 1, but everything above that line
+    # said the opposite.
     batch_size = sum(e.size for e in safe_entries)
-    for e in safe_entries:
-        _log("copied", e.rel, e.size, method="tar_relay")
-    progress.update(batch_size, len(safe_entries))
+    reason = _tar_batch_reason(sender, source=src_rc, destination=dst_rc)
+    if reason is None:
+        for e in safe_entries:
+            _log("copied", e.rel, e.size, method="tar_relay")
+        progress.update(batch_size, len(safe_entries))
+    else:
+        # A partial relay leaves some files in place; ask the far side which,
+        # so the log does not accuse files that arrived. Strictly best effort:
+        # this connection just failed, so the question can hang or die too, and
+        # _stat_remote_paths raises TimeoutError through _exec_listing. A
+        # diagnostic that replaces the real failure with its own timeout — and
+        # takes every per-file reason down with it — is worse than no
+        # diagnostic. Unknown means "assume nothing arrived", which is the
+        # honest default for a batch that failed.
+        try:
+            arrived = _stat_remote_paths(dst_ssh, dst_root,
+                                         [e.rel for e in safe_entries])
+        except Exception:                                   # noqa: BLE001
+            arrived = None
+        _record_batch_failure(safe_entries, reason,
+                              delivered=set(arrived or ()))
+        # Advance the file counter so the run can finish, but never the byte
+        # count — those bytes were not written anywhere.
+        progress.update(0, len(safe_entries))
     progress.display()
 
     src_chan.close()
@@ -8537,6 +10315,9 @@ def _stream_tar_batch_r2r(batch, src_ssh, dst_ssh, src_root, dst_root, progress)
 
 def copy_block_stream_r2r(entries, src_ssh, dst_ssh, src_root, dst_root, progress):
     """Remote-to-remote tar pipe relay in chunked batches."""
+    entries = _safe_batch(entries)
+    if not entries:
+        return
     if not entries:
         return
 
@@ -8684,6 +10465,86 @@ def _is_frozen():
     return getattr(sys, 'frozen', False)
 
 
+PYPI_NAME = "blitcp"
+PYPI_ENDPOINT = "https://pypi.org/pypi/%s/json" % PYPI_NAME
+
+
+def _install_kind():
+    """'frozen', 'pip' or 'script', decided once. See _compute_install_kind."""
+    global _INSTALL_KIND
+    if _INSTALL_KIND is not None:
+        return _INSTALL_KIND
+    _INSTALL_KIND = _compute_install_kind()
+    return _INSTALL_KIND
+
+
+_INSTALL_KIND = None
+
+
+def _compute_install_kind():
+    """How this blitcp got here: 'frozen', 'pip', or 'script'.
+
+    This decides who is allowed to replace it. A pip install is owned by pip:
+    overwriting site-packages/blitcp.py from a GitHub release is not an update,
+    it is damage. The published blitcp.py is the plain-script build — it looks
+    for catalogs in a locales/ directory beside itself, which a wheel does not
+    have, because the wheel ships them in the blitcp_locales package and its own
+    blitcp.py knows to look there. Overwrite it and all six translations
+    silently revert to English. It also leaves blitcp_gui.py at the old version
+    (the release publishes no such asset) and leaves pip's recorded hashes
+    pointing at a file that no longer matches.
+
+    Walks the distribution's file list, so _install_kind() caches the answer
+    rather than repeating this at each of its three call sites."""
+    if _is_frozen():
+        return "frozen"
+    try:
+        import importlib.metadata as _md
+        dist = _md.distribution(PYPI_NAME)
+        here = os.path.realpath(os.path.abspath(__file__))
+        for f in (dist.files or ()):
+            try:
+                if os.path.realpath(str(dist.locate_file(f))) == here:
+                    return "pip"
+            except (OSError, ValueError):
+                continue
+    except Exception:                                       # noqa: BLE001
+        pass                # no metadata, old Python, a checkout — not pip
+    return "script"
+
+
+def _pip_upgrade_cmd():
+    """The exact command to paste, using the interpreter that is running us."""
+    exe = os.path.basename(sys.executable) or "python"
+    return "%s -m pip install --upgrade %s" % (exe, PYPI_NAME)
+
+
+def _fetch_pypi_version():
+    """Newest version on PyPI, or None.
+
+    A pip install must be told about the index it can actually install from.
+    GitHub and PyPI are published separately and drift: pointing a pip user at
+    a GitHub tag offers them a version `pip install --upgrade` will not give.
+    """
+    data = _http_json(PYPI_ENDPOINT,
+                      {"User-Agent": "blitcp/%s" % __version__,
+                       "Accept": "application/json"})
+    if isinstance(data, dict):
+        v = (data.get("info") or {}).get("version")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _pypi_update_state():
+    """(latest, is_newer) from PyPI. latest is None when it could not be read."""
+    latest = _fetch_pypi_version()
+    if latest is None:
+        return None, False
+    cur, new = _parse_version(__version__), _parse_version(latest)
+    return latest, bool(cur and new and new > cur)
+
+
 def _get_self_path():
     """Get the path of the currently running script or binary."""
     if _is_frozen():
@@ -8771,26 +10632,200 @@ def _update_token():
     return ""
 
 
-def _fetch_releases():
-    """Fetch all releases from GitHub. Returns list of release dicts or None."""
+# The public update line asks blitcp.dev, which proxies this exact GitHub
+# endpoint behind an edge cache. Two reasons, neither of them tracking:
+# GitHub's anonymous API allows 60 requests/hour PER IP, which a company NAT
+# or CGNAT burns through and the check then fails for no visible reason; and
+# it gives a way to reach versions already installed (see ADVISORY below).
+# Nothing is stored: the version rides in the path, there is no identifier.
+PUBLIC_REPO = "gekap/blitcp"
+UPDATE_ENDPOINT = "https://blitcp.dev/api/releases"
+# Set by _fetch_releases when the endpoint has something to say about the
+# RUNNING version ("this release is broken, upgrade"). None the rest of the
+# time, which is almost always.
+_LAST_ADVISORY = None
+
+
+def _http_json(url, headers=None, timeout=15):
+    """GET → parsed JSON, or None. Never raises; the caller decides whether a
+    failure is worth a message (a fallback path should stay silent)."""
     import urllib.request
     import urllib.error
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": f"blitcp/{__version__}",
-    }
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                    context=_get_ssl_context()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+
+
+def _fetch_releases(quiet=False):
+    """All releases, newest first — or None. Sets _LAST_ADVISORY as a side
+    effect when the public endpoint carries one.
+
+    quiet=True for the background courtesy check: a user who never asked for
+    an update should not get a network error thrown at them at the end of a
+    copy that worked."""
+    global _LAST_ADVISORY
+    _LAST_ADVISORY = None
+    ua = {"User-Agent": f"blitcp/{__version__}",
+          "Accept": "application/vnd.github.v3+json"}
+
+    if GITHUB_REPO == PUBLIC_REPO:
+        data = _http_json(f"{UPDATE_ENDPOINT}/{__version__}", ua)
+        if isinstance(data, dict) and isinstance(data.get("releases"), list):
+            _LAST_ADVISORY = data.get("advisory") or None
+            return data["releases"]
+        # Anything unexpected — my outage, a proxy in the way, a stale build —
+        # falls through to GitHub. Nobody should be unable to update because
+        # blitcp.dev is having a bad day.
+
+    # Private builds always come here: the token is theirs and the private
+    # releases are not on blitcp.dev.
+    headers = dict(ua)
     _tok = _update_token()
     if _tok:
         headers["Authorization"] = f"Bearer {_tok}"
-    req = urllib.request.Request(api_url, headers=headers)
-    ssl_ctx = _get_ssl_context()
+    data = _http_json(f"https://api.github.com/repos/{GITHUB_REPO}/releases",
+                      headers)
+    if data is None and not quiet:
+        print("  " + C.RED + _tr("Failed to check for updates — network or "
+                                 "GitHub unavailable") + C.RESET)
+    return data
+
+
+_SETTINGS_NAME = "settings.json"
+_AUTO_CHECK_EVERY = 24 * 3600
+
+
+def _settings_path():
+    return os.path.join(_fc_config_dir(), _SETTINGS_NAME)
+
+
+def _load_settings():
     try:
-        with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        print("  " + C.RED + _tr("Failed to check for updates: {err}").format(err=e) + C.RESET)
-        return None
+        with open(_settings_path(), encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_settings(d):
+    """Best effort: a read-only home must not break a copy."""
+    try:
+        os.makedirs(_fc_config_dir(), exist_ok=True)
+        tmp = _settings_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2)
+        os.replace(tmp, _settings_path())
+    except OSError:
+        pass
+
+
+def _asking_is_appropriate():
+    """A question needs someone at the keyboard to answer it."""
+    if QUIET or _env("NO_UPDATE_CHECK"):
+        return False
+    try:
+        return bool(sys.stdin and sys.stdin.isatty()
+                    and sys.stdout and sys.stdout.isatty())
+    except (ValueError, AttributeError):
+        return False
+
+
+def _maybe_ask_update_consent():
+    """Ask the one-time opt-in question BEFORE the run does any work.
+
+    blitcp does not talk to the network on its own unless the user said yes —
+    the whole value of a tool people read before running is that it does what
+    the code says. So: ask once, interactively, remember the answer, and skip
+    silently in every context where a question would be wrong (scripts, cron,
+    --quiet, no TTY, or BLITCP_NO_UPDATE_CHECK set).
+
+    Asked up front, not after the summary. A prompt printed under DONE arrives
+    once the user has read their result and moved on, and it holds the terminal
+    open on a run that had already finished — on a long copy, hours after they
+    stopped watching. Up front it costs one keystroke before anything has
+    happened, and an unanswered prompt cannot strand a completed copy."""
+    if not _asking_is_appropriate():
+        return
+    st = _load_settings()
+    if "auto_update_check" in st:
+        return              # already answered, once, for good
+    try:
+        ans = input("  " + _tr("Check for updates automatically, once a "
+                               "day? [Y/n]: ")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return              # no answer is not a yes; ask again next time
+    st["auto_update_check"] = ans in ("", "y", "yes")
+    _save_settings(st)
+    if not st["auto_update_check"]:
+        print("  " + C.DIM + _tr("No automatic checks. Run --check-update "
+                                 "whenever you want one.") + C.RESET)
+    print()
+
+
+def _maybe_auto_update_check():
+    """The daily check itself, after a successful run.
+
+    Never asks — _maybe_ask_update_consent() does that before the copy starts.
+    With no answer on record (non-interactive run, or Ctrl-C at the prompt)
+    there is no consent, so nothing is fetched."""
+    if QUIET or _env("NO_UPDATE_CHECK"):
+        return
+    st = _load_settings()
+    if not st.get("auto_update_check"):
+        return
+    if time.time() - float(st.get("last_update_check") or 0) < _AUTO_CHECK_EVERY:
+        return
+
+    if _install_kind() == "pip":
+        # Same reason --update refuses: telling a pip user to "run --update"
+        # points them at the one command that would break their install.
+        latest, newer = _pypi_update_state()
+        st["last_update_check"] = time.time()
+        _save_settings(st)
+        if latest and newer:
+            print("\n  " + C.GREEN
+                  + _tr("Update available: {tag} — run: {cmd}").format(
+                      tag=latest, cmd=_pip_upgrade_cmd()) + C.RESET)
+        return
+
+    releases = _fetch_releases(quiet=True)
+    st["last_update_check"] = time.time()
+    _save_settings(st)
+    if not releases:
+        return              # silent: this is a background courtesy, not a task
+    _print_advisory()
+    cur = _parse_version(__version__)
+    newest = None
+    for rel in releases:
+        v = _parse_version(rel.get("tag_name", ""))
+        if v and cur and v > cur and (newest is None or v > newest[0]):
+            newest = (v, rel.get("tag_name"))
+    if newest:
+        print("\n  " + C.GREEN
+              + _tr("Update available: {tag} — run --update").format(
+                  tag=newest[1]) + C.RESET)
+
+
+def _print_advisory():
+    """Show what the update endpoint said about the running version. Severity
+    picks the colour; the text comes from the server so it can describe a
+    problem discovered after this build shipped."""
+    adv = _LAST_ADVISORY
+    if not isinstance(adv, dict) or not adv.get("message"):
+        return
+    sev = str(adv.get("severity", "info")).lower()
+    colour = C.RED if sev == "critical" else (
+        C.YELLOW if sev == "warning" else C.CYAN)
+    print(f"\n  {colour}{'!' if sev != 'info' else 'i'} "
+          f"{adv['message']}{C.RESET}")
+    if adv.get("url"):
+        print(f"  {C.DIM}{adv['url']}{C.RESET}")
 
 
 def _classify_release_sections(body):
@@ -8930,10 +10965,32 @@ def _find_release_asset(releases, target_tag):
     return None
 
 
+def _check_update_pypi():
+    """--check-update for a pip install: ask the index it installs from."""
+    print(f"  {C.DIM}Installed with pip — checking PyPI{C.RESET}\n")
+    latest, newer = _pypi_update_state()
+    if latest is None:
+        print(f"  {C.YELLOW}Could not reach PyPI.{C.RESET}")
+        print(f"  {C.DIM}To update anyway: {_pip_upgrade_cmd()}{C.RESET}\n")
+        return
+    if not newer:
+        print(f"  {C.GREEN}Already up to date (v{__version__}){C.RESET}\n")
+        return
+    print(f"  {C.GREEN}New version available: {C.BOLD}{latest}{C.RESET}")
+    print(f"  {C.DIM}(you have v{__version__}){C.RESET}")
+    print(f"\n  {C.BOLD}To update:{C.RESET}")
+    print(f"    {C.BOLD}{_pip_upgrade_cmd()}{C.RESET}")
+    print(f"  {C.DIM}Release notes: "
+          f"https://github.com/{PUBLIC_REPO}/releases{C.RESET}\n")
+
+
 def check_update_info():
     """--check-update: show what's new without installing."""
     print(f"\n  {C.BOLD}blitcp update check{C.RESET}")
     print(f"  Current version: {C.BOLD}v{__version__}{C.RESET}")
+    if _install_kind() == "pip":
+        _check_update_pypi()
+        return
     print(f"  Checking GitHub for updates...\n")
 
     result = check_for_update()
@@ -8943,6 +11000,7 @@ def check_update_info():
     latest_tag, download_url, expected_size, newer = result
     current_ver = _parse_version(__version__)
 
+    _print_advisory()
     print(f"  {C.GREEN}New version available: {C.BOLD}{latest_tag}{C.RESET}")
     print(f"  {C.DIM}(you have v{__version__} — "
           f"{len(newer)} release{'s' if len(newer) != 1 else ''} behind){C.RESET}")
@@ -9093,6 +11151,28 @@ def self_update(target_version=None, expected_sha256=None):
 
     print(f"\n  {C.BOLD}blitcp self-update{C.RESET}")
     print(f"  Current version: {C.BOLD}v{__version__}{C.RESET}")
+
+    if _install_kind() == "pip":
+        # Refusing is the fix, not a limitation. pip replaces blitcp.py,
+        # blitcp_gui.py and the blitcp_locales catalogs together and keeps its
+        # own metadata straight; self-update can only fetch blitcp.py, and the
+        # published one cannot even find a wheel's catalogs.
+        latest, newer = _pypi_update_state()
+        print(f"  {C.YELLOW}This blitcp was installed with pip, so it updates "
+              f"through pip.{C.RESET}")
+        if latest and newer:
+            print(f"  {C.GREEN}PyPI has {C.BOLD}{latest}{C.RESET}")
+        elif latest:
+            print(f"  {C.GREEN}PyPI has v{latest} — already up to date{C.RESET}")
+            print()
+            sys.exit(0)
+        print(f"\n  {C.BOLD}Run:{C.RESET}")
+        print(f"    {C.BOLD}{_pip_upgrade_cmd()}{C.RESET}")
+        print(f"\n  {C.DIM}Replacing the installed file from a GitHub release "
+              f"would drop the translation catalogs, leave the GUI behind, and "
+              f"leave pip's records wrong.{C.RESET}\n")
+        sys.exit(1)
+
     print(f"  Checking GitHub for updates...\n")
 
     result = check_for_update()
@@ -9129,6 +11209,22 @@ def self_update(target_version=None, expected_sha256=None):
     print(f"\n  {C.GREEN}Updating to: {C.BOLD}{latest_tag}{C.RESET}")
     print(f"  Asset:   {asset_name} ({fmt_size(expected_size)})")
     print(f"  Target:  {self_path}")
+
+    # A script install is more than one file, but the release publishes only
+    # blitcp.py: no blitcp_gui.py asset and no catalog archive. Replacing this
+    # file therefore leaves anything beside it at the old version, and stale
+    # catalogs fail silently — gettext falls back to English rather than
+    # erroring. Say so instead of letting it be discovered later.
+    if asset_name == "blitcp.py":
+        here = os.path.dirname(self_path)
+        stale = [n for n in ("blitcp_gui.py", "locales")
+                 if os.path.exists(os.path.join(here, n))]
+        if stale:
+            print(f"  {C.YELLOW}Note: only this file is updated. "
+                  f"{', '.join(stale)} stay(s) at the current version — the "
+                  f"release publishes no asset for them.{C.RESET}")
+            print(f"  {C.DIM}A pip install ({PYPI_NAME}) updates all of it "
+                  f"together.{C.RESET}")
 
     # Check we can write to the target location
     target_dir = os.path.dirname(self_path)
@@ -9511,7 +11607,19 @@ def resolve_named_endpoint(token, conns):
                 f"blitcp creds edit {name}")
         return f"{ctype}://{name}@{loc}", None
     if ctype == "ssh":
-        path = sub if sub is not None else conn.get("path")
+        # A suffix REFINES the saved path, it does not discard it — the same
+        # way the smb branch below joins the share with its subpath. Replacing
+        # it left `ssh_server:file.tar.gz` pointing at the login directory
+        # instead of the profile's path=/home/kai, and a bare filename has no
+        # directory part, so the tar producer was handed an empty root.
+        # An absolute suffix still overrides: that is the escape hatch.
+        base = conn.get("path")
+        if sub is None:
+            path = base
+        elif posixpath.isabs(sub) or not base:
+            path = sub
+        else:
+            path = posixpath.join(base, sub)
         if not path:
             raise SystemExit(f"Error: SSH connection {name!r} needs a path, "
                              f"e.g. {name}:/remote/dir")
@@ -11233,12 +13341,55 @@ def _prompt_secret(prompt):
         return getpass.getpass(prompt)
 
 
+# Zone-1 S3-compatible provider presets (CLOUD_PROVIDERS_DESIGN.md). They all
+# ride the plain S3Backend — a preset only templates endpoint_url, prompts for
+# the template's placeholders, and points at the provider's key console.
+# name → (label, endpoint template, [placeholders], region default, key help)
+KNOWN_S3_PROVIDERS = {
+    "r2": ("Cloudflare R2",
+           "https://{account}.r2.cloudflarestorage.com", ["account"], "auto",
+           "dash.cloudflare.com → R2 → Manage R2 API Tokens"),
+    "b2": ("Backblaze B2",
+           "https://s3.{region}.backblazeb2.com", ["region"], None,
+           "secure.backblaze.com → App Keys"),
+    "wasabi": ("Wasabi",
+               "https://s3.{region}.wasabisys.com", ["region"], None,
+               "console.wasabisys.com → Access Keys"),
+    "spaces": ("DigitalOcean Spaces",
+               "https://{region}.digitaloceanspaces.com", ["region"], None,
+               "cloud.digitalocean.com → API → Spaces Keys"),
+    "scaleway": ("Scaleway Object Storage",
+                 "https://s3.{region}.scw.cloud", ["region"], None,
+                 "console.scaleway.com → IAM → API keys"),
+    "hetzner": ("Hetzner Object Storage",
+                "https://{region}.your-objectstorage.com", ["region"], None,
+                "console.hetzner.cloud → Security → S3 credentials"),
+    "idrive": ("IDrive e2",
+               "{endpoint}", ["endpoint"], None,
+               "app.idrivee2.com → Access Keys (endpoint is shown per region)"),
+    "storj": ("Storj (S3 gateway)",
+              "https://gateway.storjshare.io", [], None,
+              "storj.io console → Access → Create S3 credentials"),
+    "oracle": ("Oracle OCI Object Storage",
+               "https://{namespace}.compat.objectstorage.{region}.oraclecloud.com",
+               ["namespace", "region"], None,
+               "OCI console → User Settings → Customer Secret Keys"),
+}
+_S3_PROVIDER_ALIASES = {
+    "cloudflare": "r2", "backblaze": "b2", "digitalocean": "spaces",
+    "do": "spaces", "oci": "oracle", "idrive-e2": "idrive", "e2": "idrive",
+}
+
+
 def creds_manager(argv):
     """Handle `blitcp creds <sub> [name] [path]`. Returns an exit code."""
     if not argv or argv[0] in ("-h", "--help", "help"):
         print("Usage: blitcp creds <sub> [NAME] [FILE]\n"
               "  list                       show connections (secrets masked)\n"
-              "  add NAME [-y]              add a connection (s3/azure/gcs/ssh,\n"
+              "  add NAME [-y]              add a connection (s3/azure/gcs/ssh/smb\n"
+              "                             or an S3-compatible provider preset:\n"
+              "                             r2, b2, wasabi, spaces, scaleway,\n"
+              "                             hetzner, idrive, storj, oracle;\n"
               "                             interactive; prompts before overwrite,\n"
               "                             -y/--force to skip)\n"
               "  edit NAME                  edit a connection (Enter keeps current,\n"
@@ -11350,14 +13501,42 @@ def creds_manager(argv):
         if not name:
             print(f"{C.RED}Error: 'creds add' needs a connection name.{C.RESET}")
             return 1
-        t = (input("  Type [s3/azure/gcs/ssh/smb]: ").strip() or "s3").lower()
-        t = {"azure": "az", "gcs": "gs", "s3": "s3", "az": "az", "gs": "gs",
-             "ssh": "ssh", "sftp": "ssh", "smb": "smb", "cifs": "smb"}.get(t)
-        if t not in ("s3", "az", "gs", "ssh", "smb"):
-            print(f"{C.RED}Error: type must be s3, azure, gcs, ssh, or smb.{C.RESET}")
-            return 1
-        entry = {"type": t}
-        if t == "s3":
+        t = (input("  Type [s3/azure/gcs/ssh/smb — or a preset: "
+                   + "/".join(KNOWN_S3_PROVIDERS) + "]: ").strip() or "s3").lower()
+        t = _S3_PROVIDER_ALIASES.get(t, t)
+        preset = KNOWN_S3_PROVIDERS.get(t)
+        if preset:
+            label, template, placeholders, region_default, key_help = preset
+            print(f"  {label} — S3-compatible. Keys: {key_help}")
+            entry = {"type": "s3", "preset": t}
+            values = {}
+            for ph in placeholders:
+                v = input(f"  {ph.capitalize()}: ").strip()
+                if not v:
+                    print(f"{C.RED}Error: {label} needs the {ph}.{C.RESET}")
+                    return 1
+                values[ph] = v
+            entry["endpoint_url"] = template.format(**values)
+            print(f"  Endpoint: {entry['endpoint_url']}")
+            entry["access_key_id"] = input("  Access key ID: ").strip()
+            entry["secret_access_key"] = _prompt_secret("  Secret access key: ")
+            if region_default:
+                entry["region"] = region_default
+            elif values.get("region"):
+                entry["region"] = values["region"]
+            t = "s3"   # the shared default-bucket prompt below applies too
+        else:
+            t = {"azure": "az", "gcs": "gs", "s3": "s3", "az": "az", "gs": "gs",
+                 "ssh": "ssh", "sftp": "ssh", "smb": "smb", "cifs": "smb"}.get(t)
+            if t not in ("s3", "az", "gs", "ssh", "smb"):
+                print(f"{C.RED}Error: type must be s3, azure, gcs, ssh, smb, "
+                      f"or a provider preset "
+                      f"({'/'.join(KNOWN_S3_PROVIDERS)}).{C.RESET}")
+                return 1
+            entry = {"type": t}
+        if preset:
+            pass
+        elif t == "s3":
             ep = input("  Endpoint URL (blank = AWS): ").strip()
             if ep:
                 entry["endpoint_url"] = ep
@@ -11564,10 +13743,15 @@ def creds_manager(argv):
                               host=c.get("host"), port=int(c.get("port", 22)),
                               path=c.get("path", ""))
             ssh = None
+            _sftp_conn = (c.get("protocol") == "sftp")
             try:
                 ssh = SSHConnection(spec, port=spec.port, key_path=c.get("key"),
-                                    password=c.get("password")).connect()
-                ssh.exec_cmd("true")
+                                    password=c.get("password"),
+                                    sftp_only=_sftp_conn).connect()
+                if _sftp_conn:
+                    ssh.open_sftp().stat(c.get("path") or ".")
+                else:
+                    ssh.exec_cmd("true")
             except Exception as e:
                 print(f"  {C.RED}✗ {name}: connection failed — {e}{C.RESET}")
                 return 1
@@ -11759,6 +13943,8 @@ def _run_ssh_leg(args, source, destination):
         cmd.append("--compress")
     if getattr(args, "ssh_no_sftp", False):
         cmd.append("--ssh-no-sftp")
+    if getattr(args, "sftp_only", False):
+        cmd.append("--sftp-only")
     if getattr(args, "force", False):
         cmd.append("--force")
     if getattr(args, "chunk_size", None):
@@ -12258,7 +14444,7 @@ def _ssh_ls(target, overrides=None, cli_port=22, cli_key=None, cli_password=Fals
     """List a remote directory over SFTP. `target` is a user@host:/path string.
     `overrides` (from a saved SSH profile) supplies port/key/password and takes
     precedence over the CLI fallbacks. Returns an exit code."""
-    if not _has_paramiko:
+    if not _load_paramiko():
         print(f"{C.RED}Error: SSH listing requires paramiko. "
               f"Install: python -m pip install paramiko{C.RESET}")
         return 1
@@ -12273,7 +14459,8 @@ def _ssh_ls(target, overrides=None, cli_port=22, cli_key=None, cli_password=Fals
     if not password and cli_password:
         password = getpass.getpass(
             f"  SSH password for {remote.user}@{remote.host}: ")
-    ssh = SSHConnection(remote, port=port, key_path=key, password=password)
+    ssh = SSHConnection(remote, port=port, key_path=key, password=password,
+                        sftp_only=(ov.get("protocol") == "sftp"))
     where = f"{remote.user}@{remote.host}:{remote.path}"
     try:
         ssh.connect()
@@ -13701,7 +15888,7 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
 def copy_via_tar_ssh(src_remote, dst_remote, dst, local_srcs, args):
     """SSH-only copy via tar over the exec channel (no SFTP). Returns exit code.
     Handles remote→local (pull), local→remote (push), remote→remote (r2r)."""
-    if not _has_paramiko:
+    if not _load_paramiko():
         print(f"{C.RED}Error: SSH transfers require paramiko.{C.RESET}")
         return 1
     start = time.time()
@@ -13735,6 +15922,7 @@ def main():
     # a genuinely corrupt file as "source skipped" (exit 3) instead of a real
     # copy failure (exit 2). Start each run with a clean slate.
     _COPY_ERRORS.clear()
+    _QUIET_STATS.clear()
     parser = argparse.ArgumentParser(
         prog="blitcp",
         description=_tr("Block-order fast copy with dedup — reads files in physical "
@@ -13794,6 +15982,16 @@ def main():
                         help=_tr("Show copy plan without copying"))
     copy_grp.add_argument("-v", "--verbose", action="store_true",
                         help=_tr("Verbose output (full FS detection details, etc.)"))
+    copy_grp.add_argument("-q", "--quiet", action="store_true",
+                        help=_tr("Script mode: no progress bar or banners, one "
+                                 "final OK/FAILED line, errors on stderr. The "
+                                 "exit code stays the contract (0 ok, 1 corrupt, "
+                                 "2 error, 3 source files skipped)."))
+    copy_grp.add_argument("-p", "--progress", action="store_true",
+                        help=_tr("Quiet, but keep the copy progress bar. Implies "
+                                 "--quiet: banners and phase output stay "
+                                 "suppressed, the bar and the final OK/FAILED "
+                                 "line are all you get."))
     copy_grp.add_argument("--no-verify", action="store_true",
                         help=_tr("Skip post-copy verification"))
     copy_grp.add_argument("--log-file", default=None,
@@ -13818,9 +16016,11 @@ def main():
                         help=_tr("While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."))
     copy_grp.add_argument("--index-existing", action="append", default=[],
                         metavar="PATH", dest="index_existing",
-                        help=_tr("Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."))
+                        help=_tr("Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. Also widens link scope drive-wide: without this flag a copy only links onto content inside its own destination, so a second backup never shares storage with an older one. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."))
     copy_grp.add_argument("--ssh-no-sftp", action="store_true", dest="ssh_no_sftp",
                         help=_tr("Transfer over plain SSH using tar (no SFTP subsystem). For servers with SSH enabled but SFTP disabled (e.g. some NAS). Supports dedup/incremental/verify."))
+    copy_grp.add_argument("--sftp-only", action="store_true", dest="sftp_only",
+                        help=_tr("Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."))
     copy_grp.add_argument("--chunk-size", type=int, default=100, metavar="MB",
                         dest="chunk_size",
                         help=_tr("SSH (--ssh-no-sftp) tar batch size in MB (default: 100). Bigger = fewer round-trips; smaller = finer resume granularity. This is NOT --buffer (that's the block-copy I/O buffer)."))
@@ -13906,6 +16106,16 @@ def main():
     if args.progress_json:
         global PROGRESS_JSON
         PROGRESS_JSON = True
+
+    # --quiet last: it silences the progress stream, so it must win over
+    # --progress-json if a caller somehow asks for both. --progress is the
+    # same mode with the bar left on, so it implies --quiet rather than
+    # being a separate one.
+    if args.quiet or args.progress:
+        _quiet_enable(keep_progress=args.progress)
+
+    # Before anything happens, not after the summary: see the docstring.
+    _maybe_ask_update_consent()
 
     if getattr(args, "ssh_strict_host_keys", False):
         global _strict_host_keys
@@ -14002,7 +16212,7 @@ def main():
     dst_remote = parse_remote_path(args.destination)
 
     # Check paramiko is installed if SSH is needed
-    if (src_remote or dst_remote) and not _has_paramiko:
+    if (src_remote or dst_remote) and not _load_paramiko():
         print(f"\n  {C.RED}Error: SSH transfers require paramiko.{C.RESET}")
         print(f"  Install it with: {C.BOLD}python -m pip install paramiko{C.RESET}\n")
         sys.exit(1)
@@ -14220,6 +16430,18 @@ def main():
 
     print()
 
+    # ── SFTP-only sanity checks (pure SFTP, no remote shell) ────────────
+    if getattr(args, "sftp_only", False):
+        if getattr(args, "ssh_no_sftp", False):
+            print(f"{C.RED}Error: --sftp-only and --ssh-no-sftp are mutually exclusive.{C.RESET}")
+            sys.exit(1)
+        if not (src_remote or dst_remote):
+            print(f"{C.RED}Error: --sftp-only needs a remote source or destination.{C.RESET}")
+            sys.exit(1)
+        if src_remote and dst_remote:
+            print(f"{C.RED}Error: --sftp-only does not support remote-to-remote copies.{C.RESET}")
+            sys.exit(1)
+
     # ── SSH-only (no SFTP) fast path: tar over the exec channel ─────────
     if getattr(args, "ssh_no_sftp", False) and (src_remote or dst_remote):
         _tar_local_srcs = None
@@ -14240,10 +16462,14 @@ def main():
             src_password = args._resolved_src_password
         src_ssh = SSHConnection(src_remote, port=src_remote.port, key_path=args.src_key,
                                 password=src_password, compress=args.compress,
+                                sftp_only=getattr(args, "sftp_only", False),
                                 ).connect()
         print(f"  {C.GREEN}Connected to {src_remote.user}@{src_remote.host}:{src_remote.port}{C.RESET}")
-        caps = [k for k, v in src_ssh.caps.items() if v]
-        print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
+        if src_ssh.sftp_only:
+            print(f"  {C.DIM}SFTP-only mode — no commands are run on the server{C.RESET}")
+        else:
+            caps = [k for k, v in src_ssh.caps.items() if v]
+            print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
 
     # ── Phase 1: Scan ─────────────────────────────────────────────────
     banner("Phase 1 — Scanning source")
@@ -14442,6 +16668,9 @@ def main():
             print(f"  {C.DIM}--dry-run: skipping (no hashing / DB writes / "
                   f"in-place dedup during a preview){C.RESET}")
         else:
+            # Indexing a path outside the destination is only useful if we may
+            # then link onto it, so this flag is what widens the scope.
+            dedup_db.link_scope_drive_wide = True
             for idx_path in args.index_existing:
                 dedup_db.index_existing(
                     os.path.abspath(idx_path), threads=args.threads,
@@ -14465,10 +16694,30 @@ def main():
             copy_entries, link_map, saved_bytes = deduplicate_remote_source(
                 entries, src_ssh, src, args.threads, fs_strategy=fs_strategy)
         else:
+            # Remote destinations keep the full pre-hash: the manifest they
+            # write is the incremental hash cache for every future run, so
+            # missing hashes there would trade one read now for re-hashing
+            # (or re-downloading, on SFTP-only) later. Local destinations
+            # never consume the hashes post-copy → selective pre-hash.
             copy_entries, link_map, saved_bytes = deduplicate(
                 entries, args.threads, dedup_db, fs_strategy=fs_strategy,
                 dedup_inplace=getattr(args, 'dedup_existing', False),
-                dry_run=getattr(args, 'dry_run', False))
+                dry_run=getattr(args, 'dry_run', False),
+                selective=not dst_remote)
+
+    # SFTP-only destination: links need a shell on the server, so duplicates
+    # can't be materialized as links — put them back and upload them in full.
+    if getattr(args, "sftp_only", False) and dst_remote and link_map:
+        print(f"  {C.YELLOW}" + _tr("SFTP-only: {n} duplicates will be uploaded in full (links need a shell)").format(n=len(link_map)) + C.RESET)
+        uniq_rels = {e.rel for e in copy_entries}
+        canon_hash = {e.rel: e.content_hash for e in copy_entries}
+        for e in entries:
+            tgt = link_map.get(e.rel)
+            if tgt is not None and e.rel not in uniq_rels:
+                h = canon_hash.get(tgt) if isinstance(tgt, str) else None
+                copy_entries.append(e._replace(content_hash=h))
+        link_map = {}
+        saved_bytes = 0
 
     unique_size = sum(e.size for e in copy_entries)
 
@@ -14519,6 +16768,17 @@ def main():
             caps = [k for k, v in dst_ssh.caps.items() if v]
             print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
 
+            # Same pre-flight as the push path: relaying gigabytes between two
+            # servers only to find the far end unwritable is the worst place
+            # to learn it.
+            if not args.dry_run:
+                _dst_problem = ensure_remote_root(dst_ssh, dst)
+                if _dst_problem:
+                    print(f"\n  {C.RED}Error: cannot use destination "
+                          f"{dst}: {_dst_problem}{C.RESET}")
+                    dst_ssh.close()
+                    sys.exit(1)
+
             # ── Phase 2b: Incremental check against remote dest ──────
             skipped_count = 0
             skipped_bytes = 0
@@ -14565,7 +16825,7 @@ def main():
             print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
                   + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
 
-            if not check_remote_space(dst_ssh, dst, required, args.force):
+            if not check_remote_space(dst_ssh, dst, required, args.force, entries=copy_entries):
                 src_ssh.close()
                 dst_ssh.close()
                 sys.exit(1)
@@ -14759,16 +17019,16 @@ def main():
             print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
             sys.exit(130)
         except (OSError, IOError) as e:
-            print(f"\n{C.RED}Error: {e}{C.RESET}")
+            print(f"\n{C.RED}Error: {_fmt_exc(e)}{C.RESET}")
             sys.exit(1)
         except Exception as e:
             ename = type(e).__name__
             if "Authentication" in ename:
                 print(f"\n{C.RED}Error: SSH authentication failed{C.RESET}")
             elif "SSH" in ename or "Socket" in ename or "paramiko" in type(e).__module__:
-                print(f"\n{C.RED}Error: SSH connection failed: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: SSH connection failed: {_fmt_exc(e)}{C.RESET}")
             elif "ConnectionReset" in ename or "BrokenPipe" in ename:
-                print(f"\n{C.RED}Error: Connection lost: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: Connection lost: {_fmt_exc(e)}{C.RESET}")
             else:
                 raise
             sys.exit(1)
@@ -14925,7 +17185,8 @@ def main():
             # Verify (defer the exit until after summary + --log write)
             _verify_status = "ok"
             if not args.no_verify:
-                _verify_status = verify_copy(copy_entries, link_map, dst)
+                _verify_status = verify_copy(copy_entries, link_map, dst,
+                                     threads=args.threads)
 
             # Summary
             banner("DONE")
@@ -14959,16 +17220,16 @@ def main():
             print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
             sys.exit(130)
         except (OSError, IOError) as e:
-            print(f"\n{C.RED}Error: {e}{C.RESET}")
+            print(f"\n{C.RED}Error: {_fmt_exc(e)}{C.RESET}")
             sys.exit(1)
         except Exception as e:
             ename = type(e).__name__
             if "Authentication" in ename:
                 print(f"\n{C.RED}Error: SSH authentication failed{C.RESET}")
             elif "SSH" in ename or "Socket" in ename or "paramiko" in type(e).__module__:
-                print(f"\n{C.RED}Error: SSH connection failed: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: SSH connection failed: {_fmt_exc(e)}{C.RESET}")
             elif "ConnectionReset" in ename or "BrokenPipe" in ename:
-                print(f"\n{C.RED}Error: Connection lost: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: Connection lost: {_fmt_exc(e)}{C.RESET}")
             else:
                 raise
             sys.exit(1)
@@ -14995,10 +17256,24 @@ def main():
                 password = args._resolved_dst_password
             ssh = SSHConnection(remote, port=remote.port, key_path=args.ssh_key,
                                 password=password, compress=args.compress,
+                                sftp_only=getattr(args, "sftp_only", False),
                                 ).connect()
             print(f"  {C.GREEN}Connected to {remote.user}@{remote.host}:{remote.port}{C.RESET}")
-            caps = [k for k, v in ssh.caps.items() if v]
-            print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
+            if ssh.sftp_only:
+                print(f"  {C.DIM}SFTP-only mode — no commands are run on the server{C.RESET}")
+            else:
+                caps = [k for k, v in ssh.caps.items() if v]
+                print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
+
+            # Fail here, one second after connecting, rather than after
+            # streaming into a destination that cannot exist.
+            if not args.dry_run:
+                _dst_problem = ensure_remote_root(ssh, dst)
+                if _dst_problem:
+                    print(f"\n  {C.RED}Error: cannot use destination "
+                          f"{dst}: {_dst_problem}{C.RESET}")
+                    ssh.close()
+                    sys.exit(1)
 
             # ── Phase 2b: Remote incremental check ───────────────────
             skipped_count = 0
@@ -15033,7 +17308,7 @@ def main():
             print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
                   + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
 
-            if not check_remote_space(ssh, dst, required, args.force):
+            if not check_remote_space(ssh, dst, required, args.force, entries=copy_entries):
                 ssh.close()
                 sys.exit(1)
 
@@ -15046,10 +17321,14 @@ def main():
                 small_sz = sum(e.size for e in small)
                 large_sz = sum(e.size for e in large)
                 print(f"\n  {C.YELLOW}DRY RUN — Copy strategy:{C.RESET}\n")
-                print(f"    Small files (<1MB): {C.BOLD}{len(small)}{C.RESET} files, "
-                      f"{C.BOLD}{fmt_size(small_sz)}{C.RESET} → tar stream over SSH")
-                print(f"    Large files (≥1MB): {C.BOLD}{len(large)}{C.RESET} files, "
-                      f"{C.BOLD}{fmt_size(large_sz)}{C.RESET} → SFTP pipelined")
+                if ssh.sftp_only:
+                    print(f"    All files: {C.BOLD}{len(small) + len(large)}{C.RESET} files, "
+                          f"{C.BOLD}{fmt_size(small_sz + large_sz)}{C.RESET} → SFTP pipelined (SFTP-only mode)")
+                else:
+                    print(f"    Small files (<1MB): {C.BOLD}{len(small)}{C.RESET} files, "
+                          f"{C.BOLD}{fmt_size(small_sz)}{C.RESET} → tar stream over SSH")
+                    print(f"    Large files (≥1MB): {C.BOLD}{len(large)}{C.RESET} files, "
+                          f"{C.BOLD}{fmt_size(large_sz)}{C.RESET} → SFTP pipelined")
                 if link_map:
                     print(f"\n  Plus {len(link_map)} duplicate files to be linked on remote")
                 print(f"\n  Unique data: {fmt_size(unique_size)}")
@@ -15058,7 +17337,10 @@ def main():
 
             # ── Phase 5: Remote copy ─────────────────────────────────
             banner("Phase 5 — Remote copy")
-            ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
+            if ssh.sftp_only:
+                _sftp_mkdir_p(ssh.open_sftp(), dst)
+            else:
+                ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
 
             progress = Progress(unique_size, len(copy_entries))
             t0 = time.time()
@@ -15111,6 +17393,11 @@ def main():
             if skipped_count:
                 print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
                       f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
+            _failed_files = len(_COPY_ERRORS)
+            if _failed_files:
+                print(f"  {C.RED}Failed:  {C.BOLD}{_failed_files}{C.RESET}"
+                      f"{C.RED} file{'' if _failed_files == 1 else 's'} did not "
+                      f"reach the destination{C.RESET}")
             print(f"  Data:    {C.BOLD}{fmt_size(unique_size)}{C.RESET} sent"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
@@ -15134,7 +17421,7 @@ def main():
             print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
             sys.exit(130)
         except (OSError, IOError) as e:
-            print(f"\n{C.RED}Error: {e}{C.RESET}")
+            print(f"\n{C.RED}Error: {_fmt_exc(e)}{C.RESET}")
             sys.exit(1)
         except Exception as e:
             ename = type(e).__name__
@@ -15142,9 +17429,9 @@ def main():
                 print(f"\n{C.RED}Error: SSH authentication failed for "
                       f"{remote.user}@{remote.host}{C.RESET}")
             elif "SSH" in ename or "Socket" in ename or "paramiko" in type(e).__module__:
-                print(f"\n{C.RED}Error: SSH connection failed: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: SSH connection failed: {_fmt_exc(e)}{C.RESET}")
             elif "ConnectionReset" in ename or "BrokenPipe" in ename:
-                print(f"\n{C.RED}Error: Connection lost: {e}{C.RESET}")
+                print(f"\n{C.RED}Error: Connection lost: {_fmt_exc(e)}{C.RESET}")
             else:
                 raise
             sys.exit(1)
@@ -15197,19 +17484,28 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     # ── Phase 3: Space check ──────────────────────────────────────────
     banner("Phase 3 — Space check")
-    required = unique_size
+    # Files occupy whole blocks on the destination — the check must compare
+    # ALLOCATED bytes against free space, not logical sizes, or many-small-
+    # files jobs pass preflight and die mid-copy with a full disk.
+    _makedirs_or_die(dst)
+    block = _dest_block_size(dst)
+    ndirs = len({os.path.dirname(e.rel) for e in copy_entries
+                 if os.path.dirname(e.rel)})
     # If the destination filesystem can't dedup via links (FAT32, exFAT,
     # etc.), each duplicate will be materialized as a full copy. We need
     # space for the FULL undeduplicated size.
     if fs_strategy == "none" and saved_bytes > 0:
         full_size = unique_size + saved_bytes
+        fs_alloc = sum(_block_rounded(e.size, block) for e in copy_entries)
+        # Duplicates: logical bytes + one block of round-up each (upper bound).
+        fs_alloc += saved_bytes + len(link_map) * block
         print(f"  Data to write: {C.BOLD}{fmt_size(full_size)}{C.RESET}")
         print(f"  {C.YELLOW}⚠ Filesystem does not support links — "
               f"dedup saves {fmt_size(saved_bytes)} on the wire only."
               f"{C.RESET}")
         print(f"  {C.YELLOW}  Each duplicate becomes a full copy on disk; "
               f"total disk usage will be {fmt_size(full_size)}.{C.RESET}")
-        required = full_size
+        logical = full_size
     else:
         # Sparse files (e.g. VM disk images): if the destination FS supports
         # holes (anything except FAT32/exFAT), only the allocated extents
@@ -15221,8 +17517,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         else:
             alloc_total = unique_size
             sparse_saved = 0
-        required = alloc_total
-        msg = f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
+        fs_alloc = sum(_block_rounded(_effective_alloc(e)
+                                      if (_HAS_SEEK_HOLE and fs_strategy != "none")
+                                      else e.size, block)
+                       for e in copy_entries)
+        logical = alloc_total
+        msg = f"  Data to write: {C.BOLD}{fmt_size(logical)}{C.RESET}"
         notes = []
         if saved_bytes > 0:
             notes.append(f"dedup saved {fmt_size(saved_bytes)}")
@@ -15231,6 +17531,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         if notes:
             msg += " (after " + ", ".join(notes) + ")"
         print(msg)
+
+    required = fs_alloc + _space_overhead_margin(fs_alloc, ndirs, block)
+    if required > logical:
+        print(f"  {C.DIM}On-disk requirement: {fmt_size(required)} "
+              f"(+{fmt_size(required - logical)} block/metadata overhead, "
+              f"{fmt_size(block)} blocks){C.RESET}")
 
     if not check_destination_space(dst, required, args.force):
         sys.exit(1)
@@ -15272,13 +17578,27 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     # ── Phase 5: Block copy ─────────────────────────────────────────
     banner("Phase 5 — Block copy")
+    # Arm the digest collector BEFORE any bytes move: the copy paths hash each
+    # source file as it streams past, which is what makes Phase 6's content
+    # check cost one destination read instead of re-reading both sides.
+    if not args.no_verify:
+        _SRC_DIGESTS.arm()
+    else:
+        _SRC_DIGESTS.disarm()
     os.makedirs(dst, exist_ok=True)
 
     progress = Progress(unique_size, len(copy_entries))
     t0 = time.time()
-    copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy,
-                threads=args.threads, small_mode=args.small_files)
-    progress.finish()
+    # Skip the copy engine and its bar when there is nothing to copy — every
+    # file deduped to a link, or nothing changed. Driving a progress bar to
+    # "100%  0.0 B  avg 0.0 B/s  0 files" reads like something went wrong on
+    # a run that did exactly what it should.
+    if copy_entries:
+        copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy,
+                    threads=args.threads, small_mode=args.small_files)
+        progress.finish()
+    else:
+        _QUIET_STATS.update(files=0, bytes=0, elapsed=0.0)
 
     # Create links for duplicates
     if link_map:
@@ -15290,8 +17610,21 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # their metadata mirrored (single-source layouts).
     _apply_dir_metadata(copy_entries, dst, link_map=link_map)
 
+    # Stop the clock only once the data is durable — see _flush_destination.
+    _flush_destination(dst)
     elapsed = time.time() - t0
-    speed = unique_size / elapsed if elapsed > 0 else 0
+    # Rate the bytes that were actually written. unique_size is the LOGICAL
+    # total, so on a sparse tree it counts holes that never reached the disk:
+    # a 1.2 GB logical / 193 MB real copy reported ~6x its true throughput.
+    if _HAS_SEEK_HOLE and fs_strategy != "none":
+        _written = sum(_effective_alloc(e) for e in copy_entries)
+    else:
+        _written = unique_size
+    speed = _written / elapsed if elapsed > 0 else 0
+    # Progress.finish() stopped its own clock before the flush, and --quiet
+    # reports from there. Without this the same copy prints 0.6s quiet and
+    # 2.4s verbose — the display flag must not change the measurement.
+    _QUIET_STATS.update(bytes=_written, elapsed=elapsed)
 
     # ── Update dedup database with copied files ──────────────────────
     if dedup_db:
@@ -15318,7 +17651,8 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     _verify_status = "ok"
     if not args.no_verify:
         banner("Phase 6 — Verification")
-        _verify_status = verify_copy(copy_entries, link_map, dst)
+        _verify_status = verify_copy(copy_entries, link_map, dst,
+                                     threads=args.threads)
 
     # ── Summary ───────────────────────────────────────────────────────
     banner("DONE")
@@ -15455,7 +17789,9 @@ def cli_entry():
             sys.exit(130)
     # Handle --version, --check-update, --update before argparse requires positional args
     if "--version" in sys.argv or "-V" in sys.argv:
+        # First line stays byte-identical — scripts parse it.
         print(f"blitcp v{__version__}")
+        print(_tr("Support development: {url}").format(url=SUPPORT_URL))
         sys.exit(0)
     if "--check-update" in sys.argv:
         check_update_info()
@@ -15511,9 +17847,32 @@ def cli_entry():
             pass
     try:
         main()
+    except SystemExit as e:
+        # main() exits through sys.exit() on every path that matters; the
+        # quiet summary has to run for all of them, not just a clean return.
+        code = 0 if e.code is None else e.code
+        if code == 0:
+            _maybe_auto_update_check()
+        if not isinstance(code, int):
+            # SystemExit("message") — Python prints the message and exits 1.
+            # Left alone it would land BELOW our verdict; in quiet mode emit
+            # the reason first, then the verdict, and exit 1 ourselves.
+            if QUIET:
+                sys.stderr.write(str(code).rstrip() + "\n")
+                _quiet_finish(1, reason_shown=True)
+                raise SystemExit(1)
+            raise
+        _quiet_finish(code)
+        raise
     except KeyboardInterrupt:
-        print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
+        if QUIET:
+            _quiet_finish(130)      # its own one-liner; no banner on top
+        else:
+            print(f"\n  {C.YELLOW}Interrupted.{C.RESET}")
         sys.exit(130)
+    else:
+        _quiet_finish(0)
+        _maybe_auto_update_check()
 
 
 if __name__ == "__main__":

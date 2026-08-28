@@ -410,8 +410,8 @@ msgstr "SSH — 正在连接源"
 msgid "Save"
 msgstr "保存"
 
-msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
-msgstr "扫描 PATH 并按大小将文件登记到去重索引。同步时，大小相同的文件将延迟求哈希并 reflink 而不是复制。"
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. Also widens link scope drive-wide: without this flag a copy only links onto content inside its own destination, so a second backup never shares storage with an older one. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "扫描 PATH 并按大小将文件登记到去重索引。同步时，大小相同的文件将延迟求哈希并 reflink 而不是复制。同时将 link 范围扩大到整个驱动器：没有此选项时，复制只会 link 到其自身目标内的内容，因此第二次备份绝不会与较早的备份共享存储。PATH 必须与目标位于同一 filesystem。可重复指定。"
 
 msgid "Scanning existing files in {path} ..."
 msgstr "正在扫描 {path} 中的现有文件 ..."
@@ -967,3 +967,77 @@ msgstr "本地复制的小文件引擎：'parallel' = 工作线程池（线程 x
 
 msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
 msgstr "子命令:\n  creds <sub>      管理凭据文件中保存的 cloud/SSH 连接配置:\n                   add, list, edit, remove, test, encrypt/decrypt, lock。\n                   运行 'blitcp creds' 查看帮助。\n  ls <target>      列出云端位置（已保存的连接名称或 s3:// / az:// / gs://\n                   URL）或远程 SSH 目录（已保存的 ssh 连接或\n                   user@host:/path，经 SFTP）。\n                   别名: list-objects。运行 'blitcp ls -h' 查看帮助。\n\n示例:\n  blitcp /data /media/usb/data           本地  → 本地\n  blitcp /data user@host:/backup         本地  → 远程 (SSH)\n  blitcp user@host:/data /local/backup   远程 → 本地\n  blitcp /data s3://bucket/backup        本地  → 云端\n  blitcp creds add aws-dev               保存连接配置\n  blitcp ls aws-dev                      列出已保存的云连接\n  blitcp ls user@host:/var/log           列出远程 SSH 目录\n"
+
+msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
+msgstr "通过纯 SFTP 传输 — 从不在服务器上执行命令。适用于会关闭 exec 通道的仅 SFTP 端点（托管网关、受限账户）。增量传输和校验可用；跳过去重链接和远程空间检查。"
+
+msgid "Skipping dedup — remote hashing needs a shell (SFTP-only mode)"
+msgstr "跳过去重 — 远程哈希需要 shell（仅 SFTP 模式）"
+
+msgid "SFTP-only: {n} duplicates will be uploaded in full (links need a shell)"
+msgstr "仅 SFTP：{n} 个重复文件将完整上传（创建链接需要 shell）"
+
+msgid "Source and destination connections need compatible SSH protocols"
+msgstr "源连接和目标连接需要兼容的 SSH 协议"
+
+msgid "Hashing: {cand} dedup candidates — {skip} unique-size files need no pre-copy hash"
+msgstr "哈希：{cand} 个去重候选 — {skip} 个唯一大小的文件无需复制前哈希"
+
+msgid "Prefix check: {n} same-size files proven unique (no full hash needed)"
+msgstr "前缀检查：{n} 个同大小文件已证明唯一（无需完整哈希）"
+
+msgid "Script mode: no progress bar or banners, one final OK/FAILED line, errors on stderr. The exit code stays the contract (0 ok, 1 corrupt, 2 error, 3 source files skipped)."
+msgstr "脚本模式：不显示进度条或横幅，仅输出一行 OK/FAILED，错误写入 stderr。退出码仍是约定 (0 正常、1 损坏、2 错误、3 跳过源文件)。"
+
+msgid "Quiet, but keep the copy progress bar. Implies --quiet: banners and phase output stay suppressed, the bar and the final OK/FAILED line are all you get."
+msgstr "安静模式，但保留复制进度条。隐含 --quiet：横幅和阶段输出仍被抑制，只保留进度条和最后一行 OK/FAILED。"
+
+msgid "Check for updates automatically, once a day? [Y/n]: "
+msgstr "每天自动检查一次更新？[Y/n]: "
+
+msgid "No automatic checks. Run --check-update whenever you want one."
+msgstr "不进行自动检查。需要时请运行 --check-update。"
+
+msgid "Update available: {tag} — run --update"
+msgstr "有可用更新：{tag} — 请运行 --update"
+
+msgid "Failed to check for updates — network or GitHub unavailable"
+msgstr "检查更新失败 — 网络或 GitHub 不可用"
+
+msgid "Check for updates automatically, once a day"
+msgstr "每天自动检查一次更新"
+
+msgid "Verifying contents of {n} files..."
+msgstr "正在校验 {n} 个文件的内容…"
+
+msgid "content mismatch (hash differs): {rel}"
+msgstr "内容不一致（hash 不同）：{rel}"
+
+msgid "{n} file(s) reached the destination with the wrong contents."
+msgstr "{n} 个文件到达目标时内容有误。"
+
+msgid "could not be read back from the destination: {rel}"
+msgstr "无法从目标重新读取：{rel}"
+
+msgid "{n} by existence + size: links, clones and sparse copies"
+msgstr "{n} 个仅校验存在性与大小：hard link、reflink 克隆和 sparse 副本"
+
+msgid "{n} not content-checked: source unreadable"
+msgstr "{n} 个未校验内容：源文件不可读"
+
+
+
+msgid "Checked {n} remote path(s)"
+msgstr "已检查远程的 {n} 个路径"
+
+msgid "Scanned remote ({n} files)"
+msgstr "已扫描远程（{n} 个文件）"
+
+msgid "Update available: {tag} — run: {cmd}"
+msgstr "有可用更新：{tag} — 请运行：{cmd}"
+
+msgid "cannot create it or it is not writable"
+msgstr "无法创建，或不可写入"
+
+msgid "Support development: {url}"
+msgstr "支持开发：{url}"

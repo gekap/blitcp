@@ -1,5 +1,86 @@
 # Changelog
 
+## v4.1.6 — 2026-08-28
+
+The first public release of the 4.1 line — everything since v4.0.3 in one go.
+
+Two changes you will notice: **verification now compares content, not just
+size** (about 35% slower on a verified run; `--no-verify` opts out), and
+**reported times got longer** because the clock no longer stops before the data
+is flushed to the device.
+
+### New features
+
+- **`-q` / `--quiet`** — script and cron mode. One line on success
+  (`OK: copied 12347 files, 4.2 GB in 5.9s`), nothing on stdout on failure, the
+  reason and `FAILED: …, exit N` on stderr. `OK` / `FAILED` are never
+  translated. (#4)
+- **`-p` / `--progress`** — quiet mode with the progress bar left on.
+- **`--sftp-only`** — pure SFTP with no remote exec, for gateways that close the
+  exec channel. The GUI gets a per-connection protocol selector.
+- **Provider presets in `creds add`** for R2, B2, Wasabi, Spaces, Scaleway,
+  Hetzner, iDrive, Storj and Oracle.
+- **Windows onedir builds** — the single exe pays a 16–33s cold-start tax on
+  Windows; the folder bundle starts instantly.
+- **Opt-in daily update check**, asked once and never in scripts, cron or CI.
+  Same setting as a checkbox in the GUI.
+- **`BLITCP_TRACEBACK=1`** for the full traceback when you want it.
+- Exit codes documented as the contract they already were: `0` ok, `1` corrupt
+  or systemic failure, `2` error, `3` only source files skipped.
+
+### Improvements
+
+- **Verification re-hashes the destination against the source.** Reflinks, hard
+  links, sparse copies and the tar-stream modes have no comparable digest and
+  are now reported as existence + size rather than counted as fully verified.
+- **The destination is proven writable before anything is copied**, with a real
+  write probe — a bad path stops in a second instead of failing deep in the copy.
+- **Throughput and duration describe the copy that happened.** `syncfs()` before
+  the clock stops, rate from allocated bytes, and `--quiet` reporting the same
+  time as the full summary.
+- **io_uring engine for small files** on Linux, 22% faster than the thread pool,
+  with automatic fallback.
+- **Selective dedup pre-hashing** — unique-size files are no longer read twice.
+- **Remote transfers ask about the files being copied**, not about the whole
+  destination tree: a large remote directory no longer times out the check.
+- **Faster cross-run dedup** — the hash cache is read once and the lookup is
+  scoped in SQL instead of per row.
+- **RAM disks and USB-attached SSDs are no longer treated as spinning disks**;
+  the seek penalty is measured when the drive's own flag can't be trusted.
+- **A pip install updates through pip** — `--check-update` asks PyPI and prints
+  the right command.
+- **Better failures**: never a bare `Error:` again, no raw tracebacks in the
+  progress output, and files that go missing say why.
+
+### Bug fixes
+
+- **Local copies containing any file under 1 MB copied zero small files** — the
+  only small-file path Windows and macOS have.
+- **Cross-run dedup linked outside the destination you asked for**, silently
+  sharing inodes between unrelated backups. Linking is now scoped to the
+  destination; `--index-existing` widens it back.
+- **`--update` on a pip install** overwrote site-packages and reverted all six
+  translations to English. It now refuses and points at pip. (#4)
+- **Quiet mode could report `OK` on a failed run.**
+- **A saved SSH connection's path was replaced by a filename** instead of
+  extended by it, silently addressing the login directory.
+- **The relay's symlink sweep** could abort the run instead of being reported.
+- **Cross-run dedup missed `--index-existing` files**, and cache-hit duplicates
+  were copied instead of linked.
+- **The destination flush skipped its fallback on musl and older glibc.**
+- **The seek probe read a warm cache on ntfs3** and called a hard disk flash.
+
+### Donations
+
+blitcp is free and Apache-2.0 licensed, and stays that way. If it saves you
+time: **https://ko-fi.com/blitcp** — it goes towards the Windows code signing
+certificate, hosting for blitcp.dev, and the hardware the benchmarks run on.
+Starring the repo or filing a good bug report helps just as much.
+
+Nothing is printed during a normal run: not after a copy, not in `--help`, not
+on first run. Only `--version` and the GUI's Settings mention it. The URL is a
+static string — no redirect, no tracking, no extra network call.
+
 ## v4.0.3 — 2026-08-23
 
 Patch release: one bug, reported from the field ([#4](https://github.com/gekap/blitcp/issues/4)).

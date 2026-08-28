@@ -410,8 +410,8 @@ msgstr "SSH — Σύνδεση με την πηγή"
 msgid "Save"
 msgstr "Αποθήκευση"
 
-msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
-msgstr "Σάρωση του PATH και καταχώρηση αρχείων κατά μέγεθος στο dedup index. Στο sync, αρχεία ίδιου μεγέθους γίνονται lazy-hash και reflink αντί να αντιγραφούν."
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. Also widens link scope drive-wide: without this flag a copy only links onto content inside its own destination, so a second backup never shares storage with an older one. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "Σάρωση του PATH και καταχώρηση αρχείων κατά μέγεθος στο dedup index. Στο sync, αρχεία ίδιου μεγέθους γίνονται lazy-hash και reflink αντί να αντιγραφούν. Διευρύνει επίσης την εμβέλεια σύνδεσης σε όλο τον δίσκο: χωρίς αυτή τη σημαία, μια αντιγραφή συνδέεται μόνο με περιεχόμενο μέσα στον δικό της προορισμό, ώστε ένα δεύτερο backup να μη μοιράζεται ποτέ αποθηκευτικό χώρο με ένα παλαιότερο. Το PATH πρέπει να είναι στο ίδιο filesystem με τον προορισμό. Επαναλαμβανόμενο."
 
 msgid "Scanning existing files in {path} ..."
 msgstr "Σάρωση υπαρχόντων αρχείων στο {path} ..."
@@ -967,3 +967,77 @@ msgstr "Μηχανισμός μικρών αρχείων για τοπικές �
 
 msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
 msgstr "υποεντολές:\n  creds <sub>      Διαχείριση αποθηκευμένων προφίλ σύνδεσης cloud/SSH στο\n                   αρχείο διαπιστευτηρίων: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Βοήθεια: 'blitcp creds'.\n  ls <target>      Εμφάνιση θέσης cloud (όνομα αποθηκευμένης σύνδεσης ή URL\n                   s3:// / az:// / gs://) ή απομακρυσμένου καταλόγου SSH\n                   (αποθηκευμένη σύνδεση ssh ή user@host:/path, μέσω SFTP).\n                   Ψευδώνυμο: list-objects. Βοήθεια: 'blitcp ls -h'.\n\nπαραδείγματα:\n  blitcp /data /media/usb/data           τοπικό  → τοπικό\n  blitcp /data user@host:/backup         τοπικό  → απομακρυσμένο (SSH)\n  blitcp user@host:/data /local/backup   απομακρυσμένο → τοπικό\n  blitcp /data s3://bucket/backup        τοπικό  → cloud\n  blitcp creds add aws-dev               αποθήκευση προφίλ σύνδεσης\n  blitcp ls aws-dev                      λίστα αποθηκευμένης σύνδεσης cloud\n  blitcp ls user@host:/var/log           λίστα απομακρυσμένου καταλόγου SSH\n"
+
+msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
+msgstr "Μεταφορά μέσω καθαρού SFTP — δεν εκτελούνται ποτέ εντολές στον server. Για SFTP-only endpoints (managed gateways, περιορισμένοι λογαριασμοί) που κλείνουν το exec channel. Incremental και verify λειτουργούν· τα dedup links και ο έλεγχος χώρου στο remote παραλείπονται."
+
+msgid "Skipping dedup — remote hashing needs a shell (SFTP-only mode)"
+msgstr "Παράλειψη dedup — το απομακρυσμένο hashing χρειάζεται shell (λειτουργία μόνο SFTP)"
+
+msgid "SFTP-only: {n} duplicates will be uploaded in full (links need a shell)"
+msgstr "Μόνο SFTP: {n} διπλότυπα θα ανέβουν ολόκληρα (τα links χρειάζονται shell)"
+
+msgid "Source and destination connections need compatible SSH protocols"
+msgstr "Οι συνδέσεις πηγής και προορισμού χρειάζονται συμβατά πρωτόκολλα SSH"
+
+msgid "Hashing: {cand} dedup candidates — {skip} unique-size files need no pre-copy hash"
+msgstr "Hashing: {cand} υποψήφια για dedup — {skip} αρχεία μοναδικού μεγέθους δεν χρειάζονται pre-copy hash"
+
+msgid "Prefix check: {n} same-size files proven unique (no full hash needed)"
+msgstr "Έλεγχος prefix: {n} αρχεία ίδιου μεγέθους αποδείχθηκαν μοναδικά (δεν χρειάζεται πλήρες hash)"
+
+msgid "Script mode: no progress bar or banners, one final OK/FAILED line, errors on stderr. The exit code stays the contract (0 ok, 1 corrupt, 2 error, 3 source files skipped)."
+msgstr "Λειτουργία script: χωρίς μπάρα προόδου ή banners, μία τελική γραμμή OK/FAILED, σφάλματα στο stderr. Ο κωδικός εξόδου παραμένει το συμβόλαιο (0 εντάξει, 1 κατεστραμμένο, 2 σφάλμα, 3 παραλείφθηκαν αρχεία πηγής)."
+
+msgid "Quiet, but keep the copy progress bar. Implies --quiet: banners and phase output stay suppressed, the bar and the final OK/FAILED line are all you get."
+msgstr "Σιωπηλό, αλλά διατηρεί την μπάρα προόδου της αντιγραφής. Συνεπάγεται --quiet: banners και έξοδος φάσεων παραμένουν κρυφά, και μένουν μόνο η μπάρα και η τελική γραμμή OK/FAILED."
+
+msgid "Check for updates automatically, once a day? [Y/n]: "
+msgstr "Αυτόματος έλεγχος ενημερώσεων, μία φορά την ημέρα; [Y/n]: "
+
+msgid "No automatic checks. Run --check-update whenever you want one."
+msgstr "Χωρίς αυτόματους ελέγχους. Τρέξε --check-update όποτε θέλεις."
+
+msgid "Update available: {tag} — run --update"
+msgstr "Διαθέσιμη ενημέρωση: {tag} — τρέξε --update"
+
+msgid "Failed to check for updates — network or GitHub unavailable"
+msgstr "Αποτυχία ελέγχου ενημερώσεων — δίκτυο ή GitHub μη διαθέσιμα"
+
+msgid "Check for updates automatically, once a day"
+msgstr "Αυτόματος έλεγχος ενημερώσεων, μία φορά την ημέρα"
+
+msgid "Verifying contents of {n} files..."
+msgstr "Έλεγχος περιεχομένου {n} αρχείων…"
+
+msgid "content mismatch (hash differs): {rel}"
+msgstr "διαφορά περιεχομένου (διαφορετικό hash): {rel}"
+
+msgid "{n} file(s) reached the destination with the wrong contents."
+msgstr "{n} αρχείο/α έφτασαν στον προορισμό με λάθος περιεχόμενο."
+
+msgid "could not be read back from the destination: {rel}"
+msgstr "δεν διαβάστηκε πίσω από τον προορισμό: {rel}"
+
+msgid "{n} by existence + size: links, clones and sparse copies"
+msgstr "{n} μόνο με ύπαρξη + μέγεθος: hard links, reflink κλώνοι και sparse αντίγραφα"
+
+msgid "{n} not content-checked: source unreadable"
+msgstr "{n} χωρίς έλεγχο περιεχομένου: η πηγή δεν διαβάστηκε"
+
+
+
+msgid "Checked {n} remote path(s)"
+msgstr "Ελέγχθηκαν {n} διαδρομή/ές στο απομακρυσμένο"
+
+msgid "Scanned remote ({n} files)"
+msgstr "Σαρώθηκε το απομακρυσμένο ({n} αρχεία)"
+
+msgid "Update available: {tag} — run: {cmd}"
+msgstr "Διαθέσιμη ενημέρωση: {tag} — εκτέλεσε: {cmd}"
+
+msgid "cannot create it or it is not writable"
+msgstr "δεν μπορεί να δημιουργηθεί ή δεν είναι εγγράψιμο"
+
+msgid "Support development: {url}"
+msgstr "Στήριξη της ανάπτυξης: {url}"

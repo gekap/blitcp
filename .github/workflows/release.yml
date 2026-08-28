@@ -152,6 +152,15 @@ jobs:
           done
           echo "frozen exe bundles win32security + pywintypes"
 
+      - name: Build Windows onedir bundles (no onefile unpack tax)
+        # Onefile pays 16–33s cold start on Windows (self-extract to temp +
+        # Defender scanning every unpacked DLL). The onedir zip starts
+        # instantly — shipped alongside the classic single exe.
+        if: matrix.name == 'windows'
+        env:
+          BLITCP_ONEDIR: '1'
+        run: python build.py
+
       - name: Rename binaries with platform suffix
         shell: bash
         run: |
@@ -192,7 +201,11 @@ jobs:
                         Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $signtool) { throw 'signtool.exe not found in the Windows SDK.' }
           Write-Host "Using $signtool"
-          foreach ($f in Get-ChildItem 'dist\blitcp*-windows.exe') {
+          $targets = @(Get-ChildItem 'dist\blitcp*-windows.exe')
+          foreach ($inner in 'dist\blitcp\blitcp.exe', 'dist\blitcp_gui\blitcp_gui.exe') {
+            if (Test-Path $inner) { $targets += Get-Item $inner }
+          }
+          foreach ($f in $targets) {
             & $signtool sign `
               /f $pfx /p $env:WINDOWS_CERT_PASSWORD `
               /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
@@ -207,6 +220,17 @@ jobs:
           }
           Remove-Item $pfx -Force
           exit 0          # don't let verify's exit code fail the step
+
+      - name: Zip Windows onedir bundles
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          foreach ($n in 'blitcp', 'blitcp_gui') {
+            if (Test-Path "dist\$n\$n.exe") {
+              Compress-Archive -Path "dist\$n" -DestinationPath "dist\$n-windows-onedir.zip" -Force
+              Write-Host "zipped dist\$n-windows-onedir.zip"
+            }
+          }
 
       - name: Upload binaries to release
         shell: bash

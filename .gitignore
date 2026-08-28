@@ -31,6 +31,7 @@ uat.py
 uat_*.py
 find_my_code.py
 find_my_mentions.py
+check_forks.py
 license_monitor.sh
 license_monitor_logs/
 

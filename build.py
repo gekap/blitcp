@@ -256,12 +256,16 @@ def build_target(name, script, windowed=False, icon=None):
     ext = ".exe" if platform.system() == "Windows" else ""
     out = f"{name}{ext}"
 
+    # BLITCP_ONEDIR=1 builds a folder bundle instead of a self-extracting
+    # onefile exe. Onefile pays a 16–33s cold-start tax on Windows (unpack to
+    # temp + Defender scanning every extracted DLL); onedir starts instantly.
+    onedir = bool(os.environ.get("BLITCP_ONEDIR"))
     if windowed and platform.system() == "Linux":
         cmd = _gui_spec_cmd(name, script, icon)
     else:
         cmd = [
             sys.executable, "-m", "PyInstaller",
-            "--onefile",
+            "--onedir" if onedir else "--onefile",
             "--name", name,
             "--clean",
             "--noupx",

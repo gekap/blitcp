@@ -410,8 +410,8 @@ msgstr "SSH — Conectando al origen"
 msgid "Save"
 msgstr "Guardar"
 
-msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
-msgstr "Escanea PATH y registra archivos por tamaño en el índice dedup. Durante la sincronización, los archivos del mismo tamaño se hashean de forma diferida y se reflinkan en lugar de copiarse."
+msgid "Scan PATH and register files by size in the dedup index. During sync, size-matched files are lazily hashed and reflinkd instead of copied if content matches. Also widens link scope drive-wide: without this flag a copy only links onto content inside its own destination, so a second backup never shares storage with an older one. PATH must be on the same filesystem as the destination. Repeatable for multiple paths."
+msgstr "Escanea PATH y registra archivos por tamaño en el índice dedup. Durante la sincronización, los archivos del mismo tamaño se hashean de forma diferida y se reflinkan en lugar de copiarse. También amplía el alcance de los enlaces a todo el disco: sin esta opción una copia solo enlaza con contenido dentro de su propio destino, de modo que una segunda copia de seguridad nunca comparte almacenamiento con una anterior. PATH debe estar en el mismo sistema de archivos que el destino. Repetible."
 
 msgid "Scanning existing files in {path} ..."
 msgstr "Escaneando archivos existentes en {path} ..."
@@ -967,3 +967,77 @@ msgstr "Motor de archivos pequeños para copias locales: 'parallel' = grupo de t
 
 msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
 msgstr "subcomandos:\n  creds <sub>      Gestionar perfiles de conexión cloud/SSH guardados en el\n                   archivo de credenciales: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Ayuda: 'blitcp creds'.\n  ls <target>      Listar una ubicación cloud (nombre de conexión guardada o\n                   URL s3:// / az:// / gs://) o un directorio SSH remoto\n                   (conexión ssh guardada o user@host:/ruta, vía SFTP).\n                   Alias: list-objects. Ayuda: 'blitcp ls -h'.\n\nejemplos:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remoto (SSH)\n  blitcp user@host:/data /local/backup   remoto → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               guardar un perfil de conexión\n  blitcp ls aws-dev                      listar una conexión cloud guardada\n  blitcp ls user@host:/var/log           listar un directorio SSH remoto\n"
+
+msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
+msgstr "Transferencia por SFTP puro — nunca se ejecutan comandos en el servidor. Para endpoints solo-SFTP (gateways gestionados, cuentas restringidas) que cierran el canal exec. Incremental y verify funcionan; se omiten los enlaces de dedup y la comprobación de espacio remoto."
+
+msgid "Skipping dedup — remote hashing needs a shell (SFTP-only mode)"
+msgstr "Omitiendo dedup — el hashing remoto necesita una shell (modo solo SFTP)"
+
+msgid "SFTP-only: {n} duplicates will be uploaded in full (links need a shell)"
+msgstr "Solo SFTP: {n} duplicados se subirán completos (los enlaces necesitan una shell)"
+
+msgid "Source and destination connections need compatible SSH protocols"
+msgstr "Las conexiones de origen y destino necesitan protocolos SSH compatibles"
+
+msgid "Hashing: {cand} dedup candidates — {skip} unique-size files need no pre-copy hash"
+msgstr "Hashing: {cand} candidatos a dedup — {skip} archivos de tamaño único no necesitan hash previo a la copia"
+
+msgid "Prefix check: {n} same-size files proven unique (no full hash needed)"
+msgstr "Comprobación de prefijo: {n} archivos del mismo tamaño demostrados únicos (no hace falta hash completo)"
+
+msgid "Script mode: no progress bar or banners, one final OK/FAILED line, errors on stderr. The exit code stays the contract (0 ok, 1 corrupt, 2 error, 3 source files skipped)."
+msgstr "Modo script: sin barra de progreso ni banners, una línea final OK/FAILED, errores en stderr. El código de salida sigue siendo el contrato (0 correcto, 1 corrupto, 2 error, 3 archivos de origen omitidos)."
+
+msgid "Quiet, but keep the copy progress bar. Implies --quiet: banners and phase output stay suppressed, the bar and the final OK/FAILED line are all you get."
+msgstr "Silencioso, pero mantiene la barra de progreso de la copia. Implica --quiet: los banners y la salida de fases siguen ocultos; solo quedan la barra y la línea final OK/FAILED."
+
+msgid "Check for updates automatically, once a day? [Y/n]: "
+msgstr "¿Buscar actualizaciones automáticamente, una vez al día? [S/n]: "
+
+msgid "No automatic checks. Run --check-update whenever you want one."
+msgstr "Sin comprobaciones automáticas. Ejecuta --check-update cuando quieras una."
+
+msgid "Update available: {tag} — run --update"
+msgstr "Actualización disponible: {tag} — ejecuta --update"
+
+msgid "Failed to check for updates — network or GitHub unavailable"
+msgstr "Error al buscar actualizaciones — red o GitHub no disponibles"
+
+msgid "Check for updates automatically, once a day"
+msgstr "Buscar actualizaciones automáticamente, una vez al día"
+
+msgid "Verifying contents of {n} files..."
+msgstr "Verificando el contenido de {n} archivos…"
+
+msgid "content mismatch (hash differs): {rel}"
+msgstr "el contenido no coincide (hash distinto): {rel}"
+
+msgid "{n} file(s) reached the destination with the wrong contents."
+msgstr "{n} archivo(s) llegaron al destino con el contenido incorrecto."
+
+msgid "could not be read back from the destination: {rel}"
+msgstr "no se pudo volver a leer desde el destino: {rel}"
+
+msgid "{n} by existence + size: links, clones and sparse copies"
+msgstr "{n} solo por existencia + tamaño: hard links, clones reflink y copias sparse"
+
+msgid "{n} not content-checked: source unreadable"
+msgstr "{n} sin comprobación de contenido: origen ilegible"
+
+
+
+msgid "Checked {n} remote path(s)"
+msgstr "Comprobadas {n} ruta(s) en el remoto"
+
+msgid "Scanned remote ({n} files)"
+msgstr "Remoto escaneado ({n} archivos)"
+
+msgid "Update available: {tag} — run: {cmd}"
+msgstr "Actualización disponible: {tag} — ejecuta: {cmd}"
+
+msgid "cannot create it or it is not writable"
+msgstr "no se puede crear o no admite escritura"
+
+msgid "Support development: {url}"
+msgstr "Apoya el desarrollo: {url}"

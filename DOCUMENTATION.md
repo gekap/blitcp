@@ -87,6 +87,61 @@ Enables detailed filesystem detection output: filesystem type, capabilities (har
 
 CLI: `-v`, `--verbose`
 
+### Quiet (script mode)
+
+Suppresses the progress bar, banners and phase output entirely. A successful run
+prints exactly one line to stdout:
+
+```
+OK: copied 12347 files, 4.2 GB in 5.9s
+```
+
+A failed run prints **nothing** to stdout. The reason goes to stderr — the
+per-file errors when there are any, otherwise the message that ended the run —
+followed by a verdict line:
+
+```
+  photos/IMG_0042.CR2: [Errno 13] Permission denied: '/mnt/src/photos/IMG_0042.CR2'
+FAILED: 1 file error, exit 3
+```
+
+The `OK` / `FAILED` tokens are deliberately never translated: they are a
+contract for scripts that grep them, and a locale-dependent word would break
+those scripts on a machine with a different `LANG`.
+
+The exit code remains the primary signal in every mode:
+
+| Code | Meaning |
+|---|---|
+| `0` | Everything copied and verified |
+| `1` | Verification found corrupt/incomplete data, or the run failed systemically |
+| `2` | Usage error, or a copy error |
+| `3` | Only unreadable/locked **source** files were skipped — everything else copied |
+
+**When to use:** cron jobs, CI, and any script that only needs "did the copy
+succeed?". Note that redirecting stdout to `/dev/null` without `--quiet` also
+hides the errors, since normal-mode diagnostics are written to stdout.
+
+CLI: `-q`, `--quiet`
+
+### Progress only
+
+Everything `--quiet` suppresses, except the copy progress bar. Implies
+`--quiet`, so banners and phase output stay hidden and the run still ends with
+the single `OK` / `FAILED` line:
+
+```
+  ██████████████████████████████ 100%  68.7 MB in 0.2s  avg 329.8 MB/s  6 files
+OK: copied 6 files, 68.7 MB in 0.2s
+```
+
+**When to use:** a script you watch while it runs — you want to see the copy
+move without the phase-by-phase output. Note that the bar redraws with carriage
+returns, so redirecting it to a log file records every frame; use plain
+`--quiet` when the output is going to a file.
+
+CLI: `-p`, `--progress`
+
 ### Skip verification
 
 Skips the post-copy check. By default, blitcp verifies that every copied file exists on the destination with the exact expected size; on SSH transfers it additionally hash-checks a random sample of up to 20 files (SHA-256 on both sides).
@@ -369,6 +424,52 @@ blitcp.py --update --update-sha256 <64-hex-from-release-page>
 ```
 
 > `--update` is refused under `sudo` (running as root or with `SUDO_USER` set): update as your normal user first, then re-elevate deliberately for the next root run.
+
+### What the update check sends, and to whom
+
+An update check is an HTTPS `GET` to `https://blitcp.dev/api/releases/<your-version>`,
+which returns the same release list GitHub publishes. blitcp.dev is a thin cache
+in front of the GitHub API — used because GitHub's anonymous API allows 60
+requests per hour **per IP**, which a company NAT or a CGNAT connection burns
+through, making the check fail for reasons the user cannot see. If blitcp.dev
+does not answer, blitcp falls back to `api.github.com` directly.
+
+The request carries nothing but what any HTTP request carries: your IP (seen,
+not stored), and the running version, which is in the path so responses can be
+cached per version. **There is no identifier, no install ID, no cookie, and
+nothing is written down about who asked.**
+
+Downloads are never taken from blitcp.dev. The updater refuses any download URL
+that is not on a GitHub-owned host, so even a compromised blitcp.dev cannot make
+blitcp install something else.
+
+### Automatic checks are opt-in
+
+blitcp does not contact the network on its own unless you say it may. The first
+time you run it **interactively**, it asks once:
+
+```
+Check for updates automatically, once a day? [Y/n]:
+```
+
+Your answer is remembered in `~/.config/blitcp/settings.json` (`%APPDATA%\blitcp`
+on Windows) and never asked again. If you say yes, at most one check per 24
+hours runs after a successful copy, and it stays silent unless there is
+something to tell you.
+
+The question is skipped entirely — and no check ever runs — when there is no
+terminal to ask (scripts, cron, CI), under `--quiet`/`--progress`, or when
+`BLITCP_NO_UPDATE_CHECK=1` is set. A failed background check says nothing: it
+was never something you asked for.
+
+In the desktop app the same setting is a checkbox — **Settings → Check for
+updates automatically, once a day**. It reads and writes the same
+`settings.json`, so answering on either side settles it for both, and the
+launch-time check obeys it: unticked means the GUI never contacts the network
+on its own.
+
+To change your mind, tick or untick that box, edit or delete `settings.json`,
+or set the environment variable.
 
 ---
 
