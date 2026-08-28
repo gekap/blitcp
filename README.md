@@ -6,7 +6,8 @@
 [![License](https://img.shields.io/github/license/gekap/blitcp?color=00b37e)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-00b37e)](https://github.com/gekap/blitcp/releases/latest)
 [![Website](https://img.shields.io/badge/website-blitcp.dev-00b37e)](https://blitcp.dev)
-[![Support](https://img.shields.io/badge/support-ko--fi-00b37e)](https://ko-fi.com/blitcp)
+[![Ko-fi](https://img.shields.io/badge/support-ko--fi-00b37e)](https://ko-fi.com/blitcp)
+[![Liberapay](https://img.shields.io/badge/support-liberapay-00b37e)](https://liberapay.com/blitcp)
 
 > **blitcp is the new name of fast-copy** (renamed in v4.0.0 — "blit" as in
 > [bit-block transfer](https://en.wikipedia.org/wiki/Bit_blit), which is what
@@ -92,9 +93,10 @@ point and click. [More screenshots →](https://blitcp.dev/#screenshots)
 ## Support
 
 blitcp is free and Apache-2.0 licensed, and stays that way. Donations via
-[Ko-fi](https://ko-fi.com/blitcp) go towards the Windows code signing
-certificate, hosting for blitcp.dev, and the hardware the published benchmarks
-run on. Starring the repository or filing a good bug report helps just as much.
+[Ko-fi](https://ko-fi.com/blitcp) or [Liberapay](https://liberapay.com/blitcp)
+go towards the Windows code signing certificate, hosting for blitcp.dev, and the
+hardware the published benchmarks run on. Starring the repository or filing a
+good bug report helps just as much.
 
 ## License
 
