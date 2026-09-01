@@ -1,0 +1,87 @@
+# blitcp
+
+> blitcp is an open-source (Apache-2.0) high-speed file-transfer CLI for
+> Linux, macOS and Windows. It reads files in physical disk order (FIEMAP /
+> fcntl / FSCTL), deduplicates content with xxHash-128 hard links, streams
+> over plain SSH with a tar pipe (no SFTP, nothing installed on the server),
+> copies to S3 / Azure Blob / Google Cloud Storage, preserves sparse files
+> via SEEK_DATA/SEEK_HOLE, and hash-verifies every file after copying.
+
+Key facts:
+
+- Free and open source, Apache-2.0. Single Python CLI (`blitcp.py`) plus an
+  optional desktop GUI; prebuilt binaries on GitHub Releases.
+- Positioned as a faster alternative to cp, rsync, scp/SFTP, robocopy,
+  FastCopy (the Windows tool, unrelated) and TeraCopy — with reproducible,
+  cold-cache benchmarks published for every claim.
+- Remote transfers run over a normal SSH connection using the remote's
+  existing `tar` — works on Synology DSM and BusyBox NAS boxes, and on
+  servers with SFTP disabled. Typically 3–5× faster than scp/SFTP on trees
+  of small files.
+- Deduplication: files are hashed (xxHash-128, SHA-256 fallback); duplicate
+  content is copied once and hard-linked. Cross-run dedup via a persistent
+  SQLite cache; `--index-existing` reflink-dedups against files already at
+  the destination.
+- Sparse files (VM disk images, Longhorn replicas): only allocated extents
+  are read and holes are recreated, so a 2.3 TB logical set occupying
+  12.2 GB copies as 12.2 GB.
+- Cloud: s3:// (AWS, MinIO, Cloudflare R2, Wasabi, Backblaze B2), az://,
+  gs:// as source or destination, with named connections and AES-256-GCM
+  encrypted credentials.
+- Security: `--use-sudo` self-elevation with safety checks and an
+  append-only `chattr +i` audit log; SSH host-key TOFU verification;
+  hash-pinned self-updates.
+
+## Docs
+
+- [CLI reference](https://blitcp.dev/docs/): every flag, subcommand and
+  endpoint form.
+- [Local copies guide](https://blitcp.dev/docs/guide/local-copies/):
+  folders, single files, globs, multi-source, USB/Windows.
+- [SSH transfers guide](https://blitcp.dev/docs/guide/ssh-transfers/):
+  tar-pipe push/pull/relay without SFTP.
+- [Cloud storage guide](https://blitcp.dev/docs/guide/cloud-storage/):
+  S3 / Azure / GCS endpoints and the creds manager.
+- [Sparse files & VM images guide](https://blitcp.dev/docs/guide/sparse-files/):
+  SEEK_DATA/SEEK_HOLE extent walking, Longhorn and libvirt.
+- [Sudo backups guide](https://blitcp.dev/docs/guide/sudo-backups/):
+  root-level snapshots with a tamper-evident audit log.
+- [Everyday options guide](https://blitcp.dev/docs/guide/everyday-options/):
+  dry runs, excludes, buffer tuning, dedup toggles.
+
+## Comparisons
+
+- [blitcp vs rsync](https://blitcp.dev/compare/rsync/): cold-cache
+  benchmark (8.19s vs 14.14s on 12,347 small files) and when rsync is still
+  the better tool (incremental delta syncs).
+- [blitcp vs Robocopy](https://blitcp.dev/compare/robocopy/): Windows
+  benchmark (2m28s verify-on vs 3m16s) and robocopy's zero-install advantage.
+- [blitcp vs TeraCopy](https://blitcp.dev/compare/teracopy/): 11.4 GB
+  mixed workload (19m06s verify-on vs 25m20s verify-off).
+- [blitcp vs cp](https://blitcp.dev/compare/cp/): 2.5× faster on
+  rotational disks via physical-offset read ordering.
+- [blitcp vs scp/SFTP](https://blitcp.dev/compare/scp/): one tar stream
+  instead of per-file round-trips; ~3× faster on a 91,663-file push.
+- [blitcp vs FastCopy](https://blitcp.dev/compare/fastcopy/): unrelated
+  tools with similar names; 2m28s verify-on vs 3m38s verify-off on the same
+  Windows workload.
+- [All comparisons](https://blitcp.dev/compare/)
+
+## Benchmarks
+
+- [Benchmarks](https://blitcp.dev/benchmarks/): cold-cache, durable-write
+  comparisons against cp, rsync, robocopy, FastCopy and TeraCopy, with every
+  command listed for reproduction.
+
+## Install
+
+- [Windows install & verification](https://blitcp.dev/install/windows/):
+  why SmartScreen appears (unsigned open-source binary) and how to verify
+  downloads against GitHub's official SHA-256 digests.
+
+## Source & downloads
+
+- [GitHub repository](https://github.com/gekap/blitcp): source, issues,
+  releases.
+- [Latest release](https://github.com/gekap/blitcp/releases/latest):
+  prebuilt binaries for Linux, macOS and Windows.

@@ -1,0 +1,155 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "individual",
+    "role": "owner",
+    "name": "George Kapellakis",
+    "email": "contact@blitcp.dev",
+    "phone": "",
+    "description": "I maintain blitcp, an open-source file copy engine. It moves data between local disks, remote servers over SSH, and cloud object storage, and it is built around one idea: a copy that reports success should have actually succeeded. Every release is checked by a regression suite before it ships, and the tool makes no network calls beyond the transfer the user asked for.\n\nThe project is Apache-2.0 and has no paid tier. Development is unfunded and done outside working hours.",
+    "webpageUrl": {
+      "url": "https://blitcp.dev",
+      "wellKnown": "https://blitcp.dev/.well-known/funding-manifest-urls"
+    }
+  },
+  "projects": [
+    {
+      "guid": "blitcp",
+      "name": "blitcp",
+      "description": "A cross-platform file copier for people who move large amounts of data: backups to USB drives and NAS boxes, server-to-server migrations, and scheduled jobs.\n\nIt reads files in physical disk order so a spinning disk stops seeking, deduplicates by content hash so identical files are copied once and the rest become hard links or reflinks, and streams tar over a raw SSH channel instead of paying SFTP's per-file round trip. Sparse files are copied through SEEK_DATA/SEEK_HOLE so holes never reach the wire, and object storage (S3, Azure Blob, GCS) and SMB shares are ordinary endpoints.\n\nEvery copied file is read back and hashed against the source, with exit codes a script can act on. There is a CLI and a desktop GUI, both fully translated into six languages besides English — German, Greek, Spanish, Italian, Japanese and Simplified Chinese — with translation coverage enforced by the release audit rather than left to drift.\n\nIt is distributed through the channels its users already have: PyPI (pip install blitcp), piwheels for Raspberry Pi, the AUR as blitcp-bin and blitcp-gui-bin for Arch, and release binaries for Linux, macOS and Windows that need no Python installed — currently unsigned, which is what one of the requests below is for. The AUR packages were contributed by a user, not by me.\n\nNo telemetry, and no network calls beyond the connection the user explicitly asks for.",
+      "webpageUrl": {
+        "url": "https://blitcp.dev",
+        "wellKnown": "https://blitcp.dev/.well-known/funding-manifest-urls"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/gekap/blitcp",
+        "wellKnown": "https://raw.githubusercontent.com/gekap/blitcp/master/.well-known/funding-manifest-urls"
+      },
+      "licenses": [
+        "spdx:Apache-2.0"
+      ],
+      "tags": [
+        "file-transfer",
+        "backup",
+        "deduplication",
+        "cli",
+        "ssh",
+        "cloud-storage",
+        "cross-platform",
+        "rsync-alternative",
+        "python",
+        "sysadmin"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "kofi",
+        "type": "payment-provider",
+        "address": "https://ko-fi.com/blitcp",
+        "description": "One-off payments and cards through Ko-fi."
+      },
+      {
+        "guid": "liberapay",
+        "type": "payment-provider",
+        "address": "https://liberapay.com/blitcp",
+        "description": "Recurring donations through Liberapay, a non-profit that takes no cut."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "maintainer-time",
+        "status": "active",
+        "name": "Maintainer time",
+        "description": "220 hours at 35 EUR/hour, against work that is already designed rather than open-ended development: a streaming cloud-to-cloud relay, so a transfer between two object stores stops round-tripping through the local disk; multiple sources into one destination; and three measured performance fixes announced publicly in August 2026. The designs exist and the commitments are public. They are unimplemented because blitcp is maintained outside working hours, which is the gap this request closes.",
+        "amount": 7040,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "windows-code-signing",
+        "status": "active",
+        "name": "Windows code signing certificate",
+        "description": "The Windows binaries are unsigned, so the first launch shows a SmartScreen warning that says nothing about what the program does, and every user has to click through it. A certificate removes that for everyone who downloads the tool. This is the single purchase users would actually feel.",
+        "amount": 500,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "apple-developer",
+        "status": "active",
+        "name": "Apple Developer Program",
+        "description": "The macOS builds — both the CLI and the desktop app, for Intel and Apple Silicon — are unsigned and unnotarised, so Gatekeeper refuses to open them until the user digs through Security settings. This is the same barrier as the Windows warning, on the other platform, and the membership is what makes signing and notarisation possible.",
+        "amount": 100,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "security-audit",
+        "status": "active",
+        "name": "Independent security review",
+        "description": "blitcp reads and writes arbitrary paths, can re-execute itself under sudo, handles SSH keys and cloud credentials, and preserves file modes across machines. Bugs in that surface are not cosmetic: past releases fixed a setuid bit carried from an untrusted remote and a reflink path that emptied files it was meant to copy. Both were found in-house; an outside reviewer looking at the credential and privilege paths is worth more than another regression test written by the person who wrote the code.",
+        "amount": 2000,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "benchmark-hardware",
+        "status": "active",
+        "name": "Hardware for the published benchmarks",
+        "description": "The benchmarks compare against cp, rsync, robocopy and TeraCopy on real drives — spinning disks, USB enclosures, SATA and NVMe SSDs — bought to be measured rather than rented from a cloud instance. A comparison is only worth something if the hardware under it is real.",
+        "amount": 300,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "domain-and-edge",
+        "status": "active",
+        "name": "Domain and edge worker",
+        "description": "The blitcp.dev domain and the edge worker behind the contact form and the update endpoint. The site itself is a static export and costs nothing to serve.",
+        "amount": 60,
+        "currency": "EUR",
+        "frequency": "yearly",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      },
+      {
+        "guid": "goodwill",
+        "status": "active",
+        "name": "Any amount",
+        "description": "Pay whatever you like, once. Nothing about the tool changes either way: every feature stays free, the licence stays Apache-2.0, and donors get no separate build.",
+        "amount": 0,
+        "currency": "EUR",
+        "frequency": "one-time",
+        "channels": [
+          "kofi",
+          "liberapay"
+        ]
+      }
+    ]
+  }
+}
