@@ -23,8 +23,7 @@
         "wellKnown": "https://blitcp.dev/.well-known/funding-manifest-urls"
       },
       "repositoryUrl": {
-        "url": "https://github.com/gekap/blitcp",
-        "wellKnown": "https://raw.githubusercontent.com/gekap/blitcp/master/.well-known/funding-manifest-urls"
+        "url": "https://github.com/gekap/blitcp"
       },
       "licenses": [
         "spdx:Apache-2.0"
