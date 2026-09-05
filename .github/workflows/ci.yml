@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Least privilege: nothing in this workflow publishes anything.
+permissions:
+  contents: read
+
+# A newer push on the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The auditor: static vulnerability scan, leak detection (stray temps, locked
+  # dedup DBs, leaked fds/children), feature matrix and correctness edge cases.
+  # stdlib-only, and every check whose environment is absent (SSH, cloud, SMB,
+  # a second mount) turns into a clean SKIP. Exit code is 0 unless a check
+  # FAILs — WARN and SKIP never fail the run.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # paramiko lets the SSH-shaped checks run against stubs instead of
+      # skipping; xxhash exercises the hashing path the released binaries use.
+      # Neither is installed for the UAT job below, which is what keeps the
+      # README's "zero dependencies" claim under test.
+      - name: Install optional dependencies the auditor can exercise
+        run: python -m pip install --upgrade pip paramiko xxhash
+
+      - name: Run the auditor
+        run: python audit_uat.py --quiet
+
+  # ---------------------------------------------------------------------------
+  # Black-box UAT against the real CLI on all three platforms.
+  #
+  # Public-repo only. Actions minutes are free and unlimited for public
+  # repositories; on the private mirror the same matrix would bill roughly 90
+  # minutes a run against a 2,000-minute monthly allowance, because macOS
+  # runners cost about ten times a Linux one and Windows about two. The private
+  # repo still gets the `audit` job above, which is where the regressions
+  # actually surface.
+  #
+  # No optional dependency is installed here on purpose: this is what proves
+  # the README's "zero dependencies" claim on every single run. SSH scenarios
+  # auto-skip because the runners have no localhost sshd; cloud and SMB skip
+  # for the same reason.
+  # ---------------------------------------------------------------------------
+  uat:
+    name: UAT (${{ matrix.os }})
+    if: github.repository == 'gekap/blitcp'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # These two run FIRST, against a bare interpreter. The ordering IS the
+      # test: they exercise the copy engine the README calls "zero
+      # dependencies", so the day that stops being true, this step fails.
+      - name: CLI suite (no dependencies installed)
+        run: python uat_blitcp.py
+      - name: i18n suite (no dependencies installed)
+        run: python uat_i18n.py
+
+      # Only now may a dependency exist. cryptography backs the AES-GCM
+      # credentials path, PySide6 the offscreen Qt the GUI suite drives. Both
+      # suites skip cleanly without them, but a security check that skips has
+      # stopped guarding anything -- so CI installs them and makes it run.
+      - name: Install the optional packages the last two suites exercise
+        run: python -m pip install --upgrade pip PySide6 cryptography
+      - name: Security suite
+        run: python uat_security.py
+      - name: GUI suite
+        run: python uat_gui.py
+
+  # ---------------------------------------------------------------------------
+  # pyproject.toml declares requires-python = ">=3.8" and nothing verified it
+  # until now. Byte-compiling both modules catches syntax a newer interpreter
+  # accepts and 3.8 does not (walrus in a comprehension, f-string "=", dict |,
+  # match); --version and --help then prove the module actually imports and
+  # runs there rather than merely parsing.
+  #
+  # The runner pinning is deliberate: setup-python ships no 3.8 build for
+  # ubuntu-24.04 (which ubuntu-latest now is) nor for arm64 macOS, so this job
+  # uses ubuntu-22.04 and macos-13 instead of the -latest labels.
+  # ---------------------------------------------------------------------------
+  python38:
+    name: Python 3.8 floor (${{ matrix.os }})
+    if: github.repository == 'gekap/blitcp'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-13, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: Byte-compile both modules
+        run: python -m py_compile blitcp.py blitcp_gui.py
+      - name: Smoke-test the CLI
+        run: |
+          python blitcp.py --version
+          python blitcp.py --help

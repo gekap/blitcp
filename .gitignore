@@ -5,7 +5,9 @@ __pycache__/
 blue1
 downloads1
 languages
-# Test files and dev shims kept local only, not published to GitHub
+# Legacy suites: still target the pre-rename fast_copy.py / the standalone
+# fs_detect module, so they no longer run against blitcp.py. Kept local until
+# they are ported or dropped.
 test_*.py
 pentest_scenarios.py
 fs_detect.py
@@ -26,9 +28,9 @@ gcs-*.json
 keys.txt
 credentials.json.bak.*
 
-# Local-only UAT & monitoring tooling (kept out of the repo by decision)
-uat.py
-uat_*.py
+# Local-only monitoring tooling (kept out of the repo by decision).
+# The UAT suites themselves (uat.py, uat_*.py, audit_uat.py) are published and
+# run in CI — see .github/workflows/ci.yml.
 find_my_code.py
 find_my_mentions.py
 check_forks.py
