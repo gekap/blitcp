@@ -24,6 +24,12 @@ jobs:
   # ---------------------------------------------------------------------------
   audit:
     name: Audit
+    # CI belongs to the public repository. The private mirror shares this file,
+    # and running the same jobs twice buys nothing: it is the public tree that
+    # people install from, and the one whose green tick means something. The
+    # other two jobs already carried this condition; the audit did not, which is
+    # why the private repo reported a green CI while the public one was red.
+    if: github.repository == 'gekap/blitcp'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
