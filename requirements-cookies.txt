@@ -1,0 +1,8 @@
+# Optional — only needed to read a LIVE browser login for an http(s):// source
+# (--cookies-from-browser chrome|firefox|…, or a browser name saved on an HTTP
+# connection). A cookies.txt export (--cookies FILE) uses the stdlib and needs
+# nothing from here.
+#
+# It matters most in the frozen binaries: a standalone build has no pip, so if
+# this is missing at BUILD time the feature is gone for good in that release.
+browser-cookie3>=0.19
