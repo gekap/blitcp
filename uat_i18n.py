@@ -38,7 +38,20 @@ class C:
     G, R, Y, X = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
+def _force_utf8_stdout():
+    """Windows consoles are cp1252 and these suites print '✓' / '→'. The
+    UnicodeEncodeError lands mid-report, turning a run whose checks passed into
+    a crash — so retarget the streams before the first line is written."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
 def main():
+    _force_utf8_stdout()
     results = {"pass": 0, "fail": 0, "skip": 0}
 
     def check(name, ok, detail=""):

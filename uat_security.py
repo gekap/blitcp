@@ -451,7 +451,20 @@ SCENARIOS = [
 ]
 
 
+def _force_utf8_stdout():
+    """Windows consoles are cp1252 and these suites print '✓' / '→'. The
+    UnicodeEncodeError lands mid-report, turning a run whose checks passed into
+    a crash — so retarget the streams before the first line is written."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
 def main(argv=None):
+    _force_utf8_stdout()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true")

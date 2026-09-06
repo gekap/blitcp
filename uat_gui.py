@@ -95,12 +95,12 @@ def s_conn_smb(w):
     d = g.ConnectionDialog(w, "", {"type": "smb"})
     d.f_type.setCurrentIndex(_types().index("smb")); d._sync_type()
     d.f_name.setText("win")
-    for k, v in [("host", "nas.example.lan"), ("user", "user@example.com"),
+    for k, v in [("host", "192.168.1.225"), ("user", "g.kapellakis@infinitum.gr"),
                  ("password", "pw"), ("domain", ""), ("share", "Documents"), ("port", "445")]:
         d.fields[("smb", k)].setText(v)
     name, e = d.result_data()
-    ok = (name == "win" and e.get("type") == "smb" and e.get("host") == "nas.example.lan"
-          and e.get("user") == "user@example.com" and e.get("password") == "pw"
+    ok = (name == "win" and e.get("type") == "smb" and e.get("host") == "192.168.1.225"
+          and e.get("user") == "g.kapellakis@infinitum.gr" and e.get("password") == "pw"
           and e.get("share") == "Documents" and e.get("port") == 445)
     return ok, "SMB host/user/password/share/port saved" if ok else f"got {e}"
 
@@ -558,7 +558,20 @@ SCENARIOS = [
 ]
 
 
+def _force_utf8_stdout():
+    """Windows consoles are cp1252 and these suites print '✓' / '→'. The
+    UnicodeEncodeError lands mid-report, turning a run whose checks passed into
+    a crash — so retarget the streams before the first line is written."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
 def main(argv=None):
+    _force_utf8_stdout()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true")
