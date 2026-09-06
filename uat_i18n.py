@@ -77,7 +77,8 @@ def main():
         p = subprocess.run(
             [sys.executable, FC, "--lang", lang, src, dst,
              "--no-cache", "--log-file", log],
-            capture_output=True, text=True, timeout=120, env=env)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120, env=env)
         out = p.stdout + p.stderr
         check(f"[{lang}] exit 0", p.returncode == 0, f"rc={p.returncode}")
         if lang == "en":
@@ -103,7 +104,8 @@ def main():
         check(f"[{lang}] JSON log stays English", bool(english_log))
 
         h = subprocess.run([sys.executable, FC, "--lang", lang, "--help"],
-                           capture_output=True, text=True, timeout=60, env=env)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=60, env=env)
         check(f"[{lang}] --help renders", h.returncode == 0 and "usage" in h.stdout)
 
     shutil.rmtree(work, ignore_errors=True)

@@ -498,6 +498,7 @@ def s_sudo_askpass(w):
         if "s3cret" in open(helper).read():
             return False, "the password was written into the helper script"
         out = subprocess.run(["/bin/sh", helper], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
                              env={**os.environ,
                                   "BLITCP_SUDO_PW": env["BLITCP_SUDO_PW"]})
         if out.stdout.strip() != "s3cret":

@@ -404,7 +404,8 @@ def s_ssh_prompt_no_hang(tmp):
          "fcuat_no_such_user_zzz@127.0.0.1:/etc/hostname",
          os.path.join(tmp, "out")],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True)
+        stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+        errors="replace")
     try:
         p.communicate(timeout=25)            # never feed stdin
     except subprocess.TimeoutExpired:

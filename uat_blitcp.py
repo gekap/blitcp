@@ -147,6 +147,7 @@ def run_fc(target, args, timeout=240, env_extra=None):
         # stdin=DEVNULL: a prompt that reaches a real terminal hangs the whole
         # suite, and a test that waits for a human is not a test.
         p = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            timeout=timeout, env=env,
                            stdin=subprocess.DEVNULL)
         return p.returncode, p.stdout + p.stderr
@@ -580,7 +581,8 @@ def _shares_extents(a, b):
     try:
         import subprocess as _sp
         o = _sp.run(["filefrag", "-v", a, b], capture_output=True,
-                    text=True, timeout=15).stdout
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=15).stdout
         if o.strip():
             return "shared" in o
     except Exception:                                      # noqa: BLE001
