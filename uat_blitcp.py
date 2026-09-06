@@ -2145,9 +2145,9 @@ SCENARIOS = [
     S("UAT-LOCAL-15", "local", "664/775 file modes survive the small-file tar stream", b_stream_file_modes, c_stream_file_modes, needs="posix"),
     S("UAT-LOCAL-16", "local", "directory mode (700/setgid) + mtime preserved", b_dir_metadata, c_dir_metadata, needs="posix"),
     S("UAT-LOCAL-17", "local", "--preserve acl keeps real ACLs; ACL-less files keep exact mode", b_preserve_acl, c_preserve_acl, needs="posix"),
-    S("UAT-LOCAL-18", "local", "all-deduplicated directories keep their source mode (F4)", b_dedup_dir_metadata, c_dedup_dir_metadata),
+    S("UAT-LOCAL-18", "local", "all-deduplicated directories keep their source mode (F4)", b_dedup_dir_metadata, c_dedup_dir_metadata, needs="posix"),
     S("UAT-LOCAL-19", "local", "destination-write failure → exit 1 (corrupt), not exit 3", b_dest_write_fail_is_corrupt, c_dest_write_fail_is_corrupt),
-    S("UAT-LOCAL-20", "local", "local copy preserves setuid/setgid (not over-stripped)", b_local_keeps_setuid, c_local_keeps_setuid),
+    S("UAT-LOCAL-20", "local", "local copy preserves setuid/setgid (not over-stripped)", b_local_keeps_setuid, c_local_keeps_setuid, needs="posix"),
     S("UAT-LOCAL-21", "local", "progress never reports 100% while files remain", b_progress_no_early_100, c_progress_no_early_100),
     S("UAT-LOCAL-22", "local", "uncached twin of a cache-warmed duplicate still links", b_dedup_cached_twin, c_dedup_cached_twin),
 
