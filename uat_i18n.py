@@ -79,7 +79,14 @@ def main():
              "--no-cache", "--log-file", log],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=120, env=env)
-        out = p.stdout + p.stderr
+        # A reader thread that dies (an undecodable byte under a locale
+        # codec, say) leaves the stream as None. Adding that to a string
+        # raised TypeError three frames from the cause and hid it; an empty
+        # capture is now a finding of its own, named as one.
+        out = (p.stdout or "") + (p.stderr or "")
+        check(f"[{lang}] output captured", p.stdout is not None,
+              "the child's output could not be read at all "
+              "(reader thread failed — check the decoding)")
         check(f"[{lang}] exit 0", p.returncode == 0, f"rc={p.returncode}")
         if lang == "en":
             ok = sentinel in out and "Φάση" not in out

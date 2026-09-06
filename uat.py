@@ -131,7 +131,21 @@ def _detect_smb(env):
     return None
 
 
+def _force_utf8_stdout():
+    """This prints box drawing and check marks, and a Windows console is
+    cp1252. Without this the report kills the run that produced it — which is
+    what happened to four suites before it, and both of these are things the
+    documentation tells people to run by hand."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
 def main(argv=None):
+    _force_utf8_stdout()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--quiet", action="store_true",
@@ -162,8 +176,12 @@ def main(argv=None):
         # a prompt no pipe can see.
         proc = subprocess.run([sys.executable, path], env=env,
                               capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               stdin=subprocess.DEVNULL)
-        out = proc.stdout + proc.stderr
+        # A suite whose output could not be decoded returns None here; the
+        # summary below then reports "no summary line" instead of dying on a
+        # TypeError that names neither the suite nor the reason.
+        out = (proc.stdout or "") + (proc.stderr or "")
         m = None
         for line in out.splitlines():
             mm = _SUMMARY.search(line)

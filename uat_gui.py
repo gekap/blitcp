@@ -467,6 +467,8 @@ def s_sudo_askpass(w):
     SUDO_ASKPASS, never written to disk, and the helper is removed when the
     transfer ends.
     """
+    if os.name != "posix":
+        return None, "sudo does not exist on this platform"
     real_needs, real_dlg = w._sudo_needs_password, g.PasswordDialog
     try:
         # passwordless: no prompt, nothing to pass
@@ -591,11 +593,22 @@ def main(argv=None):
 
     print(f"{C.B}UAT — blitcp GUI{C.X}  (offscreen Qt)")
     npass = nfail = 0
+    nskip = 0
     for sid, title, fn in SCENARIOS:
         try:
             ok, detail = fn(w)
         except Exception as e:
             ok, detail = False, f"{type(e).__name__}: {e}"
+        # ok is None when the scenario asks for something this platform does
+        # not have — sudo, say. That is a skip, not a failure: the alternative
+        # is a suite that reports the operating system as broken.
+        if ok is None:
+            tag = f"{C.Y}SKIP{C.X}"
+            nskip += 1
+            print(f"  {tag}  {sid:<12} {title}")
+            if detail:
+                print(f"        {C.GREY}{detail}{C.X}")
+            continue
         tag = f"{C.G}PASS{C.X}" if ok else f"{C.R}FAIL{C.X}"
         if ok:
             npass += 1
@@ -609,7 +622,8 @@ def main(argv=None):
 
     print(f"\n{C.B}{'='*60}{C.X}")
     verdict = f"{C.R}UAT FAILED{C.X}" if nfail else f"{C.G}UAT PASSED{C.X}"
-    print(f" {verdict} — {npass} pass, {nfail} fail")
+    print(f" {verdict} — {npass} pass, {nfail} fail"
+          + (f", {nskip} skip" if nskip else ""))
     return 1 if nfail else 0
 
 

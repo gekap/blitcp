@@ -197,6 +197,7 @@ def run_fc(target, args, timeout=120, tmpdir=None, extra_env=None):
     cmd = [sys.executable, target] + [str(a) for a in args]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               timeout=timeout, env=env)
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:
@@ -1515,6 +1516,7 @@ def _run_external_scanner(rep, name, cmd, parser):
         return
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               timeout=300)
     except (subprocess.TimeoutExpired, OSError) as e:
         rep.skip(f"{name}", f"could not run: {e}")
@@ -1710,7 +1712,8 @@ def _ssh_localhost_ok():
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
              "-o", "StrictHostKeyChecking=accept-new", "localhost", "true"],
-            capture_output=True, text=True, timeout=15)
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15)
         if proc.returncode == 0:
             return True, ""
         return False, "passwordless ssh to localhost unavailable"
@@ -4032,7 +4035,21 @@ def _locate_target(explicit):
     return "blitcp.py"
 
 
+def _force_utf8_stdout():
+    """This prints box drawing and check marks, and a Windows console is
+    cp1252. Without this the report kills the run that produced it — which is
+    what happened to four suites before it, and both of these are things the
+    documentation tells people to run by hand."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
 def main(argv=None):
+    _force_utf8_stdout()
     p = argparse.ArgumentParser(
         prog="audit_uat.py",
         description="Full security + UAT audit for fast-copy.")

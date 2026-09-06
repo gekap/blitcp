@@ -150,7 +150,10 @@ def run_fc(target, args, timeout=240, env_extra=None):
                            encoding="utf-8", errors="replace",
                            timeout=timeout, env=env,
                            stdin=subprocess.DEVNULL)
-        return p.returncode, p.stdout + p.stderr
+        # None means the capture thread died before the process did; the
+        # scenario then fails on missing output rather than on a TypeError
+        # raised while assembling the report.
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired as e:
         # TimeoutExpired carries BYTES even when text=True was requested, so
         # concatenating them raised TypeError and destroyed the timeout report
