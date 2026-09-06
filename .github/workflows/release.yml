@@ -88,6 +88,15 @@ jobs:
           python -m pip install -r requirements-cloud.txt
           python -c "import boto3, azure.storage.blob, google.cloud.storage, smbclient; print('cloud + SMB SDKs OK')"
 
+      - name: Install browser cookie reader (bundled into the binaries)
+        # --cookies-from-browser reads a LIVE browser login for an http(s)://
+        # source. A frozen binary has no pip, so if this is missing at build
+        # time the feature is gone for that whole release — hence explicit and
+        # fail-loud, like the cloud SDKs above.
+        run: |
+          python -m pip install -r requirements-cookies.txt
+          python -c "import browser_cookie3; print('browser_cookie3 OK')"
+
       - name: Install pywin32 (NTFS owner/ACL preservation, bundled into the binary)
         # Windows-only. blitcp.py imports win32security / pywintypes lazily, so
         # without pywin32 present at build time the frozen .exe silently no-ops
@@ -151,6 +160,27 @@ jobs:
             fi
           done
           echo "frozen exe bundles win32security + pywintypes"
+
+      - name: Verify browser_cookie3 is inside the frozen binary
+        # The install step proves the build env had it; this proves PyInstaller
+        # actually bundled it. Without it the released binary answers
+        # --cookies-from-browser with "not bundled" and the live-session
+        # download the user came for cannot work at all.
+        shell: bash
+        run: |
+          # if/then, not `[ … ] && …`: with `shell: bash` (-e) a false test as
+          # a top-level command exits the whole step on Linux and macOS.
+          if [ "${{ matrix.name }}" = "windows" ]; then
+            bin=dist/blitcp.exe
+          else
+            bin=dist/blitcp
+          fi
+          listing=$(python -m PyInstaller.utils.cliutils.archive_viewer -l -r -b "$bin")
+          if ! grep -qi "browser_cookie3" <<< "$listing"; then
+            echo "::error::browser_cookie3 is not bundled in $bin — --cookies-from-browser would fail in this release"
+            exit 1
+          fi
+          echo "frozen binary bundles browser_cookie3"
 
       - name: Build Windows onedir bundles (no onefile unpack tax)
         # Onefile pays 16–33s cold start on Windows (self-extract to temp +
@@ -317,6 +347,19 @@ jobs:
           if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c "import smbclient" 2>/dev/null; then
             CLOUD_FLAGS="$CLOUD_FLAGS --collect-all=smbprotocol --collect-all=smbclient --collect-all=spnego --collect-all=pyasn1"
           fi
+          # Browser cookie reader (--cookies-from-browser). This leg installs
+          # its own dependency set rather than going through build.py, so it
+          # needs its own copy — without it the Intel binaries alone shipped
+          # unable to read a live browser login, and said "pip install" to
+          # someone holding a standalone binary.
+          PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m pip install \
+            --target "$PKGDIR" browser-cookie3 \
+            || echo "::warning::browser-cookie3 install failed; Intel binaries omit --cookies-from-browser"
+          if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -c "import browser_cookie3" 2>/dev/null; then
+            CLOUD_FLAGS="$CLOUD_FLAGS --collect-all=browser_cookie3"
+          else
+            echo "::warning::browser_cookie3 not importable on this leg"
+          fi
           # Make the x86_64 deps importable by PyInstaller's analysis/hooks.
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
             --onefile --name blitcp --clean --noupx --console \
@@ -324,6 +367,16 @@ jobs:
             --hidden-import=xxhash --hidden-import=paramiko $CLOUD_FLAGS \
             blitcp.py
           file dist/blitcp
+          # Same proof the other legs get: installed at build time is not the
+          # same as bundled. Warn rather than fail — this leg is best-effort by
+          # design (its GUI build is too), and a missing reader costs one
+          # optional feature, not the release.
+          if PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller.utils.cliutils.archive_viewer \
+                -l -r -b dist/blitcp 2>/dev/null | grep -qi browser_cookie3; then
+            echo "frozen Intel binary bundles browser_cookie3"
+          else
+            echo "::warning::browser_cookie3 is NOT bundled in the Intel binary — --cookies-from-browser will not work there"
+          fi
           # GUI (best-effort — must not block the CLI release).
           PYTHONPATH="$PKGDIR" arch -x86_64 "$X86_PYTHON" -m PyInstaller \
             --onefile --windowed --name blitcp_gui --clean --noupx \

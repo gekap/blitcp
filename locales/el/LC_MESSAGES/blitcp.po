@@ -1041,3 +1041,132 @@ msgstr "δεν μπορεί να δημιουργηθεί ή δεν είναι �
 
 msgid "Support development: {url}"
 msgstr "Στήριξη της ανάπτυξης: {url}"
+
+msgid "Per-object memory buffer for streaming relays (MB); a single object larger than this spills to a temp file (0 = always spill; default: 64)"
+msgstr "Buffer μνήμης ανά αντικείμενο για τα streaming relays (MB)· ένα μεμονωμένο αντικείμενο μεγαλύτερο από αυτό ξεχειλίζει σε προσωρινό αρχείο (0 = πάντα στο δίσκο· προεπιλογή: 64)"
+
+msgid "Username for http(s):// sources (HTTP Basic auth)"
+msgstr "Όνομα χρήστη για http(s):// πηγές (HTTP Basic auth)"
+
+msgid "Prompt for the http(s) source password"
+msgstr "Ερώτηση για τον κωδικό της http(s) πηγής"
+
+msgid "Extra HTTP header for http(s):// sources, repeatable — e.g. \"Authorization: Bearer TOKEN\" or \"Cookie: session=…\" for downloads behind a login or terms page"
+msgstr "Επιπλέον HTTP header για http(s):// πηγές, επαναλαμβανόμενο — π.χ. \"Authorization: Bearer TOKEN\" ή \"Cookie: session=…\" για λήψεις πίσω από login ή σελίδα όρων χρήσης"
+
+msgid "Netscape/Mozilla cookies.txt file for http(s):// sources — reuse a browser login you already have (what a \"cookies.txt\" browser extension exports, same format as curl -b / wget --load-cookies)"
+msgstr "Αρχείο cookies.txt (Netscape/Mozilla) για http(s):// πηγές — επαναχρησιμοποίησε ένα login που έχεις ήδη στον browser (ό,τι εξάγει ένα extension \"cookies.txt\", ίδια μορφή με curl -b / wget --load-cookies)"
+
+msgid "Read the LIVE login session for an http(s):// source straight from your browser: chrome, chromium, firefox, edge, brave, opera, safari (or 'browser' to try all). Needs the browser-cookie3 package."
+msgstr "Διάβασε τη ζωντανή σύνδεση (login session) για μια http(s):// πηγή απευθείας από τον browser σου: chrome, chromium, firefox, edge, brave, opera, safari (ή 'browser' για δοκιμή όλων). Χρειάζεται το πακέτο browser-cookie3."
+
+msgid "Paste the direct download URL (https://host/path/file)"
+msgstr "Επικολλήστε τον άμεσο σύνδεσμο λήψης (https://host/path/file)"
+
+msgid "An http(s):// URL can only be the source — there is no generic HTTP upload"
+msgstr "Ένα http(s):// URL μπορεί να είναι μόνο πηγή — δεν υπάρχει γενική μεταφόρτωση HTTP"
+
+msgid "A web source takes a single URL"
+msgstr "Μια διαδικτυακή πηγή δέχεται ένα μόνο URL"
+
+msgid "A web source must be an http:// or https:// URL"
+msgstr "Η διαδικτυακή πηγή πρέπει να είναι URL http:// ή https://"
+
+msgid "The URL names no file (https://host/dir/file expected)"
+msgstr "Το URL δεν ονομάζει αρχείο (αναμένεται https://host/dir/file)"
+
+msgid "A web source needs an SSH or SMB destination — it streams, it does not download locally"
+msgstr "Μια διαδικτυακή πηγή χρειάζεται προορισμό SSH ή SMB — μεταδίδει, δεν κατεβάζει τοπικά"
+
+msgid "Web → cloud is not supported yet — relay via SSH or SMB"
+msgstr "Web → cloud δεν υποστηρίζεται ακόμη — αναμεταδώστε μέσω SSH ή SMB"
+
+msgid "Administrator password"
+msgstr "Κωδικός διαχειριστή"
+
+msgid "This transfer runs with <b>--use-sudo</b>. Enter your password so the elevated copy can start — it is passed straight to sudo and never written to disk."
+msgstr "Η μεταφορά τρέχει με <b>--use-sudo</b>. Δώστε τον κωδικό σας για να ξεκινήσει η αντιγραφή με δικαιώματα — περνάει απευθείας στο sudo και δεν γράφεται ποτέ στον δίσκο."
+
+msgid "Password"
+msgstr "Κωδικός"
+
+msgid "Choose a cookies.txt file"
+msgstr "Επιλέξτε αρχείο cookies.txt"
+
+msgid "Clear"
+msgstr "Καθαρισμός"
+
+msgid "Cookie files (*.txt cookies*);;All files (*)"
+msgstr "Αρχεία cookie (*.txt cookies*);;Όλα τα αρχεία (*)"
+
+msgid "Cookies / browser session"
+msgstr "Cookies / συνεδρία browser"
+
+msgid "Extra header (blank = none)"
+msgstr "Επιπλέον header (κενό = κανένα)"
+
+msgid "For this run only, for downloads behind a login on "
+msgstr "Μόνο για αυτή την εκτέλεση, για λήψεις πίσω από login στο "
+
+msgid "HTTP sign-in"
+msgstr "Σύνδεση HTTP"
+
+msgid "Header must be 'Name: value'"
+msgstr "Το header πρέπει να είναι 'Name: value'"
+
+msgid "Leave everything blank for a public URL. Nothing here is saved — use Connections for that."
+msgstr "Αφήστε τα πάντα κενά για δημόσιο URL. Τίποτα εδώ δεν αποθηκεύεται — γι' αυτό υπάρχουν οι Συνδέσεις."
+
+msgid "Live session: "
+msgstr "Ζωντανή συνεδρία: "
+
+msgid "No sign-in — fine for a public URL"
+msgstr "Χωρίς σύνδεση — εντάξει για δημόσιο URL"
+
+msgid "Sign in…"
+msgstr "Σύνδεση…"
+
+msgid "The password and header reach the engine through the environment, not the command line, so they do not show up in the process list."
+msgstr "Ο κωδικός και το header φτάνουν στη μηχανή μέσω περιβάλλοντος, όχι από τη γραμμή εντολών, οπότε δεν εμφανίζονται στη λίστα διεργασιών."
+
+msgid "This run: "
+msgstr "Αυτή η εκτέλεση: "
+
+msgid "Use"
+msgstr "Χρήση"
+
+msgid "User (blank = none)"
+msgstr "Χρήστης (κενό = κανένας)"
+
+msgid "Use…"
+msgstr "Χρήση…"
+
+msgid "Using saved connection "
+msgstr "Χρήση αποθηκευμένης σύνδεσης "
+
+msgid "cookies file: "
+msgstr "αρχείο cookies: "
+
+msgid "cookies.txt file…"
+msgstr "αρχείο cookies.txt…"
+
+msgid "cookies.txt path, or a browser name like 'firefox'"
+msgstr "Διαδρομή cookies.txt ή όνομα browser όπως 'firefox'"
+
+msgid "header"
+msgstr "header"
+
+msgid "live session: "
+msgstr "ζωντανή συνεδρία: "
+
+msgid "Cookies / sign-in…"
+msgstr "Cookies / σύνδεση…"
+
+msgid "No sign-in yet — add cookies or a browser session if this download needs a login"
+msgstr "Καμία σύνδεση ακόμα — πρόσθεσε cookies ή συνεδρία browser αν η λήψη θέλει login"
+
+msgid "Use a cookies.txt export or a live browser session for this download"
+msgstr "Χρήση εξαγωγής cookies.txt ή ζωντανής συνεδρίας browser για αυτή τη λήψη"
+
+msgid "not run"
+msgstr "δεν έγινε"

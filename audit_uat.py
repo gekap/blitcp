@@ -49,6 +49,7 @@ import ast
 import json
 import inspect
 import contextlib
+import builtins
 import io
 import os
 import re
@@ -219,6 +220,28 @@ class temp_workspace:
         return False
 
 
+def mount_root(path):
+    """Mount point *path* lives on. The dedup cache prefers the destination's
+    mount root and only falls back to the destination itself, so this is the
+    other place a run can write — and the one no test used to watch."""
+    p = os.path.abspath(path)
+    while not os.path.ismount(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    return p
+
+
+def dir_names(d):
+    """Top-level entry names in *d*, empty when it does not exist. The dedup DB
+    lands directly in the root it chooses, so one level deep is enough."""
+    try:
+        return set(os.listdir(d))
+    except OSError:
+        return set()
+
+
 def make_tree(root, with_symlink=False, big_mb=2, with_empty_dir=True,
               with_dups=True, with_unicode=True):
     """Build a deterministic fixture tree. Returns the root path.
@@ -290,6 +313,20 @@ def _snapshot(root, follow_symlinks=False):
     return out
 
 
+def _is_sidecar(relpath):
+    """True for blitcp's own bookkeeping files: the dedup DB (plus its -wal /
+    -shm), the tar bundle, the remote manifest, the sudo audit log.
+
+    They are not copied content and must never be compared as if they were.
+    DedupDB prefers the destination's MOUNT ROOT and falls back to the
+    destination itself only when that root is "/" — which is exactly the
+    layout of a CI runner and a container, so there the DB lands inside the
+    destination and its bytes legitimately differ between two otherwise
+    identical runs. The engine excludes these names from copying for the same
+    reason (see exclude_patterns in blitcp.py)."""
+    return os.path.basename(relpath).startswith((".fast_copy", ".blitcp"))
+
+
 def tree_equal(src, dst, ignore=("link.txt",)):
     """True iff dst contains every source *file* with identical content.
 
@@ -302,7 +339,7 @@ def tree_equal(src, dst, ignore=("link.txt",)):
         out = {}
         for k, v in snap.items():
             base = os.path.basename(k)
-            if base in ignore or base.startswith((".fast_copy", ".blitcp")):
+            if base in ignore or _is_sidecar(k):
                 continue
             if v[0] != "f":          # dirs/symlinks asserted elsewhere
                 continue
@@ -661,6 +698,16 @@ def _check_py_older_fstring_compat(rep, ctx):
     ast.parse(feature_version=…) does NOT catch this — hence a tokenizer scan.
     Regression guard for the v4.0.0-cycle i18n wrapping bug found on Windows."""
     import tokenize
+    # FSTRING_START/END are 3.12+ tokens: before PEP 701 an f-string arrived as
+    # one STRING token and there is nothing to walk. Touching the attribute on
+    # an older interpreter raised AttributeError, and the per-SECTION handler
+    # turned that into "security section crashed", abandoning every check after
+    # this one. The check that guards older Pythons cannot itself run on them.
+    if not hasattr(tokenize, "FSTRING_START"):
+        rep.skip("py<3.12 f-string compat",
+                 f"needs a 3.12+ tokenizer; running on "
+                 f"{sys.version.split()[0]}, which has no FSTRING_START token")
+        return
     targets = [ctx["target"]]
     d = os.path.dirname(ctx["target"])
     for extra in ("blitcp_gui.py", "fast_copy.py", "fast_copy_modern_gui.py",
@@ -1065,6 +1112,300 @@ def _check_streaming_relay_invariants(rep, ctx):
                "no temp-dir relay; HTTP legs keep the HTML-wall guard")
 
 
+def _check_http_auth_handling(rep, ctx):
+    """HTTP-source sign-in (2026-09-06). Three regressions to keep out:
+    (a) the GUI must hand the engine an http(s) password/header through the
+        ENVIRONMENT, never on argv — argv is world-readable via `ps`, which is
+        exactly why the SSH path already uses --ssh-*-password-env;
+    (b) a one-off sign-in must not survive a change of host: cookies and a
+        Bearer token belong to the host they were typed for, and replaying
+        them at the next URL would leak them to a different server;
+    (c) a frozen build must not answer "pip install browser-cookie3" — there
+        is no pip inside the binary, so the only honest advice is a
+        cookies.txt export. build.py must therefore bundle the reader."""
+    root = os.path.dirname(os.path.abspath(ctx["target"]))
+    gui = os.path.join(root, "blitcp_gui.py")
+    if not os.path.isfile(gui):
+        rep.skip("http auth handling", "no blitcp_gui.py beside the target")
+        return
+    try:
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            eng = f.read()
+        with open(gui, encoding="utf-8", errors="replace") as f:
+            gsrc = f.read()
+        gtree = ast.parse(gsrc, filename=gui)
+    except (OSError, SyntaxError) as e:
+        rep.skip("http auth handling", str(e))
+        return
+
+    glines = gsrc.splitlines()
+    gfuncs = {}
+    for n in ast.walk(gtree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            gfuncs[n.name] = "\n".join(glines[n.lineno - 1:n.end_lineno])
+
+    bad = []
+    flags = gfuncs.get("_http_auth_flags")
+    if flags is None:
+        bad.append("GUI lost _http_auth_flags (no per-transfer HTTP sign-in)")
+    else:
+        for env_flag, what in (("--http-password-env", "password"),
+                               ("--http-header-env", "header")):
+            if env_flag not in flags:
+                bad.append(f"GUI no longer passes the http {what} through "
+                           f"{env_flag} — it would land in argv, readable "
+                           f"by any user via ps")
+        if '"--http-password"' in flags or '"--http-header"' in flags:
+            bad.append("GUI passes an http secret literally on argv")
+        if "_valid_http_auth" not in flags:
+            bad.append("GUI applies a one-off sign-in without re-checking the "
+                       "host — cookies/token would follow the URL elsewhere")
+    if "_valid_http_auth" not in gfuncs:
+        bad.append("GUI lost _valid_http_auth (host-change invalidation)")
+
+    # The engine must accept what the GUI sends, and read it from the env.
+    if "--http-header-env" not in eng:
+        bad.append("engine has no --http-header-env for the GUI to use")
+    resolve = None
+    try:
+        etree = ast.parse(eng, filename=ctx["target"])
+        elines = eng.splitlines()
+        for n in ast.walk(etree):
+            if isinstance(n, ast.FunctionDef) and n.name == "_http_resolve_auth":
+                resolve = "\n".join(elines[n.lineno - 1:n.end_lineno])
+    except SyntaxError:
+        pass
+    if resolve is not None and "http_header_env" not in resolve:
+        bad.append("_http_resolve_auth ignores http_header_env")
+
+    # Frozen builds: honest message + the reader actually bundled.
+    cookie_fn = None
+    if resolve is not None:
+        for n in ast.walk(ast.parse(eng, filename=ctx["target"])):
+            if isinstance(n, ast.FunctionDef) and n.name == "_cookie_header_for":
+                cookie_fn = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+    if cookie_fn and 'getattr(sys, "frozen", False)' not in cookie_fn:
+        bad.append("_cookie_header_for still tells a frozen build to pip "
+                   "install browser-cookie3")
+    # The one-off sign-in must PIN to the first host it is seen with. Leaving
+    # it unpinned (entered before the URL was typed) meant the guard never
+    # fired and the token followed whatever host was pasted next — shipped in
+    # 4.2.4, fixed in 4.2.5.
+    guard = gfuncs.get("_valid_http_auth", "")
+    if guard and "self._http_auth_host = host" not in guard:
+        bad.append("_valid_http_auth no longer pins an unbound sign-in to the "
+                   "first host — a token entered before the URL would follow "
+                   "any host pasted later")
+
+    # sudo resets the environment: every secret passed BY NAME has to be named
+    # to survive, or the elevated run proceeds unauthenticated and fails later
+    # with a 401 nobody can explain.
+    reexec = None
+    for n in ast.walk(ast.parse(eng, filename=ctx["target"])):
+        if isinstance(n, ast.FunctionDef) and n.name == "_reexec_under_sudo":
+            reexec = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+    if reexec is not None:
+        if "--preserve-env=" not in reexec:
+            bad.append("_reexec_under_sudo does not preserve the secret env "
+                       "vars — an elevated run silently loses the sign-in")
+        for var in ("FC_HTTP_PW", "FC_HTTP_HDR"):
+            if var not in reexec:
+                bad.append(f"{var} is not carried through sudo")
+    if resolve is not None and "never arrived" not in resolve:
+        bad.append("_http_resolve_auth degrades silently when a named env var "
+                   "is missing instead of saying so")
+
+    # Every build leg must ship the cookie reader. The macOS-Intel leg installs
+    # its own dependency set instead of going through build.py, and shipped
+    # 4.2.4 without it while the release went green.
+    wf = os.path.join(root, ".github", "workflows", "release.yml")
+    if os.path.isfile(wf):
+        with open(wf, encoding="utf-8", errors="replace") as f:
+            wsrc = f.read()
+        intel = wsrc.split("build-macos-intel:", 1)
+        if len(intel) == 2 and "browser-cookie3" not in intel[1]:
+            bad.append("the macOS-Intel build leg no longer installs "
+                       "browser-cookie3 — that binary alone would ship "
+                       "unable to read a browser session")
+
+    build_py = os.path.join(root, "build.py")
+    if os.path.isfile(build_py):
+        with open(build_py, encoding="utf-8", errors="replace") as f:
+            bsrc = f.read()
+        if "browser_cookie3" not in bsrc:
+            bad.append("build.py no longer bundles browser_cookie3 — "
+                       "--cookies-from-browser would be dead in the binaries")
+
+    if bad:
+        rep.fail("http auth handling", "; ".join(bad[:6]))
+    else:
+        rep.ok("http auth handling",
+               "GUI sends http password/header via env not argv; one-off "
+               "sign-in dropped on host change; frozen builds get honest "
+               "cookie advice and bundle the reader")
+
+
+def _check_sudo_preflight_and_log(rep, ctx):
+    """Two regressions from 4.2.6.
+
+    (a) --use-sudo refused ANY group-writable script. Debian/Ubuntu/Kali give
+        each user a private group and ship umask 002, so an ordinary `cp`
+        produces 0664 whose group is that user alone: the refusal protected
+        against nobody and made the flag unusable out of the box. Group-write
+        must now be judged by who is actually IN the group — while a
+        world-writable file stays refused, since that one is real.
+    (b) The GUI log clipped every long line. Engine errors put the remedy at
+        the end ("Fix: chmod go-w …"), so the user saw the complaint and never
+        the fix."""
+    root = os.path.dirname(os.path.abspath(ctx["target"]))
+    gui = os.path.join(root, "blitcp_gui.py")
+    try:
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            eng = f.read()
+        gsrc = ""
+        if os.path.isfile(gui):
+            with open(gui, encoding="utf-8", errors="replace") as f:
+                gsrc = f.read()
+    except OSError as e:
+        rep.skip("sudo preflight + log legibility", str(e))
+        return
+
+    bad = []
+    if "_group_writers_besides" not in eng:
+        bad.append("the sudo preflight lost its group-membership test — every "
+                   "0664 file under umask 002 would be refused again")
+    if "S_IWGRP | stat.S_IWOTH" in eng:
+        bad.append("the sudo preflight is back to refusing group-write "
+                   "outright, without asking who is in the group")
+    if "stat.S_IWOTH" not in eng:
+        bad.append("the sudo preflight no longer refuses a world-writable "
+                   "script — that one is a real escalation path")
+    # The helper must count PRIMARY members too: a user-private group lists
+    # nobody in gr_mem, and so does a group whose only member joined by gid.
+    helper = ""
+    for n in ast.walk(ast.parse(eng, filename=ctx["target"])):
+        if isinstance(n, ast.FunctionDef) and n.name == "_group_writers_besides":
+            helper = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+    if helper:
+        if "getpwall" not in helper:
+            bad.append("_group_writers_besides ignores primary-group members, "
+                       "so a shared group would read as private")
+        if "return None" not in helper:
+            bad.append("_group_writers_besides cannot report 'unknown' — an "
+                       "unreadable group would be treated as safe")
+    if gsrc:
+        add_log = ""
+        for n in ast.walk(ast.parse(gsrc, filename=gui)):
+            if isinstance(n, ast.FunctionDef) and n.name == "_add_log":
+                add_log = "\n".join(gsrc.splitlines()[n.lineno - 1:n.end_lineno])
+        if add_log:
+            if "setWordWrap(True)" not in add_log:
+                bad.append("GUI log lines no longer wrap — the end of a long "
+                           "error, which is where the fix is, gets clipped")
+            if "white-space:pre'" in add_log:
+                bad.append("GUI log lines use white-space:pre, which defeats "
+                           "the word wrap on coloured lines")
+
+    if bad:
+        rep.fail("sudo preflight + log legibility", "; ".join(bad[:6]))
+    else:
+        rep.ok("sudo preflight + log legibility",
+               "group-write judged by real membership, world-write still "
+               "refused; GUI log wraps so the fix in an error stays visible")
+
+
+def _check_gui_phase_labels(rep, ctx):
+    """Every "Phase N — <name>" the engine prints must map to a GUI header
+    label. The map ended at "block copy", so on every SSH transfer the header
+    stayed on "Hashing…" from the end of deduplication to the end of the run —
+    the GUI said it was hashing while it was streaming 4.5 GB. A phase added
+    later without a label would silently do the same, so this compares the two
+    lists rather than a fixed set."""
+    root = os.path.dirname(os.path.abspath(ctx["target"]))
+    gui = os.path.join(root, "blitcp_gui.py")
+    if not os.path.isfile(gui):
+        rep.skip("GUI phase labels", "no blitcp_gui.py beside the target")
+        return
+    try:
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            eng = f.read()
+        with open(gui, encoding="utf-8", errors="replace") as f:
+            gsrc = f.read()
+    except OSError as e:
+        rep.skip("GUI phase labels", str(e))
+        return
+
+    phases = sorted(set(re.findall(r'banner\(f?"(Phase [^"]+)"', eng)))
+    if not phases:
+        rep.skip("GUI phase labels", "no phase banners found")
+        return
+    m = re.search(r"_PHASE_LABELS = \((.*?)\)\n", gsrc, re.S)
+    if not m:
+        rep.fail("GUI phase labels", "_PHASE_LABELS is gone from the GUI")
+        return
+    keys = re.findall(r'\("([^"]+)",\s*"', m.group(1))
+
+    unlabelled = []
+    for ph in phases:
+        name = ph.split("—", 1)[-1].split("-", 1)[-1].strip().lower() \
+            if "—" in ph else ph.lower()
+        if not any(k in name for k in keys):
+            unlabelled.append(ph)
+    if unlabelled:
+        rep.fail("GUI phase labels",
+                 "no GUI header label for: " + "; ".join(unlabelled[:4]))
+    else:
+        rep.ok("GUI phase labels",
+               f"all {len(phases)} engine phases map to a header label")
+
+
+def _check_r2r_hash_negotiation(rep, ctx):
+    """Remote-to-remote used to compare each side's FAVOURITE hash tool:
+    `scaps["halgo"] == dcaps["halgo"]`. A NAS with sha256sum and a workstation
+    with xxh128sum installed each picked a different favourite, so a pair that
+    shared sha256sum AND md5sum was told "no common tool" — which turned off
+    deduplication and, far worse, verification, while the banner still
+    advertised both and the summary printed no Verify line at all."""
+    try:
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            eng = f.read()
+    except OSError as e:
+        rep.skip("r2r hash negotiation", str(e))
+        return
+
+    bad = []
+    if 'scaps["halgo"] == dcaps["halgo"]' in eng:
+        bad.append("R2R is back to comparing each side's favourite hash tool "
+                   "instead of negotiating a common one")
+    if "_common_hash_algo" not in eng:
+        bad.append("_common_hash_algo is gone — no common-algorithm negotiation")
+    else:
+        nego = ""
+        for n in ast.walk(ast.parse(eng, filename=ctx["target"])):
+            if isinstance(n, ast.FunctionDef) and n.name == "_common_hash_algo":
+                nego = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+        if nego and "hashes" not in nego:
+            bad.append("_common_hash_algo no longer looks at the full tool "
+                       "list, so a shared second choice stays invisible")
+    if 'caps["hashes"]' not in eng and '"hashes": {}' not in eng:
+        bad.append("the remote probe records only one hash tool per host")
+    # The advertised feature list must follow reality, and a run that could not
+    # verify has to say so rather than omitting the line.
+    if 'remote → remote  [dedup · incremental · verify]' in eng:
+        bad.append("the R2R banner advertises dedup+verify unconditionally, "
+                   "even when no hash tool is shared")
+    if "not run" not in eng:
+        bad.append("the summary goes silent when verification did not run — "
+                   "an absent line reads as success")
+
+    if bad:
+        rep.fail("r2r hash negotiation", "; ".join(bad[:6]))
+    else:
+        rep.ok("r2r hash negotiation",
+               "a shared algorithm is negotiated from both hosts' full tool "
+               "lists; the banner and summary state what actually ran")
+
+
 def section_security(rep, ctx):
     targets = [ctx["target"]]
     repo = os.path.dirname(os.path.abspath(ctx["target"]))
@@ -1150,6 +1491,10 @@ def section_security(rep, ctx):
     # streaming relays: S3 single-threaded parts, SMB lock-held streams,
     # no dataset-sized temp-dir relay
     _check_streaming_relay_invariants(rep, ctx)
+    _check_http_auth_handling(rep, ctx)
+    _check_sudo_preflight_and_log(rep, ctx)
+    _check_gui_phase_labels(rep, ctx)
+    _check_r2r_hash_negotiation(rep, ctx)
 
     # external scanners (best effort)
     _run_external_scanner(rep, "bandit",
@@ -1322,19 +1667,35 @@ def section_leaks(rep, ctx):
         else:
             rep.skip("dedup DB integrity", "no dedup DB produced")
 
-    # dry-run must not write anything
+    # dry-run must not write anything — not in the destination, and not at the
+    # destination's MOUNT ROOT either. Watching the destination alone is why a
+    # 36 KB dedup cache shipped unnoticed: the cache prefers the mount root and
+    # only falls back to the destination, so wherever /tmp is its own mount the
+    # file landed one directory up, outside everything this check looked at.
+    # The destination must also not come into EXISTENCE — creating the
+    # directory is itself the side effect that turns a mistyped preview into a
+    # real mkdir.
     with temp_workspace() as ws:
         src = make_tree(os.path.join(ws, "src"), big_mb=1)
         dst = os.path.join(ws, "dst")
+        mroot = mount_root(ws)
+        before_root = dir_names(mroot)
         rc, out, err = run_fc(target, ["--dry-run", src, dst])
-        created = os.path.exists(dst) and os.listdir(dst)
-        if rc == 0 and not created:
-            rep.ok("dry-run no side effects", "destination untouched")
-        elif rc != 0:
+        leaked_root = sorted(dir_names(mroot) - before_root)
+        created = os.path.exists(dst)
+        if rc != 0:
             rep.fail("dry-run no side effects", f"rc={rc}: {err.strip()[:160]}")
-        else:
+        elif created:
             rep.fail("dry-run no side effects",
-                     f"dry-run wrote files: {os.listdir(dst)[:6]}")
+                     f"dry-run created the destination: "
+                     f"{sorted(dir_names(dst))[:6] or 'empty dir'}")
+        elif leaked_root:
+            rep.fail("dry-run no side effects",
+                     f"dry-run wrote to the mount root {mroot}: "
+                     f"{leaked_root[:6]}")
+        else:
+            rep.ok("dry-run no side effects",
+                   f"destination not created, {mroot} unchanged")
 
 
 # --------------------------------------------------------------------------- #
@@ -2296,6 +2657,199 @@ def _check_relay_reports_truth(rep, ctx):
            "record the reason, and leak no traceback")
 
 
+def _source_block(src, header):
+    """The text of a top-level def/class, header line through the line before
+    the next top-level statement. inspect.getsource() cannot be used: the
+    auditor loads the target under a synthetic module name, and classes from it
+    report as built-in."""
+    i = src.find(header)
+    if i < 0:
+        return ""
+    j = i + len(header)
+    while True:
+        k = src.find("\ndef ", j)
+        c = src.find("\nclass ", j)
+        if k < 0 or (0 <= c < k):
+            k = c
+        if k < 0:
+            return src[i:]
+        return src[i:k]
+
+
+def _check_http_relay_honors_transport(rep, ctx):
+    """An http(s):// source must write over the transport the destination has.
+
+    Regression guard. apply_saved_ssh_protocol() set ssh_no_sftp from a
+    connection saved as protocol 'ssh', and the HTTP relay then opened an SFTP
+    handle anyway — on a server whose SFTP subsystem is off that surfaced as a
+    bare "Channel closed." after the flag had been read and dropped. The relay
+    must consult the flag, own an exec-channel writer for the SSH-only case,
+    and fail SFTP with a message that names the host and the way out.
+    """
+    name = "http relay honors ssh transport"
+    try:
+        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    except OSError as e:                                    # noqa: BLE001
+        rep.skip(name, f"could not read target: {e}")
+        return
+    relay = _source_block(src, "def _http_to_ssh(")
+    writer = _source_block(src, "class _SshExecWriter")
+    if not relay:
+        rep.fail(name, "_http_to_ssh is gone")
+        return
+    if not writer:
+        rep.fail(name, "_SshExecWriter is gone — no exec-channel write path")
+        return
+    if "def _ssh_exec_stat(" not in src:
+        rep.fail(name, "_ssh_exec_stat is gone — no SFTP-free stat")
+        return
+    if "ssh_no_sftp" not in relay:
+        rep.fail(name, "_http_to_ssh never consults ssh_no_sftp")
+        return
+    if "_SshExecWriter" not in relay and "_d_open" not in relay:
+        rep.fail(name, "_http_to_ssh has no exec-channel write path")
+        return
+    if "cat >" not in writer:
+        rep.fail(name, "_SshExecWriter does not stream to `cat > path`")
+        return
+    if "recv_exit_status" not in writer:
+        rep.fail(name, "_SshExecWriter ignores the remote exit status — a "
+                       "failed remote write would pass as success")
+        return
+    if "--ssh-no-sftp" not in relay:
+        rep.fail(name, "the SFTP failure path does not name the way out")
+        return
+    rep.ok(name, "ssh_no_sftp honored, exec writer checks remote exit status")
+
+
+def _check_cookie_domain_scope(rep, ctx):
+    """Browser cookies must be looked up on the registrable domain.
+
+    Regression guard. browser_cookie3 filters with a SUBSTRING test against
+    each cookie's own domain, so asking it for the full hostname
+    ("dl.dell.com" in ".dell.com" is False) dropped every parent-domain
+    cookie — where sessions actually live. A logged-in browser produced "no
+    cookies matched", and the redirect a download link makes to its SSO host
+    could never match either. The pre-filter must be the registrable domain;
+    add_cookie_header() still does the real RFC matching afterwards.
+    """
+    name = "cookie domain scope"
+    try:
+        mod = _import_target(ctx)
+        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip(name, f"could not load target: {e}")
+        return
+    fn = getattr(mod, "_registrable_domain", None)
+    if fn is None:
+        rep.fail(name, "_registrable_domain is gone — browser cookies are "
+                       "filtered by full hostname again")
+        return
+    for host, want in (("dl.dell.com", "dell.com"),
+                       ("www.dell.com", "dell.com"),
+                       ("a.b.c.example.com", "example.com"),
+                       ("downloads.example.co.uk", "example.co.uk"),
+                       ("dell.com", "dell.com")):
+        got = fn(host)
+        if got != want:
+            rep.fail(name, f"_registrable_domain({host!r}) = {got!r}, "
+                           f"expected {want!r}")
+            return
+    # the substring rule browser_cookie3 actually applies
+    if fn("dl.dell.com") not in ".dell.com":
+        rep.fail(name, "the filter still would not match a '.dell.com' cookie")
+        return
+    blk = _source_block(src, "def _cookie_header_for(")
+    if "domain_name=host" in blk:
+        rep.fail(name, "a browser loader still filters by the full hostname")
+        return
+    if "_registrable_domain(" not in blk:
+        rep.fail(name, "_cookie_header_for does not use _registrable_domain")
+        return
+    rep.ok(name, "browser cookies scoped to the registrable domain")
+
+
+def _check_sftp_fallback_contract(rep, ctx):
+    """A server with SSH on and SFTP off must be detected, not crashed into —
+    and the fallback must not move the user's files.
+
+    Regression guard. The transport is chosen before the first SFTP call, which
+    happens after the scan, so a server without the subsystem died mid-run.
+    Three properties: the probe exists and main() consults it; an explicit
+    --sftp-only is never silently overridden (it is a restriction, not a
+    preference); and the SSH-only push copies a lone directory's CONTENTS
+    rather than nesting them under <basename>/, because a transport chosen
+    automatically must land files exactly where the SFTP path would.
+    """
+    name = "sftp fallback contract"
+    try:
+        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    except OSError as e:                                    # noqa: BLE001
+        rep.skip(name, f"could not read target: {e}")
+        return
+    if "def _sftp_subsystem_ok(" not in src:
+        rep.fail(name, "no SFTP probe — a subsystem-less server still dies "
+                       "mid-transfer")
+        return
+    main_blk = _source_block(src, "def main(")
+    if "_sftp_subsystem_ok(" not in main_blk:
+        rep.fail(name, "main() never probes; the transport is still chosen "
+                       "blind")
+        return
+    if "sftp_only" not in main_blk.split("_sftp_subsystem_ok(")[0][-1200:]:
+        rep.fail(name, "the probe does not exempt an explicit --sftp-only")
+        return
+    push = _source_block(src, "def _ssh_push_smart(")
+    if not push:
+        rep.fail(name, "_ssh_push_smart is gone")
+        return
+    if 'base + "/" + os.path.relpath' in push:
+        rep.fail(name, "SSH-only push still nests a directory under its "
+                       "basename — an auto-selected transport would relocate "
+                       "the user's files")
+        return
+    relay = _source_block(src, "def _http_to_ssh(")
+    # The fallback is silent by design (the banner names the transport), so
+    # assert the BEHAVIOUR — the SFTP failure lands on the exec writer — and
+    # never the wording of a message.
+    if "use_sftp = False" not in relay or "sftp = None" not in relay:
+        rep.fail(name, "an SFTP failure no longer routes to the exec writer")
+        return
+    if "sftp_only" not in relay:
+        rep.fail(name, "the HTTP relay fallback ignores --sftp-only")
+        return
+    rep.ok(name, "probe consulted, --sftp-only respected, layout matches SFTP")
+
+
+def _check_relay_errors_are_debuggable(rep, ctx):
+    """Terminal relay handlers must route through _fmt_exc().
+
+    Regression guard. Several handlers built their message with
+    str(e).splitlines()[0], which silently bypassed the BLITCP_TRACEBACK=1
+    escape hatch _fmt_exc() provides — asking for the stack produced exactly
+    the same unhelpful one-liner. The retry notice inside _http_pump is
+    deliberately excluded: it reports a failure the transfer recovers from.
+    """
+    name = "relay errors honor BLITCP_TRACEBACK"
+    try:
+        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    except OSError as e:                                    # noqa: BLE001
+        rep.skip(name, f"could not read target: {e}")
+        return
+    bad = []
+    for fn in ("run_http_transfer", "_http_to_ssh", "_http_to_smb",
+               "_relay_object_ssh", "copy_via_tar_ssh", "_ssh_ls"):
+        blk = _source_block(src, "def %s(" % fn)
+        if not blk:
+            continue
+        if "str(e).strip().splitlines()[0]" in blk and "_fmt_exc" not in blk:
+            bad.append(fn)
+    if bad:
+        rep.fail(name, "swallow the traceback: " + ", ".join(bad))
+    else:
+        rep.ok(name, "terminal relay handlers use _fmt_exc")
+
+
 def _check_saved_ssh_protocol(rep, ctx):
     """The Protocol saved on an SSH connection must reach the CLI copy path.
 
@@ -2834,6 +3388,18 @@ def _check_quiet_time_matches(rep, ctx):
     stops before anything reaches the disk, and --quiet reported from there —
     so the identical copy printed 0.6s quiet and 2.4s verbose. A display flag
     must not change the measurement.
+
+    Measuring that is harder than it looks, and the first version of this check
+    got it wrong: it timed one verbose copy, then one quiet copy, and blamed
+    the flag for the difference. But whichever copy runs SECOND is faster —
+    the source is in page cache by then — so on a CI runner reading a cold
+    first copy the gap crossed the threshold and the check failed a correct
+    build. Measured, with no flag involved at all: verbose-then-verbose gave
+    0.5s then 0.3s.
+
+    So: warm the cache first, then measure BOTH orderings. A real measurement
+    bug follows the flag and shows up in both; an ordering artefact swaps sides
+    and cancels out.
     """
     target = ctx["target"]
     with temp_workspace() as ws:
@@ -2846,30 +3412,159 @@ def _check_quiet_time_matches(rep, ctx):
             v = float(m.group(1))
             return v / 1000.0 if m.group(2).startswith("ms") else v
 
-        rc1, o1, e1 = run_fc(target, [src, os.path.join(ws, "d1")])
-        verbose = seconds(r"Time:\s*([0-9.]+)\s*(m?s)", o1 + e1)
-        rc2, o2, e2 = run_fc(target, ["--quiet", src, os.path.join(ws, "d2")])
-        quiet = seconds(r"in\s+([0-9.]+)\s*(m?s)", o2 + e2)
+        def timed(quiet_flag, dest):
+            args = (["--quiet"] if quiet_flag else []) + [src, dest]
+            rc, o, e = run_fc(target, args)
+            pat = (r"in\s+([0-9.]+)\s*(m?s)" if quiet_flag
+                   else r"Time:\s*([0-9.]+)\s*(m?s)")
+            return rc, seconds(pat, o + e)
 
-        if rc1 != 0 or rc2 != 0:
-            rep.fail("quiet timing", f"copies failed {rc1}/{rc2}")
+        # Warm-up: discarded, and its only job is to leave the source in page
+        # cache so neither measured run is the one paying for the cold read.
+        rc0, _t0 = timed(False, os.path.join(ws, "warm"))
+        if rc0 != 0:
+            rep.fail("quiet timing", f"warm-up copy failed {rc0}")
             return
-        if verbose is None or quiet is None:
-            rep.skip("quiet timing", "could not parse both reported times")
+
+        # Order A: verbose first.  Order B: quiet first.
+        rc1, verbose_a = timed(False, os.path.join(ws, "a1"))
+        rc2, quiet_a = timed(True, os.path.join(ws, "a2"))
+        rc3, quiet_b = timed(True, os.path.join(ws, "b1"))
+        rc4, verbose_b = timed(False, os.path.join(ws, "b2"))
+
+        rcs = (rc1, rc2, rc3, rc4)
+        if any(rcs):
+            rep.fail("quiet timing", f"copies failed {rcs}")
             return
-        if verbose <= 0:
+        times = (verbose_a, quiet_a, quiet_b, verbose_b)
+        if any(t is None for t in times):
+            rep.skip("quiet timing", "could not parse every reported time")
+            return
+        if verbose_a <= 0 or verbose_b <= 0:
             rep.skip("quiet timing", "verbose time too small to compare")
             return
-        ratio = quiet / verbose
+
         # Run-to-run spread on a real disk is tens of percent; the bug was a
-        # 4x gap. Anything under half means the two paths measure differently.
-        if ratio < 0.5:
+        # 4x gap. Under half means the two paths measure differently — but only
+        # when it holds in BOTH orderings, which cache warmth cannot fake.
+        ratio_a = quiet_a / verbose_a
+        ratio_b = quiet_b / verbose_b
+        if ratio_a < 0.5 and ratio_b < 0.5:
             rep.fail("quiet timing",
-                     f"--quiet reported {quiet:.2f}s where the summary reported "
-                     f"{verbose:.2f}s — the flag is changing the measurement")
+                     f"--quiet reported {quiet_a:.2f}s/{quiet_b:.2f}s where the "
+                     f"summary reported {verbose_a:.2f}s/{verbose_b:.2f}s in "
+                     f"both orderings — the flag is changing the measurement")
         else:
             rep.ok("quiet timing",
-                   f"quiet {quiet:.2f}s vs summary {verbose:.2f}s")
+                   f"quiet {quiet_a:.2f}s/{quiet_b:.2f}s vs summary "
+                   f"{verbose_a:.2f}s/{verbose_b:.2f}s (both orderings)")
+
+
+def _check_sudo_askpass_route(rep, ctx):
+    """The sudo re-exec must be able to prompt without a terminal.
+
+    Regression guard. `sudo` with no controlling tty cannot ask for a password
+    ("a terminal is required…"), so an elevated run launched from the GUI
+    stalled on whatever terminal the app was started from. -A routes the prompt
+    to $SUDO_ASKPASS. It must be added ONLY when that variable is set, so a
+    normal terminal run keeps prompting the way it always has.
+    """
+    name = "sudo prompt works without a tty"
+    try:
+        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    except OSError as e:                                    # noqa: BLE001
+        rep.skip(name, f"could not read target: {e}")
+        return
+    blk = _source_block(src, "def _reexec_under_sudo(")
+    if not blk:
+        rep.fail(name, "_reexec_under_sudo is gone")
+        return
+    if "SUDO_ASKPASS" not in blk:
+        rep.fail(name, "the sudo re-exec ignores SUDO_ASKPASS — an elevated "
+                       "run with no tty cannot ask for a password")
+        return
+    if '"-A"' not in blk and "'-A'" not in blk:
+        rep.fail(name, "SUDO_ASKPASS is read but -A is never passed to sudo")
+        return
+    # -A must be conditional: unconditional would break every terminal run on
+    # a machine with no askpass helper configured.
+    head = blk.split("-A")[0]
+    if "if" not in head.split("SUDO_ASKPASS")[-1] and \
+            "SUDO_ASKPASS" not in head.split("if")[-1]:
+        rep.fail(name, "-A looks unconditional; a terminal run would need an "
+                       "askpass helper it does not have")
+        return
+    rep.ok(name, "sudo -A only when SUDO_ASKPASS is set")
+
+
+def _check_fuseblk_is_local(rep, ctx):
+    """A block-backed FUSE mount is a local disk, not a network share.
+
+    Regression guard. The classifier rejected anything whose fstype started
+    with "fuse", which is how EVERY NTFS volume mounts on Linux (ntfs-3g
+    reports "fuseblk"). That was not just a wrong label on the summary line:
+    the three HDD fast paths — source scan, dedup DB, link audit — all test
+    == "hdd", so a rotating USB backup drive formatted NTFS silently lost all
+    of them. The distinction is in the mount source: fuseblk names /dev/...,
+    while sshfs/rclone/gvfs never do.
+    """
+    name = "fuseblk is local storage"
+    if sys.platform != "linux":
+        rep.skip(name, "mountinfo classification is Linux-only")
+        return
+    try:
+        mod = _import_target(ctx)
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip(name, f"could not import target: {e}")
+        return
+    fn = getattr(mod, "_classify_storage_linux", None)
+    if fn is None:
+        rep.fail(name, "_classify_storage_linux is gone")
+        return
+
+    # Drive the classifier against a synthetic /proc/self/mountinfo so the
+    # check does not depend on this machine happening to have an NTFS disk.
+    rows = [
+        # (fstype, source, rotational, expected)
+        ("fuseblk", "/dev/sdz1", "1", "hdd"),    # ntfs-3g on a spinning disk
+        ("fuseblk", "/dev/sdz1", "0", "ssd"),    # ntfs-3g on flash
+        ("fuse.sshfs", "user@h:/r", None, "network"),
+        ("fuse.rclone", "rclone", None, "network"),
+        ("cifs", "//srv/share", None, "network"),
+    ]
+    mp = "/mnt/uat_fuseblk_probe"
+    for fstype, source, rota, expect in rows:
+        line = ("99 1 8:161 / %s rw,relatime shared:1 - %s %s rw\n"
+                % (mp, fstype, source))
+        real_open = builtins.open
+
+        def fake_open(f, *a, **k):
+            if f == "/proc/self/mountinfo":
+                return io.StringIO(line)
+            if rota is not None and str(f).endswith("/queue/rotational"):
+                return io.StringIO(rota + "\n")
+            return real_open(f, *a, **k)
+
+        real_exists, real_realpath = os.path.exists, os.path.realpath
+        try:
+            builtins.open = fake_open
+            os.path.exists = lambda q: False if "/sys/class/block" in str(q) \
+                else real_exists(q)
+            os.path.realpath = lambda q, *a, **k: mp if q == mp \
+                else real_realpath(q, *a, **k)
+            got = fn(mp)
+        except Exception as e:                              # noqa: BLE001
+            rep.fail(name, f"{fstype} raised {type(e).__name__}: {e}")
+            return
+        finally:
+            builtins.open = real_open
+            os.path.exists, os.path.realpath = real_exists, real_realpath
+        if got != expect:
+            rep.fail(name, f"{fstype} on {source} classified {got!r}, "
+                           f"expected {expect!r}")
+            return
+    rep.ok(name, "fuseblk follows its block device; only non-device FUSE is "
+                 "network")
 
 
 def _check_memory_fs_detection(rep, ctx):
@@ -3089,6 +3784,10 @@ def section_bugs(rep, ctx):
     _check_error_never_empty(rep, ctx)
     _check_remote_scan_targeted(rep, ctx)
     _check_saved_ssh_protocol(rep, ctx)
+    _check_http_relay_honors_transport(rep, ctx)
+    _check_relay_errors_are_debuggable(rep, ctx)
+    _check_sftp_fallback_contract(rep, ctx)
+    _check_cookie_domain_scope(rep, ctx)
     _check_ls_shell_fallback(rep, ctx)
     _check_relay_reports_truth(rep, ctx)
     _check_streamer_parity(rep, ctx)
@@ -3096,6 +3795,8 @@ def section_bugs(rep, ctx):
     _check_pip_install_not_self_updated(rep, ctx)
     _check_reported_speed(rep, ctx)
     _check_quiet_time_matches(rep, ctx)
+    _check_sudo_askpass_route(rep, ctx)
+    _check_fuseblk_is_local(rep, ctx)
     _check_memory_fs_detection(rep, ctx)
     _check_cache_preload(rep, ctx)
     _check_threadpool_small_files(rep, ctx)
@@ -3171,9 +3872,9 @@ def section_bugs(rep, ctx):
         src = make_tree(os.path.join(ws, "src"), big_mb=1)
         dst = os.path.join(ws, "dst")
         run_fc(target, [src, dst])
-        snap1 = _snapshot(dst)
+        snap1 = {k: v for k, v in _snapshot(dst).items() if not _is_sidecar(k)}
         rc, out, err = run_fc(target, [src, dst])
-        snap2 = _snapshot(dst)
+        snap2 = {k: v for k, v in _snapshot(dst).items() if not _is_sidecar(k)}
         if rc == 0 and snap1 == snap2 and _no_traceback(err):
             rep.ok("idempotency", "second run changed nothing")
         else:

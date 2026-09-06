@@ -10,6 +10,9 @@ are grouped; infra-dependent groups self-skip when the infra is absent.
   Groups:  local  — local-to-local copy surface (always auto)
            index  — --index-existing / --dedup-existing
            ssh    — pull / push / R2R / --ssh-no-sftp  (auto iff localhost sshd)
+           http   — http(s):// SOURCE relays to SSH/SMB (refusals run anywhere;
+                    the transfers need localhost sshd / FC_UAT_SMB_URL, and the
+                    https ones a self-signed cert this suite generates)
            cloud  — s3:// az:// gs://     (manual-only; SKIP in auto)
            smb    — smb:// / UNC          (manual-only; SKIP in auto)
            info   — --version / --check-update
@@ -82,6 +85,28 @@ def _rand(n, seed=b"uat"):
     return bytes(out[:n])
 
 
+def _mount_root(path):
+    """Mount point *path* lives on — the other place a run can write. The dedup
+    cache prefers the destination's mount root and falls back to the
+    destination only when that root is /, so a check that watches the
+    destination alone passes on any box where /tmp is its own mount."""
+    p = os.path.abspath(path)
+    while not os.path.ismount(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    return p
+
+
+def _dir_names(d):
+    """Top-level entry names in *d*, empty when it does not exist."""
+    try:
+        return set(os.listdir(d))
+    except OSError:
+        return set()
+
+
 def _tree(root, spec):
     """spec: {relpath: bytes}. Returns root."""
     for rel, data in spec.items():
@@ -110,10 +135,13 @@ def _verify(dst, spec):
 _NULL_CREDS = os.path.join(tempfile.gettempdir(), ".blitcp_uat_no_creds.json")
 
 
-def run_fc(target, args, timeout=240):
+def run_fc(target, args, timeout=240, env_extra=None):
     env = dict(os.environ)
     env["NO_COLOR"] = "1"
     env["BLITCP_CREDENTIALS"] = _NULL_CREDS
+    # Scenario-supplied variables (SSL_CERT_FILE for the throwaway origin cert,
+    # PYTHONPATH for the sitecustomize that refuses SFTP, a password env var).
+    env.update(env_extra or {})
     cmd = [sys.executable, target] + [str(a) for a in args]
     try:
         # stdin=DEVNULL: a prompt that reaches a real terminal hangs the whole
@@ -160,6 +188,343 @@ def _have_paramiko():
 
 HAVE_SSH = _have_ssh()
 HAVE_PARAMIKO = _have_paramiko()
+
+
+# ── HTTP(S) origin for the relay scenarios ───────────────────────────────────
+# The http(s):// source needs a real origin: something that speaks Range,
+# Last-Modified and Content-Disposition, and that can misbehave deliberately.
+# Stdlib only, always bound to 127.0.0.1 on port 0 — a fixed port turns a busy
+# machine into a suite failure instead of a skip.
+
+import email.utils
+import http.server
+import socket
+import ssl
+import struct
+import threading
+import time
+import urllib.parse
+
+
+class _OriginHandler(http.server.BaseHTTPRequestHandler):
+    """One handler, several personalities, chosen by server.mode."""
+    protocol_version = "HTTP/1.1"
+    server_version = "uat-origin/1"
+
+    def log_message(self, *a):
+        pass                        # a UAT run is not a web-server access log
+
+    def _disk_path(self):
+        rel = urllib.parse.unquote(self.path.split("?")[0]).lstrip("/")
+        # Never let a crafted path escape the served directory.
+        full = os.path.normpath(os.path.join(self.server.root, rel))
+        root = os.path.normpath(self.server.root)
+        return full if full == root or full.startswith(root + os.sep) else None
+
+    def _send(self, code, body=b"", ctype="application/octet-stream",
+              extra=None, last_modified=True):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Accept-Ranges", "bytes")
+        if last_modified:
+            self.send_header("Last-Modified",
+                             email.utils.formatdate(self.server.mtime,
+                                                    usegmt=True))
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_GET(self):                                       # noqa: N802
+        srv = self.server
+        srv.hits.append((self.path, dict(self.headers)))
+        mode = srv.mode
+
+        if mode == "wall":
+            # A captive login page returned with 200 for a URL that names a
+            # binary — what a vendor download link does behind SSO.
+            self._send(200, b"<html><head><title>Sign in</title></head>"
+                            b"<body>Please log in to continue.</body></html>",
+                       ctype="text/html; charset=utf-8")
+            return
+
+        if mode == "auth" and not srv.authorized(self.headers):
+            self._send(401, b"denied", extra={"WWW-Authenticate": "Basic realm=uat"})
+            return
+
+        if mode == "hostile" and self.path.startswith("/downloads/"):
+            # Redirect to a DIFFERENTLY named path; the response there also
+            # claims another name via Content-Disposition. Neither may be
+            # allowed to decide where the bytes land.
+            self.send_response(302)
+            self.send_header("Location", "/real/decoy.bin")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        path = self._disk_path()
+        if path is None or not os.path.isfile(path):
+            self._send(404, b"not found", last_modified=False)
+            return
+        with open(path, "rb") as f:
+            data = f.read()
+        total = len(data)
+
+        start = 0
+        rng = self.headers.get("Range") or ""
+        if rng.startswith("bytes="):
+            try:
+                start = int(rng.split("=", 1)[1].split("-")[0] or 0)
+            except ValueError:
+                start = 0
+        if start:
+            srv.ranged.append(start)
+
+        if mode in ("drop", "drop_fin") and not srv.dropped:
+            # Fail the FIRST attempt part-way through, with a RESET rather than
+            # a graceful close: a clean FIN mid-body surfaces as an empty read
+            # and is caught by the truncation guard, never by the resume path,
+            # so it would exercise the wrong branch (see UAT-HTTP-13).
+            srv.dropped = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(total))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Last-Modified",
+                             email.utils.formatdate(srv.mtime, usegmt=True))
+            self.end_headers()
+            try:
+                self.wfile.write(data[:srv.drop_at])
+                self.wfile.flush()
+                # Give the client time to actually consume a 1 MB chunk before
+                # the connection dies; a reset issued immediately discards the
+                # buffered bytes, the pump resumes from offset 0 and never
+                # sends a Range header at all.
+                time.sleep(0.5)
+                if mode == "drop":
+                    # RST: surfaces as ConnectionResetError, an OSError, which
+                    # is what the resume path catches.
+                    self.connection.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_LINGER,
+                        struct.pack("ii", 1, 0))
+            except OSError:
+                pass
+            self.close_connection = True
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+            return
+
+        extra = dict(srv.extra_headers)
+        if start:
+            self.send_response(206)
+            self.send_header("Content-Range",
+                             "bytes %d-%d/%d" % (start, total - 1, total))
+            body = data[start:]
+        else:
+            self.send_response(200)
+            body = data
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Last-Modified",
+                         email.utils.formatdate(srv.mtime, usegmt=True))
+        for k, v in extra.items():
+            self.send_header(k, v)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError:
+            pass
+
+
+class _Origin:
+    """A throwaway origin. start() reports success instead of raising, so a
+    machine with no free port SKIPS the scenario rather than failing it."""
+
+    def __init__(self, root, mode="plain", certfile=None, drop_at=0,
+                 extra_headers=None, basic=None, want_header=None,
+                 mtime=1_700_000_000):
+        self.root = root
+        self.mode = mode
+        self.certfile = certfile
+        self.drop_at = drop_at
+        self.extra_headers = extra_headers or {}
+        self.basic = basic                  # (user, password) or None
+        self.want_header = want_header      # (name, value) or None
+        self.mtime = mtime
+        self.srv = None
+        self.base = None
+        self.error = None
+
+    def _authorized(self, headers):
+        import base64
+        if self.basic:
+            got = headers.get("Authorization") or ""
+            want = "Basic " + base64.b64encode(
+                ("%s:%s" % self.basic).encode()).decode()
+            if got != want:
+                return False
+        if self.want_header:
+            k, v = self.want_header
+            if (headers.get(k) or "") != v:
+                return False
+        return True
+
+    def start(self):
+        try:
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                  _OriginHandler)
+        except OSError as e:
+            self.error = "could not bind a local port: %s" % e
+            return False
+        srv.root = self.root
+        srv.mode = self.mode
+        srv.hits = []
+        srv.ranged = []
+        srv.dropped = False
+        srv.drop_at = self.drop_at
+        srv.extra_headers = self.extra_headers
+        srv.mtime = self.mtime
+        srv.authorized = self._authorized
+        scheme = "http"
+        if self.certfile:
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(self.certfile)
+                srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+                scheme = "https"
+            except Exception as e:                          # noqa: BLE001
+                srv.server_close()
+                self.error = "could not start TLS: %s" % e
+                return False
+        self.srv = srv
+        self.base = "%s://127.0.0.1:%d" % (scheme, srv.server_address[1])
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return True
+
+    def stop(self):
+        if self.srv is not None:
+            try:
+                self.srv.shutdown()
+            except Exception:                               # noqa: BLE001
+                pass
+            try:
+                self.srv.server_close()
+            except Exception:                               # noqa: BLE001
+                pass
+            self.srv = None
+
+    # assertions read these
+    @property
+    def hits(self):
+        return self.srv.hits if self.srv else []
+
+    @property
+    def ranged(self):
+        return self.srv.ranged if self.srv else []
+
+
+def _cert_tooling():
+    """Why a self-signed cert cannot be made, or None when one can."""
+    try:
+        import cryptography                                 # noqa: F401
+        return None
+    except ImportError:
+        pass
+    try:
+        subprocess.run(["openssl", "version"], capture_output=True, timeout=10)
+        return None
+    except FileNotFoundError:
+        return "neither the cryptography package nor an openssl binary"
+    except Exception as e:                                  # noqa: BLE001
+        return "openssl not usable: %s" % e
+
+
+CERT_MISSING = _cert_tooling()
+
+
+def _make_selfsigned(ws):
+    """A throwaway cert+key PEM for 127.0.0.1, or None.
+
+    blitcp never gets an --insecure flag for this: _http_open() uses the stdlib
+    default SSL context, which honours SSL_CERT_FILE, so the scenario trusts
+    exactly this one certificate through the child's environment instead."""
+    pem = os.path.join(ws, "origin.pem")
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+        import datetime
+        import ipaddress
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder()
+                .subject_name(name).issuer_name(name)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - datetime.timedelta(days=1))
+                .not_valid_after(now + datetime.timedelta(days=1))
+                .add_extension(x509.SubjectAlternativeName(
+                    [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+                    critical=False)
+                .sign(key, hashes.SHA256()))
+        with open(pem, "wb") as f:
+            f.write(key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()))
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        return pem
+    except ImportError:
+        pass
+    except Exception:                                       # noqa: BLE001
+        return None
+    try:
+        key = os.path.join(ws, "origin.key")
+        crt = os.path.join(ws, "origin.crt")
+        r = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", key, "-out", crt, "-days", "1",
+             "-subj", "/CN=127.0.0.1",
+             "-addext", "subjectAltName=IP:127.0.0.1"],
+            capture_output=True, timeout=60)
+        if r.returncode != 0 or not os.path.isfile(crt):
+            return None
+        with open(pem, "wb") as out:
+            for part in (key, crt):
+                with open(part, "rb") as f:
+                    out.write(f.read())
+        return pem
+    except FileNotFoundError:
+        return None
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def _refuse_sftp_dir(ws):
+    """A directory to put on the child's PYTHONPATH so that the real blitcp.py,
+    run unmodified, meets a server whose SFTP subsystem is refused.
+
+    sitecustomize is imported by the interpreter itself, so nothing about the
+    tool under test changes — only the paramiko it happens to import. There is
+    no other way to test the SFTP-refused branches against a stock sshd."""
+    d = os.path.join(ws, "_nosftp")
+    os.makedirs(d, exist_ok=True)
+    _write(os.path.join(d, "sitecustomize.py"), (
+        "try:\n"
+        "    import paramiko\n"
+        "    def _refuse(self):\n"
+        "        raise paramiko.SSHException('Channel closed.')\n"
+        "    paramiko.SSHClient.open_sftp = _refuse\n"
+        "except Exception:\n"
+        "    pass\n").encode())
+    return d
 
 # ── LOCAL scenarios ──────────────────────────────────────────────────────────
 
@@ -246,21 +611,30 @@ def c_nodedup(ws, rc, out, info):
 
 def b_dryrun(ws):
     _tree(os.path.join(ws, "src"), _SPEC)
+    # Snapshot the destination's mount root before the run: the dedup cache
+    # lands there by preference and only inside the destination as a fallback,
+    # so watching the destination alone is what let a 36 KB write go unseen.
+    mroot = _mount_root(ws)
     return [os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/",
-            "--dry-run"], {}
+            "--dry-run"], {"mroot": mroot, "root_before": _dir_names(mroot)}
 
 
 def c_dryrun(ws, rc, out, info):
     if rc != 0:
         return False, f"exit {rc}"
     dst = os.path.join(ws, "dst")
-    wrote = os.path.exists(dst) and any(
-        files for _r, _d, files in os.walk(dst))
-    if wrote:
-        return False, "--dry-run wrote files to the destination"
+    mroot = info["mroot"]
+    leaked = sorted(_dir_names(mroot) - info["root_before"])
+    if leaked:
+        return False, f"--dry-run wrote to the mount root {mroot}: {leaked[:6]}"
+    # Not "wrote no files" but "did not exist afterwards": creating the
+    # directory is itself the side effect that leaves a mistyped path behind.
+    if os.path.exists(dst):
+        return False, ("--dry-run created the destination: "
+                       + (str(sorted(_dir_names(dst))[:6]) or "empty dir"))
     if "DRY RUN" not in out:
         return False, "no DRY RUN plan printed"
-    return True, "plan printed, nothing written"
+    return True, f"plan printed, destination absent, {mroot} unchanged"
 
 
 def b_exclude(ws):
@@ -880,9 +1254,17 @@ def b_preserve_acl(ws):
     fn = _write(os.path.join(ws, "src", "no_acl.txt"), b"plain\n")
     os.chmod(fa, 0o644)
     os.chmod(fn, 0o664)
-    r = subprocess.run(["setfacl", "-m", "u:12345:rwx", fa],
-                       capture_output=True)
-    ok = r.returncode == 0
+    # macOS has no setfacl (it spells this chmod +a), and minimal images ship
+    # without acl at all. Unguarded, the FileNotFoundError escaped the scenario
+    # builder and killed the whole suite mid-run -- the macOS CI job died here
+    # after ten seconds with sixteen scenarios still unreported. The checker
+    # already knows how to skip on acl_ok=False; let it.
+    try:
+        r = subprocess.run(["setfacl", "-m", "u:12345:rwx", fa],
+                           capture_output=True)
+        ok = r.returncode == 0
+    except (FileNotFoundError, OSError):
+        ok = False
     return [os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/",
             "--preserve", "mode,times,acl"], {"acl_ok": ok}
 
@@ -1132,6 +1514,560 @@ def c_remote_scan_targeted(ws, rc, out, info):
     return True, "asked per path instead of listing 2000 files"
 
 
+# ── HTTP(S) SOURCE RELAY scenarios ───────────────────────────────────────────
+# An http(s):// SOURCE streams one file to an SSH or SMB destination; nothing
+# lands on the local disk. The refusals need no infrastructure at all and run
+# everywhere, including CI.
+
+_HTTP_PAYLOAD = _rand(3 * 1024 * 1024, b"http-relay")
+
+
+def _origin_up(ws, **kw):
+    """Serve ws/www. Returns (origin, info_bits) — info_bits carries _stop so
+    the runner tears the server down even if the scenario explodes."""
+    root = os.path.join(ws, "www")
+    os.makedirs(root, exist_ok=True)
+    o = _Origin(root, **kw)
+    if not o.start():
+        return None, {"_skip": o.error or "could not start a local origin"}
+    return o, {"_stop": [o.stop], "origin": o}
+
+
+def _origin_file(ws, name="payload.bin", data=None):
+    """Put a file where the origin serves it. Deliberately NOT named _payload:
+    that name already belongs to the index-group helper, and shadowing it
+    silently emptied every index scenario's source tree."""
+    return _write(os.path.join(ws, "www", name), data or _HTTP_PAYLOAD)
+
+
+def _dst_ssh(ws, rel):
+    return f"kai@localhost:{os.path.join(ws, 'dest', rel)}".replace(
+        "kai@", os.environ.get("USER", "") + "@" if os.environ.get("USER") else "")
+
+
+def _ssh_dest(ws, rel):
+    """localhost destination in the scenario workspace."""
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    return f"localhost:{os.path.join(ws, 'dest', rel)}"
+
+
+def _refused(out, needle):
+    return needle in out
+
+
+# ── refusals (needs=None) ────────────────────────────────────────────────────
+
+def b_http_dest_refused(ws):
+    return ["https://example.invalid/a.bin", "https://other.invalid/b.bin"], {}
+
+
+def c_http_dest_refused(ws, rc, out, info):
+    if rc == 0:
+        return False, "an http(s) destination was accepted"
+    if not _refused(out, "can only be the source"):
+        return False, f"wrong message: {out.strip()[-140:]}"
+    return True, "http(s) destination refused"
+
+
+def b_http_multi_src_refused(ws):
+    local = _write(os.path.join(ws, "extra.txt"), b"x")
+    return ["https://example.invalid/a.bin", local,
+            "localhost:" + os.path.join(ws, "dest") + "/"], {}
+
+
+def c_http_multi_src_refused(ws, rc, out, info):
+    if rc == 0:
+        return False, "a URL plus extra sources was accepted"
+    if not _refused(out, "takes a single URL"):
+        return False, f"wrong message: {out.strip()[-140:]}"
+    if os.path.exists(os.path.join(ws, "dest")):
+        return False, "destination was created by a refused run"
+    return True, "URL + extra sources refused"
+
+
+def b_http_no_filename(ws):
+    return ["https://example.invalid/dir/",
+            "localhost:" + os.path.join(ws, "dest") + "/"], {}
+
+
+def c_http_no_filename(ws, rc, out, info):
+    if rc == 0:
+        return False, "a URL naming no file was accepted"
+    if not _refused(out, "names no file"):
+        return False, f"wrong message: {out.strip()[-140:]}"
+    return True, "URL without a filename refused"
+
+
+def b_http_to_cloud_refused(ws):
+    return ["https://example.invalid/a.bin", "s3://bucket/prefix/"], {}
+
+
+def c_http_to_cloud_refused(ws, rc, out, info):
+    if rc == 0:
+        return False, "http → cloud was accepted"
+    if not _refused(out, "relay via an SSH or SMB destination"):
+        return False, f"wrong message: {out.strip()[-140:]}"
+    return True, "http → cloud refused with the relay hint"
+
+
+def b_http_to_local_refused(ws):
+    return ["https://example.invalid/a.bin", os.path.join(ws, "dest") + "/"], {}
+
+
+def c_http_to_local_refused(ws, rc, out, info):
+    if rc == 0:
+        return False, "http → local was accepted"
+    if not _refused(out, "curl or wget"):
+        return False, f"wrong message: {out.strip()[-140:]}"
+    if os.path.exists(os.path.join(ws, "dest")):
+        return False, "a refused run created the destination"
+    return True, "http → local refused, nothing created"
+
+
+# ── SSH relays (needs=ssh) ───────────────────────────────────────────────────
+
+def _b_relay_ssh(ws, extra=None, origin_kw=None, name="payload.bin",
+                 dest_rel=None, env=None):
+    _origin_file(ws, name)
+    o, bits = _origin_up(ws, **(origin_kw or {}))
+    if o is None:
+        return [], bits
+    dest_rel = name if dest_rel is None else dest_rel
+    args = [o.base + "/" + name, _ssh_dest(ws, dest_rel)] + list(extra or [])
+    bits["dest"] = os.path.join(ws, "dest", dest_rel)
+    bits["_env"] = dict(env or {})
+    return args, bits
+
+
+def _c_relay_content(ws, rc, out, info, want_suffix=None, data=None):
+    if rc != 0:
+        return False, f"exit {rc}: {out.strip()[-200:]}"
+    dest = info["dest"]
+    if not os.path.isfile(dest):
+        return False, f"nothing at {os.path.basename(dest)}"
+    with open(dest, "rb") as f:
+        got = f.read()
+    want = data if data is not None else _HTTP_PAYLOAD
+    if got != want:
+        return False, f"content differs ({len(got)} vs {len(want)} bytes)"
+    if want_suffix is not None:
+        has = "(SSH only, cat over exec)" in out
+        if want_suffix and not has:
+            return False, "banner does not announce the exec transport"
+        if not want_suffix and has:
+            return False, "banner claims exec transport on the SFTP path"
+    return True, f"{len(got)} bytes identical"
+
+
+def b_http_ssh_sftp(ws):
+    return _b_relay_ssh(ws)
+
+
+def c_http_ssh_sftp(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info, want_suffix=False)
+    if not ok:
+        return ok, det
+    if "HTTP → SSH" not in out:
+        return False, "no HTTP → SSH banner"
+    return True, det + ", SFTP transport"
+
+
+def b_http_ssh_exec(ws):
+    return _b_relay_ssh(ws, extra=["--ssh-no-sftp"])
+
+
+def c_http_ssh_exec(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    return _c_relay_content(ws, rc, out, info, want_suffix=True)
+
+
+def b_https_ssh_sftp(ws):
+    pem = _make_selfsigned(ws)
+    if pem is None:
+        return [], {"_skip": "could not generate a self-signed certificate"}
+    return _b_relay_ssh(ws, origin_kw={"certfile": pem},
+                        env={"SSL_CERT_FILE": pem})
+
+
+def c_https_ssh_sftp(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info, want_suffix=False)
+    return (ok, det + ", over TLS") if ok else (ok, det)
+
+
+def b_https_ssh_exec(ws):
+    pem = _make_selfsigned(ws)
+    if pem is None:
+        return [], {"_skip": "could not generate a self-signed certificate"}
+    return _b_relay_ssh(ws, extra=["--ssh-no-sftp"],
+                        origin_kw={"certfile": pem},
+                        env={"SSL_CERT_FILE": pem})
+
+
+def c_https_ssh_exec(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info, want_suffix=True)
+    return (ok, det + ", over TLS") if ok else (ok, det)
+
+
+def b_http_sftp_only_refuses_fallback(ws):
+    # --sftp-only is a restriction: when the server refuses the SFTP channel it
+    # must fail, never quietly open a shell instead.
+    return _b_relay_ssh(ws, extra=["--sftp-only"],
+                        env={"PYTHONPATH": _refuse_sftp_dir(ws)})
+
+
+def c_http_sftp_only_refuses_fallback(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc == 0:
+        return False, "--sftp-only succeeded against a server with no SFTP"
+    if "forbids the shell fallback" not in out:
+        return False, f"wrong message: {out.strip()[-200:]}"
+    if "(SSH only, cat over exec)" in out:
+        return False, "--sftp-only fell back to the exec writer anyway"
+    if os.path.exists(info["dest"]):
+        return False, "a refused run left a partial file behind"
+    return True, "refused, no shell fallback, nothing written"
+
+
+def b_http_autofallback(ws):
+    # No flag at all: SFTP refused must land on the exec writer, announced only
+    # by the banner.
+    return _b_relay_ssh(ws, env={"PYTHONPATH": _refuse_sftp_dir(ws)})
+
+
+def c_http_autofallback(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    return _c_relay_content(ws, rc, out, info, want_suffix=True)
+
+
+def b_http_filename_provenance(ws):
+    # The name must come from the URL the user typed — not from the redirect
+    # target (/real/decoy.bin) and not from Content-Disposition (evil.sh).
+    _write(os.path.join(ws, "www", "real", "decoy.bin"), _HTTP_PAYLOAD)
+    o, bits = _origin_up(ws, mode="hostile", extra_headers={
+        "Content-Disposition": 'attachment; filename="evil.sh"'})
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    args = [o.base + "/downloads/wanted.bin",
+            "localhost:" + os.path.join(ws, "dest") + "/"]
+    bits["dest"] = os.path.join(ws, "dest", "wanted.bin")
+    return args, bits
+
+
+def c_http_filename_provenance(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info)
+    if not ok:
+        return ok, det
+    stray = []
+    for root, _d, files in os.walk(os.path.join(ws, "dest")):
+        for f in files:
+            if f in ("evil.sh", "decoy.bin"):
+                stray.append(os.path.join(root, f))
+    if stray:
+        return False, f"a name from the server was obeyed: {stray[:3]}"
+    return True, "name taken from the URL, not the server"
+
+
+def b_http_dir_and_rename(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws)
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest", "into"), exist_ok=True)
+    bits["url"] = o.base + "/payload.bin"
+    bits["dest"] = os.path.join(ws, "dest", "into", "payload.bin")
+    # first run: an EXISTING directory receives <dir>/<url filename>
+    return [bits["url"], "localhost:" + os.path.join(ws, "dest", "into")], bits
+
+
+def c_http_dir_and_rename(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info)
+    if not ok:
+        return False, "directory form: " + det
+    # second run: a plain path IS the target name (rename-on-copy)
+    renamed = os.path.join(ws, "dest", "renamed.iso")
+    rc2, out2 = run_fc(info_target[0],
+                       [info["url"], "localhost:" + renamed])
+    if rc2 != 0:
+        return False, f"rename form exit {rc2}: {out2.strip()[-160:]}"
+    if not os.path.isfile(renamed):
+        return False, "rename-on-copy did not produce the named file"
+    with open(renamed, "rb") as f:
+        if f.read() != _HTTP_PAYLOAD:
+            return False, "renamed file content differs"
+    return True, "directory receives <dir>/<name>; plain path renames"
+
+
+def b_http_range_resume(ws):
+    _origin_file(ws)
+    # Drop mid-body AFTER a full 1 MB chunk has been consumed, so the retry
+    # asks for a non-zero offset and the 206/Content-Range path is real.
+    o, bits = _origin_up(ws, mode="drop", drop_at=1024 * 1024 + 4096)
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    bits["dest"] = os.path.join(ws, "dest", "payload.bin")
+    return [o.base + "/payload.bin",
+            "localhost:" + os.path.join(ws, "dest") + "/"], bits
+
+
+def c_http_range_resume(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info)
+    if not ok:
+        return ok, det
+    o = info["origin"]
+    if not o.ranged:
+        return False, "the retry never sent a Range request"
+    if max(o.ranged) <= 0:
+        return False, f"Range offsets were all zero: {o.ranged}"
+    return True, f"resumed at byte {max(o.ranged)}, content identical"
+
+
+def b_http_incremental_skip(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws)
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    a = [o.base + "/payload.bin", "localhost:" + os.path.join(ws, "dest") + "/"]
+    rc0, out0 = run_fc(info_target[0], a)               # populate
+    bits["dest"] = os.path.join(ws, "dest", "payload.bin")
+    bits["first"] = (rc0, out0)
+    return a, bits
+
+
+def c_http_incremental_skip(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    rc0, out0 = info["first"]
+    if rc0 != 0:
+        return False, f"first run exit {rc0}: {out0.strip()[-160:]}"
+    ok, det = _c_relay_content(ws, rc, out, info)
+    if not ok:
+        return ok, det
+    if "Up to date" not in out:
+        return False, f"second run did not skip: {out.strip()[-200:]}"
+    return True, "second run reported up to date (size + Last-Modified)"
+
+
+def b_http_auth_headers(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws, mode="auth", basic=("uatuser", "uatpass"),
+                         want_header=("X-Uat-Token", "shibboleth"))
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    bits["dest"] = os.path.join(ws, "dest", "payload.bin")
+    bits["_env"] = {"UAT_HTTP_PW": "uatpass"}
+    return [o.base + "/payload.bin",
+            "localhost:" + os.path.join(ws, "dest") + "/",
+            "--http-user", "uatuser", "--http-password-env", "UAT_HTTP_PW",
+            "--http-header", "X-Uat-Token: shibboleth"], bits
+
+
+def c_http_auth_headers(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    ok, det = _c_relay_content(ws, rc, out, info)
+    if not ok:
+        return ok, det
+    seen = [h for _p, h in info["origin"].hits]
+    if not any((h.get("Authorization") or "").startswith("Basic ") for h in seen):
+        return False, "no Basic Authorization header reached the origin"
+    if not any((h.get("X-Uat-Token") or "") == "shibboleth" for h in seen):
+        return False, "--http-header did not reach the origin"
+    return True, "Basic auth and --http-header both arrived"
+
+
+def b_http_html_wall(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws, mode="wall")
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    bits["dest"] = os.path.join(ws, "dest", "payload.bin")
+    return [o.base + "/payload.bin",
+            "localhost:" + os.path.join(ws, "dest") + "/"], bits
+
+
+def c_http_html_wall(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc == 0:
+        return False, "a login page was accepted as the download"
+    if "HTML page" not in out:
+        return False, f"wrong message: {out.strip()[-200:]}"
+    if os.path.exists(info["dest"]):
+        with open(info["dest"], "rb") as f:
+            head = f.read(64)
+        return False, f"the login page was written as the file: {head[:40]!r}"
+    return True, "login page refused, not written"
+
+
+def b_http_graceful_close_truncation(ws):
+    # A graceful FIN mid-body is NOT a socket error, so it never reaches the
+    # resume path (that is what UAT-HTTP-9 covers). What must hold is that it
+    # fails loudly rather than leaving a short file that looks complete.
+    _origin_file(ws)
+    o, bits = _origin_up(ws, mode="drop_fin", drop_at=1024 * 1024)
+    if o is None:
+        return [], bits
+    os.makedirs(os.path.join(ws, "dest"), exist_ok=True)
+    bits["dest"] = os.path.join(ws, "dest", "payload.bin")
+    return [o.base + "/payload.bin",
+            "localhost:" + os.path.join(ws, "dest") + "/"], bits
+
+
+def c_http_graceful_close_truncation(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc == 0 and os.path.isfile(info["dest"]):
+        with open(info["dest"], "rb") as f:
+            if f.read() == _HTTP_PAYLOAD:
+                return True, "resumed and completed"
+        return False, "exit 0 with a short file — truncation went unreported"
+    if "truncated" not in out and "resuming" not in out:
+        return False, f"neither resumed nor reported truncation: {out.strip()[-200:]}"
+    return True, "a broken stream is reported, never silently short"
+
+
+# ── SMB relays (needs=smb) ───────────────────────────────────────────────────
+
+def _smb_args(base_extra=None):
+    user = os.environ.get("FC_UAT_SMB_USER", "")
+    a = list(base_extra or [])
+    if user:
+        a += ["--smb-user", user, "--smb-password-env", "FC_UAT_SMB_PASS"]
+    return a
+
+
+def b_http_smb(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws)
+    if o is None:
+        return [], bits
+    base = os.environ["FC_UAT_SMB_URL"].rstrip("/") + "/uat_http"
+    bits["base"] = base
+    return [o.base + "/payload.bin", base + "/"] + _smb_args(), bits
+
+
+def _smb_readback(ws, info, name="payload.bin", want=None):
+    """Pull the relayed file back down and compare it byte for byte."""
+    back = os.path.join(ws, "back")
+    rc, out = run_fc(info_target[0],
+                     [info["base"] + "/" + name, back + "/"] + _smb_args())
+    if rc != 0:
+        return False, f"read-back exit {rc}: {out.strip()[-160:]}"
+    got = os.path.join(back, name)
+    if not os.path.isfile(got):
+        return False, "read-back produced no file"
+    with open(got, "rb") as f:
+        if f.read() != (want if want is not None else _HTTP_PAYLOAD):
+            return False, "read-back content differs"
+    return True, "content identical after read-back"
+
+
+def c_http_smb(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc != 0:
+        return False, f"exit {rc}: {out.strip()[-200:]}"
+    if "HTTP → SMB" not in out:
+        return False, "no HTTP → SMB banner"
+    return _smb_readback(ws, info)
+
+
+def b_https_smb(ws):
+    pem = _make_selfsigned(ws)
+    if pem is None:
+        return [], {"_skip": "could not generate a self-signed certificate"}
+    _origin_file(ws)
+    o, bits = _origin_up(ws, certfile=pem)
+    if o is None:
+        return [], bits
+    base = os.environ["FC_UAT_SMB_URL"].rstrip("/") + "/uat_https"
+    bits["base"] = base
+    bits["_env"] = {"SSL_CERT_FILE": pem}
+    return [o.base + "/payload.bin", base + "/"] + _smb_args(), bits
+
+
+def c_https_smb(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc != 0:
+        return False, f"exit {rc}: {out.strip()[-200:]}"
+    return _smb_readback(ws, info)
+
+
+def b_http_smb_filename(ws):
+    _write(os.path.join(ws, "www", "real", "decoy.bin"), _HTTP_PAYLOAD)
+    o, bits = _origin_up(ws, mode="hostile", extra_headers={
+        "Content-Disposition": 'attachment; filename="evil.sh"'})
+    if o is None:
+        return [], bits
+    base = os.environ["FC_UAT_SMB_URL"].rstrip("/") + "/uat_httpname"
+    bits["base"] = base
+    return [o.base + "/downloads/wanted.bin", base + "/"] + _smb_args(), bits
+
+
+def c_http_smb_filename(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    if rc != 0:
+        return False, f"exit {rc}: {out.strip()[-200:]}"
+    ok, det = _smb_readback(ws, info, name="wanted.bin")
+    if not ok:
+        return False, det
+    for bad in ("evil.sh", "decoy.bin"):
+        rcb, _o = run_fc(info_target[0],
+                         [info["base"] + "/" + bad,
+                          os.path.join(ws, "stray") + "/"] + _smb_args())
+        if rcb == 0 and os.path.isfile(os.path.join(ws, "stray", bad)):
+            return False, f"a name from the server was obeyed: {bad}"
+    return True, "name taken from the URL, not the server"
+
+
+def b_http_smb_incremental(ws):
+    _origin_file(ws)
+    o, bits = _origin_up(ws)
+    if o is None:
+        return [], bits
+    base = os.environ["FC_UAT_SMB_URL"].rstrip("/") + "/uat_httpinc"
+    a = [o.base + "/payload.bin", base + "/"] + _smb_args()
+    rc0, out0 = run_fc(info_target[0], a)
+    bits["base"] = base
+    bits["first"] = (rc0, out0)
+    return a, bits
+
+
+def c_http_smb_incremental(ws, rc, out, info):
+    if info.get("_skip"):
+        return None, info["_skip"]
+    rc0, out0 = info["first"]
+    if rc0 != 0:
+        return False, f"first run exit {rc0}: {out0.strip()[-160:]}"
+    if rc != 0:
+        return False, f"second run exit {rc}: {out.strip()[-200:]}"
+    if "Up to date" not in out:
+        return False, f"second run did not skip: {out.strip()[-200:]}"
+    return True, "second run reported up to date"
+
+
 SCENARIOS = [
     S("UAT-LOCAL-1", "local", "basic tree copy preserves all content", b_basic, c_basic),
     S("UAT-LOCAL-2", "local", "incremental re-run skips/links identical files", b_incremental, c_incremental),
@@ -1174,6 +2110,29 @@ SCENARIOS = [
     S("UAT-SSH-9", "ssh", "remote-to-remote via saved connection with a bare filename", b_conn_r2r_bare_name, c_conn_r2r_bare_name, needs="ssh"),
     S("UAT-SSH-10", "ssh", "incremental check asks per path, never lists the whole destination", b_remote_scan_targeted, c_remote_scan_targeted, needs="ssh"),
 
+    S("UAT-HTTP-1", "http", "http(s):// destination is refused", b_http_dest_refused, c_http_dest_refused),
+    S("UAT-HTTP-2", "http", "a URL plus extra sources is refused", b_http_multi_src_refused, c_http_multi_src_refused),
+    S("UAT-HTTP-3", "http", "a URL naming no file is refused", b_http_no_filename, c_http_no_filename),
+    S("UAT-HTTP-4", "http", "http → cloud is refused with the relay hint", b_http_to_cloud_refused, c_http_to_cloud_refused),
+    S("UAT-HTTP-5", "http", "http → local is refused (use curl/wget)", b_http_to_local_refused, c_http_to_local_refused),
+    S("UAT-HTTP-6", "http", "http:// → SSH over SFTP", b_http_ssh_sftp, c_http_ssh_sftp, needs="ssh"),
+    S("UAT-HTTP-7", "http", "http:// → SSH with --ssh-no-sftp (cat over exec)", b_http_ssh_exec, c_http_ssh_exec, needs="ssh"),
+    S("UAT-HTTP-8", "http", "--sftp-only never falls back to the shell", b_http_sftp_only_refuses_fallback, c_http_sftp_only_refuses_fallback, needs="ssh"),
+    S("UAT-HTTP-9", "http", "Range resume after a broken stream", b_http_range_resume, c_http_range_resume, needs="ssh"),
+    S("UAT-HTTP-10", "http", "filename comes from the URL, not the server", b_http_filename_provenance, c_http_filename_provenance, needs="ssh"),
+    S("UAT-HTTP-11", "http", "directory receives <dir>/<name>; plain path renames", b_http_dir_and_rename, c_http_dir_and_rename, needs="ssh"),
+    S("UAT-HTTP-12", "http", "incremental skip on an unchanged second run", b_http_incremental_skip, c_http_incremental_skip, needs="ssh"),
+    S("UAT-HTTP-13", "http", "a broken stream is never silently short", b_http_graceful_close_truncation, c_http_graceful_close_truncation, needs="ssh"),
+    S("UAT-HTTP-14", "http", "--http-user / --http-header reach the origin", b_http_auth_headers, c_http_auth_headers, needs="ssh"),
+    S("UAT-HTTP-15", "http", "an HTML login page is refused, not written", b_http_html_wall, c_http_html_wall, needs="ssh"),
+    S("UAT-HTTP-16", "http", "SFTP refused → exec writer, announced by the banner", b_http_autofallback, c_http_autofallback, needs="ssh"),
+    S("UAT-HTTP-17", "http", "https:// → SSH over SFTP", b_https_ssh_sftp, c_https_ssh_sftp, needs="ssh,https"),
+    S("UAT-HTTP-18", "http", "https:// → SSH with --ssh-no-sftp", b_https_ssh_exec, c_https_ssh_exec, needs="ssh,https"),
+    S("UAT-HTTP-19", "http", "http:// → SMB share", b_http_smb, c_http_smb, needs="smb"),
+    S("UAT-HTTP-20", "http", "https:// → SMB share", b_https_smb, c_https_smb, needs="smb,https"),
+    S("UAT-HTTP-21", "http", "SMB: filename comes from the URL", b_http_smb_filename, c_http_smb_filename, needs="smb"),
+    S("UAT-HTTP-22", "http", "SMB: incremental skip on a second run", b_http_smb_incremental, c_http_smb_incremental, needs="smb"),
+
     S("UAT-CLOUD-1", "cloud", "object-storage round trip (s3/az/gs)", b_cloud, c_cloud, needs="cloud"),
     S("UAT-SMB-1", "smb", "SMB upload/download round trip", b_smb, c_smb, needs="smb"),
 
@@ -1198,22 +2157,31 @@ def _indent(text, p="      | "):
 
 
 def _run_one(sc, target, manual, keep):
-    needs = sc["needs"]
+    # `needs` is a comma-separated set of tokens so a scenario can require more
+    # than one thing (an https relay needs sshd AND cert tooling).
+    needs = set((sc["needs"] or "").split(",")) - {""}
     if not manual:
         if sc["manual_only"]:
             return None, "manual-only (needs live endpoint/credentials)"
-        if needs == "ssh" and not HAVE_SSH:
+        if "ssh" in needs and not HAVE_SSH:
             return None, "no localhost sshd"
-        if needs == "ssh" and not HAVE_PARAMIKO:
+        if "ssh" in needs and not HAVE_PARAMIKO:
             return None, (f"paramiko not importable by {sys.executable} "
                           f"- SSH transfers cannot run")
-        if needs == "smb" and not os.environ.get("FC_UAT_SMB_URL"):
+        if "smb" in needs and not os.environ.get("FC_UAT_SMB_URL"):
             return None, "set FC_UAT_SMB_URL (+USER/PASS) to test SMB"
-        if needs == "cloud" and not os.environ.get("FC_UAT_CLOUD_URL"):
+        if "cloud" in needs and not os.environ.get("FC_UAT_CLOUD_URL"):
             return None, "set FC_UAT_CLOUD_URL (+BLITCP_CREDS_PASSPHRASE) to test cloud"
+        if "https" in needs and CERT_MISSING:
+            return None, f"no way to make a test certificate: {CERT_MISSING}"
     ws = tempfile.mkdtemp(prefix=f"{sc['id']}_")
+    info = {}
     try:
         args, info = sc["build"](ws)
+        # A builder that could not stand up its infrastructure says so here
+        # rather than raising, so a missing port or cert is a SKIP.
+        if info.get("_skip"):
+            return None, info["_skip"]
         if manual:
             print(f"\n{C.B}{sc['id']} — {sc['title']}{C.X}  {C.GREY}[{sc['group']}]{C.X}")
             print(f"  {C.GREY}workspace:{C.X} {ws}")
@@ -1226,7 +2194,7 @@ def _run_one(sc, target, manual, keep):
                 ans = input(f"  Accept {sc['id']}? [y/n/s] ").strip().lower()
                 return {"y": True, "n": False}.get(ans, None), "manual verdict"
             input(f"  {C.GREY}[enter to run]{C.X} ")
-        rc, out = run_fc(target, args)
+        rc, out = run_fc(target, args, env_extra=info.get("_env"))
         if manual:
             print(_indent(out.strip()))
         ok, detail = sc["check"](ws, rc, out, info)
@@ -1236,6 +2204,14 @@ def _run_one(sc, target, manual, keep):
                 ok = ans == "y"
         return ok, detail
     finally:
+        # Stop any origin the builder started, whatever happened above — a
+        # surviving listening socket is a real leak and audit_uat.py will
+        # (rightly) report it.
+        for _srv in (info.get("_stop") or []):
+            try:
+                _srv()
+            except Exception:                               # noqa: BLE001
+                pass
         if keep:
             print(f"  {C.GREY}kept: {ws}{C.X}")
         elif not manual:
@@ -1248,7 +2224,8 @@ def main(argv=None):
     ap.add_argument("--target", default=os.path.join(HERE, "blitcp.py"))
     ap.add_argument("--manual", action="store_true")
     ap.add_argument("--group", nargs="+",
-                    choices=["local", "index", "ssh", "cloud", "smb", "info"])
+                    choices=["local", "index", "ssh", "http", "cloud", "smb",
+                             "info"])
     ap.add_argument("--only", nargs="+", metavar="ID")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--keep", action="store_true")

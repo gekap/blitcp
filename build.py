@@ -21,7 +21,7 @@ import importlib.util
 import subprocess
 
 # Optional cloud backends. When importable in the build environment they are
-# bundled into the frozen binary (see cloud_collect_flags) so the standalone
+# bundled into the frozen binary (see optional_collect_flags) so the standalone
 # GUI/CLI — whose --fc-core engine runs inside the same embedded interpreter —
 # can do s3://, az:// and gs:// transfers without a separate Python install.
 # Maps the probe-import to the top packages PyInstaller must collect whole
@@ -33,6 +33,15 @@ CLOUD_COLLECT = {
                              "google.api_core", "google.auth",
                              "google.resumable_media"],
     "smbclient": ["smbprotocol", "smbclient", "spnego", "pyasn1"],
+}
+
+# Optional cookie/session reader for http(s):// sources
+# (--cookies-from-browser, and a browser name saved on an HTTP connection).
+# Same deal as the cloud SDKs: bundled when importable in the build
+# environment. It matters more here — a frozen binary has no pip, so a build
+# without it ships a release where reading a live browser login is impossible.
+COOKIE_COLLECT = {
+    "browser_cookie3": ["browser_cookie3"],
 }
 
 # Shared libraries the bundle must NOT carry — the host has to provide them.
@@ -135,12 +144,35 @@ def install_deps():
             else:
                 print("  WARN: cloud SDKs not installed — binary will omit "
                       "s3://, az:// and gs:// support")
+    # Optional browser-cookie reader — best-effort, same as the cloud SDKs.
+    # Missing here means --cookies-from-browser is dead in the built binary
+    # (no pip inside a frozen build to fix it later); --cookies FILE still works.
+    if os.path.exists("requirements-cookies.txt"):
+        try:
+            __import__("browser_cookie3")
+            print("  OK: browser cookie reader (browser_cookie3)")
+        except ImportError:
+            print("  Installing browser cookie reader (browser_cookie3)...")
+            for extra in ([], ["--break-system-packages"]):
+                try:
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", "-r",
+                        "requirements-cookies.txt", "--quiet",
+                        "--disable-pip-version-check", *extra,
+                    ])
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+            else:
+                print("  WARN: browser_cookie3 not installed — binary will omit "
+                      "--cookies-from-browser (--cookies FILE still works)")
 
 
-def _cloud_packages():
-    """The cloud SDK packages to collect whole, for whichever are importable."""
+def _optional_packages():
+    """Optional packages to collect whole, for whichever are importable here
+    (cloud SDKs + the browser-cookie reader)."""
     collected, seen = [], set()
-    for probe, pkgs in CLOUD_COLLECT.items():
+    for probe, pkgs in {**CLOUD_COLLECT, **COOKIE_COLLECT}.items():
         if importlib.util.find_spec(probe) is None:
             continue
         for pkg in pkgs:
@@ -150,9 +182,9 @@ def _cloud_packages():
     return collected
 
 
-def cloud_collect_flags():
-    """`--collect-all` flags for whichever cloud SDKs are importable here."""
-    return ["--collect-all=" + pkg for pkg in _cloud_packages()]
+def optional_collect_flags():
+    """`--collect-all` flags for whichever optional packages are importable."""
+    return ["--collect-all=" + pkg for pkg in _optional_packages()]
 
 
 def _gui_spec_cmd(name, script, icon):
@@ -161,7 +193,7 @@ def _gui_spec_cmd(name, script, icon):
     spec_path = f"{name}.spec"
     with open(spec_path, "w") as fh:
         fh.write(GUI_SPEC_TEMPLATE.format(
-            pkgs=_cloud_packages(),
+            pkgs=_optional_packages(),
             script=os.path.abspath(script),
             name=name,
             host_libs=HOST_LIBS,
@@ -288,7 +320,7 @@ def build_target(name, script, windowed=False, icon=None):
                 "--hidden-import=win32security",
                 "--hidden-import=pywintypes",
             ]
-        cmd += cloud_collect_flags()
+        cmd += optional_collect_flags()
         if icon and os.path.exists(icon):
             cmd += ["--icon", icon]
 

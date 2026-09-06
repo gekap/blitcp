@@ -176,11 +176,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.1.6"
+__version__ = "4.2.9"
 # Shown only where the user explicitly asked for it (--version, GUI
 # About/Settings). A plain static URL: no redirect, no tracking, no
 # network call of any kind is made on our side.
 SUPPORT_URL = "https://ko-fi.com/blitcp"
+SUPPORT_URL_ALT = "https://liberapay.com/blitcp"
 # Private line: self-update checks the PRIVATE repo for new releases. The
 # releases API + private asset downloads need a token — from env
 # (FC_UPDATE_TOKEN / GH_TOKEN / GITHUB_TOKEN) or, for distributed PRIVATE builds,
@@ -2176,7 +2177,15 @@ def _classify_storage_linux(path):
     if not best_mp:
         return "unknown"
     net = {"cifs", "smb3", "smbfs", "nfs", "nfs4", "nfsd", "ncpfs", "afs", "9p"}
-    if fstype in net or fstype.startswith("fuse"):
+    # Not every FUSE mount is remote. "fuseblk" is FUSE over a BLOCK DEVICE —
+    # ntfs-3g and exfat-fuse — a local disk wearing a FUSE driver, and it is
+    # how every NTFS volume mounts on Linux. Calling it "network" cost more
+    # than a wrong label: the three HDD fast paths (source scan, dedup DB, link
+    # audit) all test == "hdd", so a rotating USB backup drive silently lost
+    # every one of them. The distinction is reliable — a block-backed FUSE
+    # mount names /dev/... as its source, sshfs/rclone/gvfs never do.
+    if fstype in net or (fstype.startswith("fuse")
+                         and not source.startswith("/dev/")):
         return "network"
     if fstype in ("tmpfs", "ramfs", "overlay", "squashfs", "aufs"):
         return "other"
@@ -4631,6 +4640,22 @@ def _makedirs_or_die(path, what="destination"):
         raise SystemExit(f"Error: {what} {path!r} is not writable")
 
 
+def _existing_ancestor(path):
+    """Nearest ancestor of path that exists, for querying the filesystem the
+    destination WOULD be created on without creating it. A new directory always
+    lands on its closest existing parent's filesystem, so statvfs/disk_usage
+    return the same block size and free space either way — which is what lets a
+    --dry-run run the full space check while writing nothing."""
+    p = os.path.abspath(path)
+    while True:
+        if os.path.exists(p):
+            return p
+        parent = os.path.dirname(p)
+        if parent == p:
+            return p
+        p = parent
+
+
 def _dest_block_size(dst):
     """Allocation unit of the destination filesystem, in bytes.
 
@@ -4677,14 +4702,20 @@ def _space_overhead_margin(fs_alloc, ndirs, block):
     return ndirs * block + max(1024 * 1024, fs_alloc // 100)
 
 
-def check_destination_space(dst, required_bytes, force=False):
+def check_destination_space(dst, required_bytes, force=False, create=True):
     """
     Check if destination has enough free space.
     Creates the destination directory if needed to query its filesystem.
     Returns True if OK to proceed, False to abort.
+
+    create=False is the preview form: query the nearest existing ancestor
+    instead, so a --dry-run against a mistyped path cannot bring it into being.
     """
-    # Create dst if it doesn't exist so we can stat its filesystem
-    _makedirs_or_die(dst)
+    if create:
+        # Create dst if it doesn't exist so we can stat its filesystem
+        _makedirs_or_die(dst)
+    else:
+        dst = _existing_ancestor(dst)
 
     try:
         usage = shutil.disk_usage(dst)
@@ -7207,10 +7238,16 @@ def create_links(link_map, dst_root, fs_strategy=None):
 # CASE-INSENSITIVE FILESYSTEM CONFLICT RESOLUTION
 # ════════════════════════════════════════════════════════════════════════════
 def _fs_case_insensitive(path):
-    """Test whether the filesystem at *path* is case-insensitive."""
+    """Test whether the filesystem at *path* is case-insensitive.
+
+    Probes the nearest existing ancestor rather than creating *path*: case
+    folding is a property of the filesystem, so an as-yet-uncreated directory
+    answers the same as the parent it will be created in — and creating it here
+    is what made `--dry-run` against a mistyped destination mkdir the typo.
+    The probe file itself is created and unlinked, leaving nothing behind."""
     import tempfile
     try:
-        os.makedirs(path, exist_ok=True)
+        path = _existing_ancestor(path)
         fd, probe = tempfile.mkstemp(dir=path, prefix=".fc_case_")
         os.close(fd)
         try:
@@ -11551,13 +11588,57 @@ def _conns_for_named_endpoints(args=None):
     return load_credentials_file(path)
 
 
+# SSH transport choice per saved connection — the same three values the GUI's
+# connection dialog offers. "ssh" = tar over the exec channel (--ssh-no-sftp),
+# "sftp" = pure SFTP, no shell (--sftp-only), "both" = the classic hybrid
+# (SFTP for large files, tar for small — no flag). A connection saved before
+# the field existed has no value and keeps the CLI default: hybrid.
+SSH_PROTOCOLS = ("ssh", "sftp", "both")
+
+
+def _saved_ssh_protocol(conn):
+    """The connection's transport choice, or None when unset/unknown."""
+    p = (conn or {}).get("protocol")
+    return p if p in SSH_PROTOCOLS else None
+
+
+def apply_saved_ssh_protocol(args, overrides):
+    """Turn the Protocol saved on the SSH connection(s) an endpoint resolved to
+    into the transport flags the copy path already understands. Mirrors the
+    GUI: 'sftp' → --sftp-only, 'ssh' → --ssh-no-sftp, 'both' → no flag, and
+    an 'ssh' source with an 'sftp' destination (or vice versa) is refused
+    because no single transport serves both. An explicit --sftp-only or
+    --ssh-no-sftp on the command line always wins over the saved value."""
+    if getattr(args, "sftp_only", False) or getattr(args, "ssh_no_sftp", False):
+        return
+    chosen = {}
+    for ov in overrides:
+        if ov and ov.get("protocol"):
+            chosen[ov["protocol"]] = ov.get("name") or "?"
+    if not chosen:
+        return
+    if "ssh" in chosen and "sftp" in chosen:
+        raise SystemExit(
+            f"Error: source and destination connections need compatible SSH "
+            f"protocols — {chosen['ssh']!r} is 'ssh' (tar over exec) and "
+            f"{chosen['sftp']!r} is 'sftp' (no shell). Change one with "
+            f"'blitcp creds edit NAME', or force a transport with "
+            f"--ssh-no-sftp / --sftp-only.")
+    if "sftp" in chosen:
+        args.sftp_only = True
+        args._saved_protocol_note = f"SFTP only (saved on connection {chosen['sftp']!r})"
+    elif "ssh" in chosen:
+        args.ssh_no_sftp = True
+        args._saved_protocol_note = f"SSH only, tar over exec (saved on connection {chosen['ssh']!r})"
+
+
 def resolve_named_endpoint(token, conns):
     """Expand an endpoint that names a saved connection. Accepts a bare name
     (`azure-prod`) or `name:subpath` (`ssh1:/tmp`, `aws-dev:bucket/key`).
 
     Returns (new_token, ssh_overrides):
       • cloud connection → ("s3://name@bucket/key", None)
-      • ssh connection   → ("user@host:/path", {port, key, password})
+      • ssh connection   → ("user@host:/path", {port, key, password, protocol, name})
       • smb connection   → ("smb://host/share[/sub]", {"smb": {...creds...}})
       • not a profile    → (None, None)  (leave the token untouched)
     """
@@ -11628,7 +11709,8 @@ def resolve_named_endpoint(token, conns):
         user = conn.get("user") or getpass.getuser()
         new = f"{user}@{conn['host']}:{path}"
         overrides = {"port": int(conn.get("port", 22)), "key": conn.get("key"),
-                     "password": conn.get("password")}
+                     "password": conn.get("password"),
+                     "protocol": _saved_ssh_protocol(conn), "name": name}
         return new, overrides
     if ctype == "smb":
         if not conn.get("host"):
@@ -11696,6 +11778,7 @@ def apply_named_endpoints(args):
     # from credentials.json without an explicit --ssh-*-password — without it the
     # GUI's saved host had no password to pass and the engine fell back to an
     # (impossible, non-interactive) prompt.
+    so = do = None
     if not new_src:
         so = _ssh_creds_by_host(args.source, conns)
         if so:
@@ -11715,6 +11798,15 @@ def apply_named_endpoints(args):
             if do["password"] and not getattr(args, "_resolved_dst_password", None):
                 args._resolved_dst_password = do["password"]
 
+    # The saved Protocol travels with the credentials: a connection set to
+    # "SFTP only" in the GUI must not silently run the hybrid from the CLI.
+    _ssh_ovs = [ov for ov in (src_over, dst_over) if ov and "smb" not in ov]
+    if not new_src and so:
+        _ssh_ovs.append(so)
+    if not new_dst and do:
+        _ssh_ovs.append(do)
+    apply_saved_ssh_protocol(args, _ssh_ovs)
+
 
 def _ssh_creds_by_host(spec, conns):
     """Resolve SSH credentials for a full ``user@host:path`` endpoint (not a saved
@@ -11726,14 +11818,15 @@ def _ssh_creds_by_host(spec, conns):
     if not m:
         return None
     user, host = m.group(1), m.group(2)
-    for c in conns.values():
+    for cname, c in conns.items():
         if not isinstance(c, dict) or c.get("type") != "ssh" or c.get("host") != host:
             continue
         cu = c.get("user")
         if cu and user and cu != user:
             continue
         return {"port": int(c.get("port", 22) or 22),
-                "key": c.get("key"), "password": c.get("password")}
+                "key": c.get("key"), "password": c.get("password"),
+                "protocol": _saved_ssh_protocol(c), "name": cname}
     return None
 
 
@@ -12696,6 +12789,32 @@ def apply_object_meta_local(local_path, meta):
 
 
 # ── Backend base + provider implementations ─────────────────────────────────
+class _ChunkReader:
+    """Wrap an iterator of byte chunks (e.g. Azure's .chunks()) into a
+    sequential .read(n) file-like, for the streaming-relay pipeline."""
+
+    def __init__(self, chunks):
+        self._it = iter(chunks)
+        self._buf = b""
+        self._done = False
+
+    def read(self, n=-1):
+        while not self._done and (n < 0 or len(self._buf) < n):
+            try:
+                self._buf += next(self._it)
+            except StopIteration:
+                self._done = True
+        if n < 0:
+            out, self._buf = self._buf, b""
+        else:
+            out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+    def close(self):
+        self._it = iter(())
+        self._done = True
+
+
 class CloudBackend:
     """Common interface. Subclasses implement the primitives; the orchestrator
     is provider-agnostic."""
@@ -12729,6 +12848,17 @@ class CloudBackend:
 
     def server_side_copy(self, src_key, dst_key, metadata):
         """Copy within the same container/account without round-tripping bytes."""
+        raise NotImplementedError
+
+    # streaming (relay) — CLOUD_RELAY_DESIGN.md §2
+    def open_read(self, key):
+        """Return (file_like, size, meta). file_like yields the object's bytes
+        sequentially via .read(n); the caller never seeks it."""
+        raise NotImplementedError
+
+    def upload_stream(self, fileobj, key, metadata, size):
+        """Upload exactly `size` bytes read from a SEEKABLE fileobj to key.
+        Seekability keeps SDK retries (multipart/resumable) safe."""
         raise NotImplementedError
 
     def join_key(self, prefix, rel):
@@ -12815,6 +12945,23 @@ class S3Backend(CloudBackend):
             CopySource={"Bucket": self.container, "Key": src_key},
             Metadata=metadata, MetadataDirective="REPLACE")
 
+    def open_read(self, key):
+        r = self.client.get_object(Bucket=self.container, Key=key)
+        return (r["Body"], int(r.get("ContentLength") or 0),
+                dict(r.get("Metadata", {})))
+
+    def upload_stream(self, fileobj, key, metadata, size):
+        # use_threads=False: the relay already parallelises across OBJECTS;
+        # s3transfer's per-call thread pool on top of that raced concurrent
+        # part reads on the shared spool and desynced the connection (an
+        # UploadPart 200 landed as unparsed garbage → KeyError 'ETag').
+        from boto3.s3.transfer import TransferConfig
+        self.client.upload_fileobj(
+            fileobj, self.container, key,
+            Config=TransferConfig(use_threads=False),
+            ExtraArgs={"Metadata": metadata,
+                       "ChecksumAlgorithm": "SHA256"})
+
 
 class AzureBackend(CloudBackend):
     scheme = "az"
@@ -12877,6 +13024,18 @@ class AzureBackend(CloudBackend):
         src = self.cc.get_blob_client(src_key)
         dst = self.cc.get_blob_client(dst_key)
         dst.start_copy_from_url(src.url, metadata=metadata)
+
+    def open_read(self, key):
+        dl = self.cc.get_blob_client(key).download_blob()
+        try:
+            meta = dict(dl.properties.metadata or {})
+        except Exception:
+            meta = {}
+        return _ChunkReader(dl.chunks()), int(dl.size or 0), meta
+
+    def upload_stream(self, fileobj, key, metadata, size):
+        self.cc.get_blob_client(key).upload_blob(
+            fileobj, length=size, overwrite=True, metadata=metadata)
 
 
 class GCSBackend(CloudBackend):
@@ -12947,6 +13106,39 @@ class GCSBackend(CloudBackend):
         if metadata:
             new.metadata = metadata
             new.patch()
+
+    def open_read(self, key):
+        blob = self.bucket.get_blob(key)
+        if blob is None:
+            raise FileNotFoundError(f"gs://{self.container}/{key}")
+        return blob.open("rb"), int(blob.size or 0), dict(blob.metadata or {})
+
+    def upload_stream(self, fileobj, key, metadata, size):
+        blob = self.bucket.blob(key)
+        blob.metadata = metadata
+        blob.upload_from_file(fileobj, size=size)
+
+
+class _SMBLockedFile:
+    """SMB read handle that holds the backend's session lock for its whole
+    lifetime (concurrent ops on one SMB session corrupt data — see
+    SMBBackend.__init__). Release is close-once safe."""
+
+    def __init__(self, f, lock):
+        self._f = f
+        self._lock = lock
+        self._released = False
+
+    def read(self, n=-1):
+        return self._f.read(n)
+
+    def close(self):
+        try:
+            self._f.close()
+        finally:
+            if not self._released:
+                self._released = True
+                self._lock.release()
 
 
 class SMBBackend(CloudBackend):
@@ -13122,6 +13314,66 @@ class SMBBackend(CloudBackend):
             except Exception:
                 pass
 
+    # ── Streaming-relay support (http(s):// source) ────────────────────
+    # Handles are handed to a SINGLE-threaded relay loop, so using them
+    # outside self._lock is safe — the lock exists to serialise the thread
+    # -pool drivers, which never run concurrently with the relay.
+
+    def stat_key(self, key):
+        """os.stat_result for a key, or None if it doesn't exist."""
+        with self._lock:
+            try:
+                return self._sc.stat(self._unc(key), **self._ck)
+            except Exception:
+                return None
+
+    def open_write(self, key):
+        """A write handle straight onto the share (parents created), so a
+        relay can stream into it without touching the local disk."""
+        unc = self._unc(key)
+        with self._lock:
+            try:
+                self._sc.makedirs(unc.rsplit("\\", 1)[0], exist_ok=True,
+                                  **self._ck)
+            except OSError:
+                pass
+            return self._sc.open_file(unc, mode="wb", **self._ck)
+
+    def open_read(self, key):
+        # The returned reader HOLDS self._lock until closed: concurrent
+        # operations on one SMB session corrupt data (see __init__), so a
+        # parallel relay draining several open_read streams must serialise —
+        # workers simply queue on the lock, per this backend's design.
+        self._lock.acquire()
+        try:
+            st = self._sc.stat(self._unc(key), **self._ck)
+            f = self._sc.open_file(self._unc(key), mode="rb", **self._ck)
+        except Exception:
+            self._lock.release()
+            raise
+        return _SMBLockedFile(f, self._lock), st.st_size, self._meta_for(key)
+
+    def upload_stream(self, fileobj, key, metadata, size):
+        # Entire write under the session lock — same serialisation rule.
+        with self._lock:
+            unc = self._unc(key)
+            try:
+                self._sc.makedirs(unc.rsplit("\\", 1)[0], exist_ok=True,
+                                  **self._ck)
+            except OSError:
+                pass
+            with self._sc.open_file(unc, mode="wb", **self._ck) as f:
+                for chunk in iter(lambda: fileobj.read(1024 * 1024), b""):
+                    f.write(chunk)
+            self._set_mtime(unc, metadata)
+
+    def set_key_mtime(self, key, mtime):
+        with self._lock:
+            try:
+                self._sc.utime(self._unc(key), (mtime, mtime), **self._ck)
+            except Exception:
+                pass
+
 
 def make_backend(spec, args):
     creds = resolve_connection(spec, args)
@@ -13163,6 +13415,9 @@ def _entry_has_secret(c):
         return bool(c.get("password"))
     if t == "smb":
         return bool(c.get("password"))
+    if t == "http":
+        # The header line is a secret too — it typically IS the token.
+        return bool(c.get("password") or c.get("header"))
     return False
 
 
@@ -13386,7 +13641,7 @@ def creds_manager(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print("Usage: blitcp creds <sub> [NAME] [FILE]\n"
               "  list                       show connections (secrets masked)\n"
-              "  add NAME [-y]              add a connection (s3/azure/gcs/ssh/smb\n"
+              "  add NAME [-y]              add a connection (s3/azure/gcs/ssh/smb/http\n"
               "                             or an S3-compatible provider preset:\n"
               "                             r2, b2, wasabi, spaces, scaleway,\n"
               "                             hetzner, idrive, storj, oracle;\n"
@@ -13479,6 +13734,16 @@ def creds_manager(argv):
                          f" {auth}")
                 if c.get("share"):
                     extra += f" share={c.get('share')}"
+            elif t == "http":
+                auth = []
+                if c.get("user"):
+                    auth.append(f"{c.get('user')}"
+                                + ("+password=***" if c.get("password") else ""))
+                if c.get("header"):
+                    auth.append("header=***")
+                if c.get("cookies"):
+                    auth.append(f"cookies={c.get('cookies')}")
+                extra = f"host={c.get('host')} " + (" ".join(auth) or "no auth")
             else:
                 extra = ""
             if t in ("s3", "az", "gs") and c.get("container"):
@@ -13501,7 +13766,7 @@ def creds_manager(argv):
         if not name:
             print(f"{C.RED}Error: 'creds add' needs a connection name.{C.RESET}")
             return 1
-        t = (input("  Type [s3/azure/gcs/ssh/smb — or a preset: "
+        t = (input("  Type [s3/azure/gcs/ssh/smb/http — or a preset: "
                    + "/".join(KNOWN_S3_PROVIDERS) + "]: ").strip() or "s3").lower()
         t = _S3_PROVIDER_ALIASES.get(t, t)
         preset = KNOWN_S3_PROVIDERS.get(t)
@@ -13527,10 +13792,11 @@ def creds_manager(argv):
             t = "s3"   # the shared default-bucket prompt below applies too
         else:
             t = {"azure": "az", "gcs": "gs", "s3": "s3", "az": "az", "gs": "gs",
-                 "ssh": "ssh", "sftp": "ssh", "smb": "smb", "cifs": "smb"}.get(t)
-            if t not in ("s3", "az", "gs", "ssh", "smb"):
+                 "ssh": "ssh", "sftp": "ssh", "smb": "smb", "cifs": "smb",
+                 "http": "http", "https": "http"}.get(t)
+            if t not in ("s3", "az", "gs", "ssh", "smb", "http"):
                 print(f"{C.RED}Error: type must be s3, azure, gcs, ssh, smb, "
-                      f"or a provider preset "
+                      f"http, or a provider preset "
                       f"({'/'.join(KNOWN_S3_PROVIDERS)}).{C.RESET}")
                 return 1
             entry = {"type": t}
@@ -13581,6 +13847,12 @@ def creds_manager(argv):
             dp = input("  Default remote path (blank = none): ").strip()
             if dp:
                 entry["path"] = dp
+            proto = input("  Protocol [ssh/sftp/both] (blank = both): ").strip().lower()
+            if proto and proto not in SSH_PROTOCOLS:
+                print(f"{C.RED}Error: protocol must be one of "
+                      f"{', '.join(SSH_PROTOCOLS)}.{C.RESET}")
+                return 1
+            entry["protocol"] = proto or "both"
         elif t == "smb":
             entry["host"] = input("  Host (name or IP): ").strip()
             if not entry["host"]:
@@ -13604,6 +13876,31 @@ def creds_manager(argv):
             sh = input("  Default share (blank = none): ").strip()
             if sh:
                 entry["share"] = sh
+        elif t == "http":
+            # Matched by HOST: any http(s):// source URL on this host picks
+            # these credentials up automatically (like SSH's match-by-host).
+            entry["host"] = input("  Host (as it appears in the URL): ").strip()
+            if not entry["host"]:
+                print(f"{C.RED}Error: HTTP connection needs a host.{C.RESET}")
+                return 1
+            u = input("  User (blank = none, e.g. token-only auth): ").strip()
+            if u:
+                entry["user"] = u
+                pw = _prompt_secret("  Password: ")
+                if pw:
+                    entry["password"] = pw
+            h = _prompt_secret(
+                "  Extra header (blank = none, e.g. Authorization: Bearer …): ")
+            if h:
+                if ":" not in h:
+                    print(f"{C.RED}Error: header must be 'Name: value'.{C.RESET}")
+                    return 1
+                entry["header"] = h
+            ck = input("  Cookies (blank = none; a cookies.txt path, or a "
+                       "browser name\n    like 'chrome'/'firefox' to reuse a "
+                       "login you already have): ").strip()
+            if ck:
+                entry["cookies"] = ck
         if t in ("s3", "az", "gs"):
             # A default bucket/container lets you copy to just `name` (no URL).
             cword = "container" if t == "az" else "bucket"
@@ -13702,6 +13999,14 @@ def creds_manager(argv):
             setif("key", ask("Private key path", cur.get("key")))
             setif("password", ask("Password", cur.get("password"), secret=True))
             setif("path", ask("Default remote path", cur.get("path")))
+            proto = ask("Protocol (ssh/sftp/both)", cur.get("protocol"))
+            if proto not in (None, ""):
+                proto = str(proto).strip().lower()
+                if proto not in SSH_PROTOCOLS:
+                    print(f"{C.RED}Error: protocol must be one of "
+                          f"{', '.join(SSH_PROTOCOLS)}.{C.RESET}")
+                    return 1
+                entry["protocol"] = proto
         elif t == "smb":
             setif("host", ask("Host", cur.get("host")))
             setif("user", ask("User", cur.get("user")))
@@ -13780,6 +14085,25 @@ def creds_manager(argv):
                 return 1
             print(f"  {C.GREEN}✓ {name}: SMB connection OK "
                   f"({c.get('user')}@{c.get('host')}:{c.get('port', 445)}){C.RESET}")
+            return 0
+        if scheme == "http":
+            c = conns[name]
+            probe = argparse.Namespace(credentials_file=path, http_user=None,
+                                       http_password=False,
+                                       http_password_env=None, http_header=None)
+            ch = c.get("host") or ""
+            probe_url = ch if "://" in ch else f"https://{ch}/"
+            try:
+                url, hdrs = _http_resolve_auth(probe, probe_url)
+                resp, _t, _m, _r = _http_open(url, headers=hdrs)
+                code = resp.getcode()
+                resp.close()
+            except Exception as e:
+                msg = str(e).strip().splitlines()[0] if str(e).strip() else e
+                print(f"  {C.RED}✗ {name}: request failed — {msg}{C.RESET}")
+                return 1
+            print(f"  {C.GREEN}✓ {name}: HTTP {code} from "
+                  f"{c.get('host')} (auth sent){C.RESET}")
             return 0
         if scheme not in ("s3", "az", "gs"):
             print(f"{C.RED}Error: connection {name!r} has no valid type.{C.RESET}")
@@ -13925,86 +14249,1146 @@ def _self_invoke_cmd():
     return [sys.executable, os.path.abspath(__file__)]
 
 
-def _run_ssh_leg(args, source, destination):
-    """Run the local↔SSH half of a relay as a child process, reusing the whole
-    SSH copy engine. Passwords are forwarded via env vars, never argv."""
-    import subprocess
-    cmd = _self_invoke_cmd() + [source, destination,
-                                "--threads", str(args.threads),
-                                "--buffer", str(args.buffer)]
-    env = dict(os.environ)
-    if getattr(args, "dry_run", False):
-        cmd.append("--dry-run")
-    if getattr(args, "no_verify", False):
-        cmd.append("--no-verify")
-    if getattr(args, "no_dedup", False):
-        cmd.append("--no-dedup")
-    if getattr(args, "compress", False):
-        cmd.append("--compress")
-    if getattr(args, "ssh_no_sftp", False):
-        cmd.append("--ssh-no-sftp")
-    if getattr(args, "sftp_only", False):
-        cmd.append("--sftp-only")
-    if getattr(args, "force", False):
-        cmd.append("--force")
-    if getattr(args, "chunk_size", None):
-        cmd += ["--chunk-size", str(args.chunk_size)]
-    for pat in (getattr(args, "exclude", None) or []):
-        cmd += ["--exclude", pat]
-    if getattr(args, "preserve", None):
-        cmd += ["--preserve", args.preserve]
-    if getattr(args, "ssh_port", 22) != 22:
-        cmd += ["--ssh-dst-port", str(args.ssh_port)]
-    if getattr(args, "ssh_key", None):
-        cmd += ["--ssh-dst-key", args.ssh_key]
-    if getattr(args, "src_port", 22) != 22:
-        cmd += ["--ssh-src-port", str(args.src_port)]
-    if getattr(args, "src_key", None):
-        cmd += ["--ssh-src-key", args.src_key]
-    dpw = getattr(args, "_resolved_dst_password", None)
-    if dpw:
-        env["_FC_RELAY_DST_PW"] = dpw
-        cmd += ["--ssh-dst-password-env", "_FC_RELAY_DST_PW"]
-    elif getattr(args, "ssh_password", False):
-        cmd.append("--ssh-dst-password")
-    elif getattr(args, "ssh_password_env", None):
-        cmd += ["--ssh-dst-password-env", args.ssh_password_env]
-    spw = getattr(args, "_resolved_src_password", None)
-    if spw:
-        env["_FC_RELAY_SRC_PW"] = spw
-        cmd += ["--ssh-src-password-env", "_FC_RELAY_SRC_PW"]
-    elif getattr(args, "src_password", False):
-        cmd.append("--ssh-src-password")
-    elif getattr(args, "src_password_env", None):
-        cmd += ["--ssh-src-password-env", args.src_password_env]
-    return subprocess.run(cmd, env=env).returncode
-
-
 def _relay_object_ssh(args, obj_spec, obj_is_src):
-    """Relay between an object endpoint (cloud/SMB) and an SSH endpoint through a
-    local temp dir: reuse the object up/download drivers and the SSH copy engine
-    (invoked as a child so none of its logic is duplicated)."""
-    import tempfile
-    relay = tempfile.mkdtemp(prefix="blitcp_relay_")
-    pretty = CLOUD_SCHEME_NAMES[obj_spec.scheme]
+    """Relay between an object endpoint (cloud/SMB) and an SSH endpoint by
+    STREAMING each file through this machine — 1 MB chunks straight onto the
+    far handle (object→SSH), or through a bounded per-object spool when the
+    destination is a cloud store (SSH→cloud). Nothing dataset-sized ever
+    lands on the local disk (CLOUD_RELAY_DESIGN.md §9, implemented)."""
+    if not _load_paramiko():
+        print(f"{C.RED}Error: SSH transfers require paramiko.{C.RESET}")
+        sys.exit(1)
     try:
-        if obj_is_src:
-            print(f"  {C.DIM}Relaying {pretty} → SSH through local temp...{C.RESET}")
-            dl = argparse.Namespace(**vars(args))
-            dl.destination = relay
-            _download_from_cloud(dl, obj_spec)
-            rc = _run_ssh_leg(args, relay, args.destination)
-        else:
-            print(f"  {C.DIM}Relaying SSH → {pretty} through local temp...{C.RESET}")
-            rc = _run_ssh_leg(args, args.source, relay)
-            if rc == 0:
-                up = argparse.Namespace(**vars(args))
-                up.source = relay
-                _upload_to_cloud(up, obj_spec)
-        if rc != 0:
-            sys.exit(rc)
+        rc = (_object_to_ssh_stream(args, obj_spec) if obj_is_src
+              else _ssh_to_object_stream(args, obj_spec))
+    except SystemExit:
+        raise
+    except Exception as e:
+        msg = _fmt_exc(e)
+        print(f"\n{C.RED}Error: {msg}{C.RESET}")
+        rc = 1
+    if rc:
+        sys.exit(rc)
+
+
+def _object_to_ssh_stream(args, obj_spec):
+    """cloud/SMB → SSH: per file, open_read → pipelined SFTP write, 1 MB
+    in-memory chunks (the R2R relay shape). Verify hashes the stream with an
+    algorithm the destination can recompute — no re-download."""
+    start = time.time()
+    backend = make_backend(obj_spec, args)
+    pretty = CLOUD_SCHEME_NAMES[obj_spec.scheme]
+    dst_remote = parse_remote_path(args.destination)._replace(port=args.ssh_port)
+    pw = _resolved_dst_pw(args)
+    if not pw and getattr(args, "ssh_password", False):
+        pw = getpass.getpass(
+            f"Password for {dst_remote.user}@{dst_remote.host}: ")
+    cli = _tar_ssh_connect(dst_remote, args.ssh_key, pw, args.compress)
+    try:
+        sftp = cli.open_sftp()
+        dst_root = dst_remote.path.rstrip("/") or "/"
+        banner(f"{pretty} → SSH  [streaming relay]")
+        print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{args.source}{C.RESET}")
+        print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{dst_remote.user}@"
+              f"{dst_remote.host}:{dst_root}{C.RESET}")
+
+        objects = {k: v for k, v in backend.list_objects(obj_spec.prefix).items()
+                   if not k.endswith((CLOUD_MANIFEST_NAME,
+                                      LEGACY_CLOUD_MANIFEST_NAME))}
+        if not objects:
+            print(f"  {C.YELLOW}No objects found under that prefix.{C.RESET}")
+            return 0
+        sp = obj_spec.prefix.rstrip("/")
+        src_manifest = {} if args.no_cache \
+            else _load_cloud_manifest(backend, obj_spec.prefix)
+
+        caps = None
+        try:
+            caps = _ssh_exec_caps(cli, dst_root)
+        except Exception:
+            caps = None
+        halgo = caps["halgo"] if (caps and caps.get("halgo")) else None
+
+        plan = []   # (key, rel, size)
+        errors = 0
+        for key, info in sorted(objects.items()):
+            rel = key[len(sp):].lstrip("/") if sp and key.startswith(sp) else key
+            rel = rel.lstrip("/") or key.rsplit("/", 1)[-1]
+            if _unsafe_rel(rel):
+                errors += 1
+                print(f"  {C.RED}Skipping unsafe key: {key}{C.RESET}")
+                continue
+            if _rel_excluded(rel, args.exclude):
+                continue
+            plan.append((key, rel, info["size"]))
+
+        # Incremental skip — only when it can be PROVEN: same size on the
+        # destination AND the source-manifest hash matches a remotely computed
+        # destination hash (one batched exec). No hash available → copy.
+        skip = set()
+        if (not args.overwrite and src_manifest and caps and caps.get("hash")
+                and caps.get("halgo") == _hash_name):
+            try:
+                dmap = _ssh_remote_listing(cli, dst_root, caps)
+            except Exception:
+                dmap = {}
+            cand = [rel for (_k, rel, size) in plan
+                    if dmap.get(rel, (None,))[0] == size
+                    and (src_manifest.get(rel) or {}).get("hash")]
+            if cand:
+                rh = _ssh_remote_hashes(cli, dst_root, cand, caps)
+                skip = {rel for rel in cand
+                        if rh.get(rel) == src_manifest[rel]["hash"]}
+        total_bytes = sum(s for _k, _r, s in plan)
+        todo = [(k, r, s) for (k, r, s) in plan if r not in skip]
+        print(f"  Objects: {C.BOLD}{len(plan)}{C.RESET} "
+              f"({fmt_size(total_bytes)})  ·  copy {len(todo)}, "
+              f"skip {len(skip)}")
+        if args.dry_run:
+            print(f"  {C.YELLOW}(dry run — nothing relayed){C.RESET}")
+            return 0
+
+        prog = Progress(total_bytes, len(plan))
+        if skip:
+            prog.update(sum(s for _k, r, s in plan if r in skip), len(skip))
+            prog.display()
+        made_dirs = set()
+        digests = {}
+        copied = 0
+        bytes_streamed = 0
+        for key, rel, size in todo:
+            tgt = posixpath.join(dst_root, rel)
+            try:
+                parent = posixpath.dirname(tgt) or "/"
+                if parent not in made_dirs:
+                    _sftp_mkdir_p(sftp, parent)
+                    made_dirs.add(parent)
+                fin, _sz, smeta = backend.open_read(key)
+                h = _relay_hasher(halgo)
+                n = 0
+                fout = sftp.open(tgt, "wb")
+                fout.set_pipelined(True)
+                try:
+                    while True:
+                        data = fin.read(RELAY_CHUNK)
+                        if not data:
+                            break
+                        fout.write(data)
+                        if h is not None:
+                            h.update(data)
+                        n += len(data)
+                        prog.update(len(data))
+                        prog.display()
+                finally:
+                    fout.close()
+                    try:
+                        fin.close()
+                    except Exception:
+                        pass
+                # Source-corruption gate: stream vs source manifest (same algo).
+                want = (src_manifest.get(rel) or {}).get("hash")
+                if (want and h is not None and halgo == _hash_name
+                        and h.hexdigest() != want):
+                    raise RuntimeError("source bytes do not match the source "
+                                       "manifest hash — refusing to propagate")
+                if smeta.get("fc_mtime"):
+                    try:
+                        t = float(smeta["fc_mtime"])
+                        sftp.utime(tgt, (t, t))
+                    except (ValueError, IOError):
+                        pass
+                if h is not None:
+                    digests[rel] = h.hexdigest()
+                copied += 1
+                bytes_streamed += n
+                _log("copied", rel, n, method="stream_relay")
+                prog.update(0, 1)
+                prog.display()
+            except Exception as ex:
+                msg = str(ex).strip().splitlines()[0] if str(ex).strip() \
+                    else ex.__class__.__name__
+                errors += 1
+                print(f"\n  {C.RED}Error relaying {rel}: {msg}{C.RESET}")
+                _log("error", rel, size, error=msg)
+                prog.update(0, 1)
+                prog.display()
+        prog.finish()
+
+        vfail = 0
+        if not args.no_verify and digests and caps and caps.get("hash"):
+            print("  " + C.DIM
+                  + f"Verifying {len(digests)} files on the destination..."
+                  + C.RESET)
+            rh = _ssh_remote_hashes(cli, dst_root, sorted(digests), caps)
+            for rel, dgs in sorted(digests.items()):
+                if rh.get(rel) != dgs:
+                    vfail += 1
+                    print(f"  {C.RED}VERIFY MISMATCH: {rel}{C.RESET}")
+            if not vfail:
+                print(f"  {C.GREEN}✓ Verified {len(digests)} file(s){C.RESET}")
+
+        banner("DONE")
+        print(f"  Copied:  {C.BOLD}{copied}{C.RESET} "
+              f"({fmt_size(bytes_streamed)})  "
+              f"{C.DIM}streamed — no local temp{C.RESET}")
+        if skip:
+            print(f"  Skipped: {C.BOLD}{len(skip)}{C.RESET} unchanged")
+        if errors or vfail:
+            print(f"  {C.RED}Errors:  {errors + vfail}{C.RESET}")
+        if args.log_file:
+            write_log_file(args.log_file, {
+                "source": args.source, "destination": args.destination,
+                "mode": f"relay_{backend.scheme}_ssh",
+                "total_files": len(plan), "copied": copied, "linked": 0,
+                "skipped": len(skip), "errors": errors + vfail,
+                "total_bytes": total_bytes, "bytes_written": bytes_streamed,
+                "dedup_saved": 0, "hash_algo": halgo or "none",
+            })
+        return 1 if (errors or vfail) else 0
     finally:
-        shutil.rmtree(relay, ignore_errors=True)
+        cli.close()
+
+
+def _ssh_to_object_stream(args, obj_spec):
+    """SSH → cloud/SMB: per file, SFTP read → bounded spool → upload_stream
+    (SMB destinations stream straight onto the share, no spool). Dedup and
+    incremental skip ride the remote hash tool + destination manifest."""
+    import tempfile
+    start = time.time()
+    src_remote = parse_remote_path(args.source)._replace(port=args.src_port)
+    pw = _resolved_src_pw(args)
+    if not pw and getattr(args, "src_password", False):
+        pw = getpass.getpass(
+            f"Password for {src_remote.user}@{src_remote.host}: ")
+    cli = _tar_ssh_connect(src_remote, args.src_key, pw, args.compress)
+    backend = make_backend(obj_spec, args)
+    pretty = CLOUD_SCHEME_NAMES[obj_spec.scheme]
+    spool_dir = None
+    try:
+        sftp = cli.open_sftp()
+        src_root = src_remote.path.rstrip("/") or "/"
+        banner(f"SSH → {pretty}  [streaming relay]")
+        print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{src_remote.user}@"
+              f"{src_remote.host}:{src_root}{C.RESET}")
+        print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{args.destination}{C.RESET}")
+
+        caps = None
+        try:
+            caps = _ssh_exec_caps(cli, "/tmp")
+        except Exception:
+            caps = None
+        smap = {}
+        try:
+            if caps:
+                smap = _ssh_remote_listing(cli, src_root, caps)
+        except Exception:
+            smap = {}
+        if not smap:
+            smap = {r: (s, 0.0)
+                    for r, s in _sftp_walk_files(sftp, src_root).items()}
+        files = [(r, sz, mt) for r, (sz, mt) in sorted(smap.items())
+                 if not _rel_excluded(r, args.exclude)]
+        if not files:
+            print(f"{C.RED}Error: nothing to copy at "
+                  f"{src_remote.host}:{src_root}.{C.RESET}")
+            return 1
+
+        dst_manifest = {} if args.no_cache \
+            else _load_cloud_manifest(backend, obj_spec.prefix)
+        dp = obj_spec.prefix.rstrip("/")
+        dst_sizes = {}
+        for k, v in backend.list_objects(obj_spec.prefix).items():
+            if k.endswith((CLOUD_MANIFEST_NAME, LEGACY_CLOUD_MANIFEST_NAME)):
+                continue
+            r = k[len(dp):].lstrip("/") if dp and k.startswith(dp) else k
+            dst_sizes[r] = v["size"]
+
+        # One batched remote-hash pass powers skip + dedup + the corruption
+        # gate — only when the remote tool matches the local algorithm.
+        src_hashes = {}
+        if (caps and caps.get("hash") and caps.get("halgo") == _hash_name
+                and not (args.no_dedup and args.no_verify)):
+            print("  " + C.DIM + _tr("Hashing {n} files...")
+                  .format(n=len(files)) + C.RESET)
+            src_hashes = _ssh_remote_hashes(
+                cli, src_root, [r for r, _s, _m in files], caps)
+
+        new_manifest = {}
+        primaries = []   # (rel, key, size, want_hash, mtime)
+        dups = []        # (rel, primary_key, key, size, hash)
+        skipped = 0
+        skip_bytes = 0
+        first_key_for_hash = {}
+        total_bytes = sum(sz for _r, sz, _m in files)
+        for r, sz, mt in files:
+            key = backend.join_key(obj_spec.prefix, r)
+            h = src_hashes.get(r)
+            prev = dst_manifest.get(r)
+            if (not args.overwrite and h and prev and prev.get("hash") == h
+                    and dst_sizes.get(r) == sz):
+                skipped += 1
+                skip_bytes += sz
+                new_manifest[r] = {"size": sz, "hash": h}
+                continue
+            if h and not args.no_dedup and h in first_key_for_hash:
+                dups.append((r, first_key_for_hash[h], key, sz, h))
+            else:
+                primaries.append((r, key, sz, h, mt))
+                if h and not args.no_dedup:
+                    first_key_for_hash[h] = key
+        print(f"  Files: {C.BOLD}{len(files)}{C.RESET} "
+              f"({fmt_size(total_bytes)})  ·  relay {len(primaries)}, "
+              f"dedup {len(dups)}, skip {skipped}")
+        if args.dry_run:
+            print(f"  {C.YELLOW}(dry run — nothing relayed){C.RESET}")
+            return 0
+
+        prog = Progress(total_bytes, len(files))
+        if skipped:
+            prog.update(skip_bytes, skipped)
+            prog.display()
+        spool_mb = getattr(args, "relay_spool_mb", 64)
+        spool_dir = tempfile.mkdtemp(prefix="blitcp_spool_")
+        copied = deduped = errors = 0
+        bytes_up = bytes_deduped = 0
+        for r, key, sz, want, mt in primaries:      # serial: one SFTP session
+            try:
+                fin = sftp.open(posixpath.join(src_root, r), "rb")
+                fin.prefetch(min(sz, 256 * 1024 * 1024))
+                if backend.scheme == "smb":
+                    # SMB write handle streams directly — no spool needed.
+                    h = _relay_hasher(_hash_name)
+                    n = 0
+                    fout = backend.open_write(key)
+                    try:
+                        while True:
+                            data = fin.read(RELAY_CHUNK)
+                            if not data:
+                                break
+                            fout.write(data)
+                            h.update(data)
+                            n += len(data)
+                            prog.update(len(data))
+                            prog.display()
+                    finally:
+                        fout.close()
+                        fin.close()
+                    digest = h.hexdigest()
+                    if mt:
+                        backend.set_key_mtime(key, mt)
+                    prog.update(0, 1)
+                else:
+                    try:
+                        spool, n, digest = _spool_from_stream(
+                            fin, spool_mb, spool_dir, _hash_name, prog)
+                    finally:
+                        fin.close()
+                    meta = {"fc_relpath": _quote_rel(r),
+                            "fc_hash": digest or "",
+                            "fc_hash_algo": _hash_name}
+                    if mt:
+                        meta["fc_mtime"] = repr(mt)
+                    try:
+                        backend.upload_stream(spool, key, meta, n)
+                    finally:
+                        spool.close()
+                    prog.update(sz - sz // 2, 1)
+                prog.display()
+                if want and digest and want != digest:
+                    raise RuntimeError(
+                        "source changed while streaming (hash mismatch)")
+                new_manifest[r] = {"size": n, "hash": digest}
+                copied += 1
+                bytes_up += n
+                _log("copied", r, n, method="stream_relay")
+            except Exception as ex:
+                msg = str(ex).strip().splitlines()[0] if str(ex).strip() \
+                    else ex.__class__.__name__
+                errors += 1
+                print(f"\n  {C.RED}Error relaying {r}: {msg}{C.RESET}")
+                _log("error", r, sz, error=msg)
+                prog.update(0, 1)
+                prog.display()
+        for r, pkey, key, sz, h in dups:
+            try:
+                meta = {"fc_relpath": _quote_rel(r), "fc_hash": h,
+                        "fc_hash_algo": _hash_name}
+                backend.server_side_copy(pkey, key, meta)
+                new_manifest[r] = {"size": sz, "hash": h}
+                deduped += 1
+                bytes_deduped += sz
+                prog.update(sz, 1)
+                prog.display()
+            except Exception as ex:
+                errors += 1
+                print("\n  " + C.RED + _tr("Error copying {name}: {err}")
+                      .format(name=r, err=ex) + C.RESET)
+                prog.update(sz, 1)
+                prog.display()
+        prog.finish()
+
+        if not args.no_cache:
+            _save_cloud_manifest(backend, obj_spec.prefix, new_manifest)
+        vfail = 0
+        if not args.no_verify and copied and backend.scheme != "smb":
+            import random
+            cand = [(r, m["hash"]) for r, m in new_manifest.items()
+                    if m.get("hash")]
+            smp = random.sample(cand, min(20, len(cand)))
+            print(f"  {C.DIM}Verifying {len(smp)} uploaded objects...{C.RESET}")
+            for r, hh in smp:
+                m = backend.head(backend.join_key(obj_spec.prefix, r))
+                if not m or m.get("fc_hash") != hh:
+                    vfail += 1
+                    print(f"  {C.RED}VERIFY MISMATCH: {r}{C.RESET}")
+            if vfail == 0:
+                print(f"  {C.GREEN}✓ Verified {len(smp)} objects OK{C.RESET}")
+
+        banner("DONE")
+        print(f"  Uploaded: {C.BOLD}{copied}{C.RESET} ({fmt_size(bytes_up)})  "
+              f"{C.DIM}streamed — no dataset temp dir{C.RESET}")
+        if deduped:
+            print(f"  Deduped:  {C.BOLD}{deduped}{C.RESET} via server-side "
+                  f"copy ({C.GREEN}{fmt_size(bytes_deduped)} bandwidth "
+                  f"saved{C.RESET})")
+        if skipped:
+            print(f"  Skipped:  {C.BOLD}{skipped}{C.RESET} unchanged (cross-run)")
+        if errors or vfail:
+            print(f"  {C.RED}Errors:   {errors + vfail}{C.RESET}")
+        if args.log_file:
+            write_log_file(args.log_file, {
+                "source": args.source, "destination": args.destination,
+                "mode": f"relay_ssh_{backend.scheme}",
+                "total_files": len(files), "copied": copied,
+                "linked": deduped, "skipped": skipped,
+                "errors": errors + vfail, "total_bytes": total_bytes,
+                "bytes_written": bytes_up, "dedup_saved": bytes_deduped,
+                "hash_algo": _hash_name,
+            })
+        return 1 if (errors or vfail) else 0
+    finally:
+        if spool_dir:
+            shutil.rmtree(spool_dir, ignore_errors=True)
+        cli.close()
+
+
+# ── Plain HTTP(S) source → SSH/SMB destination (streaming relay) ───────────
+# A bare https://server/dir/file URL as the source. Plain HTTP has no
+# directory listing, so the source is always ONE file; it streams to the
+# destination through this machine the way the R2R relay moves bytes —
+# 1 MB in-memory chunks, nothing written to the local disk. The filename
+# comes from the URL the user typed (never from server headers), so a
+# redirecting or hostile server cannot choose where the file lands.
+
+def is_http_url(path_str):
+    return bool(path_str) and path_str.lower().startswith(("http://", "https://"))
+
+
+def _http_creds_by_host(args, host):
+    """The first 'http'-type saved connection whose host matches the URL's,
+    or None. Peeks at the credentials file the way resolve_connection does:
+    an encrypted file with no passphrase available is skipped silently."""
+    if not host:
+        return None
+    explicit = getattr(args, "credentials_file", None)
+    try:
+        if explicit:
+            conns = load_credentials_file(explicit)
+        elif os.path.isfile(default_credentials_path()):
+            if _file_is_encrypted(default_credentials_path()) \
+                    and not _have_creds_passphrase():
+                return None
+            conns = load_credentials_file(None)
+        else:
+            return None
+    except Exception:
+        return None
+    for c in (conns or {}).values():
+        if c.get("type") != "http":
+            continue
+        ch = c.get("host") or ""
+        if "://" in ch:                       # a full base URL is accepted too
+            import urllib.parse
+            ch = urllib.parse.urlsplit(ch).hostname or ""
+        if ch.lower() == host.lower():
+            return c
+    return None
+
+
+def _registrable_domain(host):
+    """The domain a login cookie is actually stored on: dl.dell.com → dell.com.
+
+    browser_cookie3 filters with a SUBSTRING test against each cookie's own
+    domain ("dl.dell.com" in ".dell.com" is False), so asking it for the full
+    hostname silently drops every parent-domain cookie — which is where
+    sessions live, and why a logged-in browser still yielded nothing. Being
+    broad here costs nothing: add_cookie_header() below still applies real
+    RFC 6265 matching, so only cookies that genuinely belong to the URL are
+    ever sent. It also covers the redirect a download link makes to its SSO
+    host, which the full hostname could never match."""
+    parts = [p for p in (host or "").split(".") if p]
+    if len(parts) < 3:
+        return host
+    # co.uk / com.au / ac.jp — the registrable name needs one more label.
+    if len(parts[-1]) == 2 and parts[-2] in (
+            "co", "com", "net", "org", "gov", "edu", "ac"):
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _cookie_header_for(url, source):
+    """Build a Cookie: header value for `url` from a cookie SOURCE, or None.
+
+    `source` is either a path to a Netscape/Mozilla cookies.txt (what a browser
+    "export cookies" extension writes, and what curl -b / wget --load-cookies
+    read), or a browser name to pull the LIVE login session straight from the
+    browser's own cookie store — 'chrome' / 'firefox' / 'chromium' / 'edge' /
+    'brave' / 'opera' / 'safari', or 'browser'/'auto' to try them all. The jar
+    does the domain/path/secure/expiry matching, so only the cookies that
+    belong to this URL are sent."""
+    import http.cookiejar
+    import urllib.request
+    import urllib.parse
+    host = urllib.parse.urlsplit(url).hostname or ""
+    src = (source or "").strip()
+    if not src:
+        return None
+    # A path that exists (or is obviously a file) → cookies.txt via stdlib.
+    looks_like_file = os.path.sep in src or src.lower().endswith(".txt") \
+        or os.path.exists(os.path.expanduser(src))
+    if looks_like_file:
+        path = os.path.expanduser(src)
+        if not os.path.isfile(path):
+            raise SystemExit(f"Error: cookies file not found: {src}")
+        jar = http.cookiejar.MozillaCookieJar()
+        try:
+            jar.load(path, ignore_discard=True, ignore_expires=True)
+        except Exception as e:
+            raise SystemExit(
+                f"Error: could not read cookies file {src!r}: "
+                f"{str(e).splitlines()[0] if str(e) else e}. It must be in "
+                f"Netscape/Mozilla cookies.txt format.")
+    else:
+        try:
+            import browser_cookie3
+        except ImportError:
+            # A frozen build has no pip and no site-packages to install into,
+            # so "pip install browser-cookie3" is useless advice there: the
+            # only route left is a cookies.txt export.
+            if getattr(sys, "frozen", False):
+                raise SystemExit(
+                    "Error: this build cannot read a live browser session "
+                    "(browser_cookie3 is not bundled). Export the browser's "
+                    "cookies to a cookies.txt file (any \"cookies.txt\" "
+                    "browser extension does it) and pass --cookies FILE "
+                    "instead.")
+            raise SystemExit(
+                "Error: reading cookies from a browser needs browser_cookie3. "
+                "Install with: python -m pip install browser-cookie3 "
+                "(or export the browser's cookies to a cookies.txt file and "
+                "point --cookies at it instead).")
+        name = src.lower()
+        loader = {
+            "chrome": browser_cookie3.chrome,
+            "chromium": getattr(browser_cookie3, "chromium", None),
+            "firefox": browser_cookie3.firefox,
+            "edge": getattr(browser_cookie3, "edge", None),
+            "brave": getattr(browser_cookie3, "brave", None),
+            "opera": getattr(browser_cookie3, "opera", None),
+            "safari": getattr(browser_cookie3, "safari", None),
+        }
+        try:
+            _cdom = _registrable_domain(host)
+            if name in ("browser", "auto", ""):
+                jar = browser_cookie3.load(domain_name=_cdom)
+            else:
+                fn = loader.get(name)
+                if fn is None:
+                    raise SystemExit(
+                        f"Error: unknown browser {src!r}. Use one of: "
+                        f"chrome, chromium, firefox, edge, brave, opera, "
+                        f"safari (or 'browser' to try all).")
+                jar = fn(domain_name=_cdom)
+        except SystemExit:
+            raise
+        except Exception as e:
+            raise SystemExit(
+                f"Error: could not read {src} cookies for {host}: "
+                f"{str(e).splitlines()[0] if str(e) else e}. Make sure you are "
+                f"logged in there, and that the browser is closed if it locks "
+                f"its cookie database.")
+    # Let the jar pick the cookies that match this URL, then read the header
+    # it composed onto a throwaway request.
+    req = urllib.request.Request(url)
+    jar.add_cookie_header(req)
+    return req.get_header("Cookie")
+
+
+def _http_resolve_auth(args, url):
+    """(clean_url, headers) for an http(s) source. Merges, weakest first:
+    an 'http' saved connection matched by host (Basic creds, a saved header,
+    and/or a saved cookie source) → user:pass@ in the URL (stripped, with a
+    shell-history warning) → --http-user / --http-password[-env] → a cookie
+    source (--cookies FILE / --cookies-from-browser NAME) → header lines from
+    $--http-header-env → --http-header lines (strongest, repeatable)."""
+    import urllib.parse
+    import base64
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    user = pw = None
+    if parts.username is not None or parts.password is not None:
+        user = urllib.parse.unquote(parts.username or "")
+        pw = urllib.parse.unquote(parts.password or "")
+        netloc = host + (f":{parts.port}" if parts.port else "")
+        url = urllib.parse.urlunsplit(
+            (parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        print(f"  {C.YELLOW}Note: credentials taken from the URL are visible "
+              f"in shell history — prefer --http-user with "
+              f"--http-password-env.{C.RESET}")
+    conn = _http_creds_by_host(args, host)
+    headers = {}
+    if conn:
+        if user is None and conn.get("user"):
+            user = conn["user"]
+        if pw is None and conn.get("password"):
+            pw = conn["password"]
+        hline = conn.get("header")
+        if hline and ":" in hline:
+            k, _, v = hline.partition(":")
+            headers[k.strip()] = v.strip()
+    if getattr(args, "http_user", None):
+        user = args.http_user
+    if getattr(args, "http_password_env", None):
+        env_pw = os.environ.get(args.http_password_env)
+        if env_pw is None:
+            raise SystemExit(
+                f"Error: ${args.http_password_env} is not set, so the HTTP "
+                f"password never arrived. Under --use-sudo the environment is "
+                f"reset; re-run without it, or allow sudo to preserve that "
+                f"variable.")
+        pw = env_pw
+    elif getattr(args, "http_password", False):
+        pw = getpass.getpass(f"  HTTP password for {user or ''}@{host}: ")
+    if user is not None and pw is not None:
+        headers["Authorization"] = "Basic " + base64.b64encode(
+            f"{user}:{pw}".encode()).decode()
+    # Cookie/session source: reuse a login the user already has. A CLI flag
+    # wins over the connection's saved cookie source; either way an explicit
+    # --http-header "Cookie: …" below overrides.
+    cookie_src = (getattr(args, "cookies_from_browser", None)
+                  or getattr(args, "cookies", None)
+                  or (conn.get("cookies") if conn else None))
+    if cookie_src:
+        cookie = _cookie_header_for(url, cookie_src)
+        if cookie:
+            headers["Cookie"] = cookie
+        else:
+            print(f"  {C.YELLOW}Note: no cookies matched {host} in "
+                  f"{cookie_src!r} — is the login still active there?{C.RESET}")
+    # Header lines passed by name of an env var rather than on the command
+    # line — a token in argv is readable by any other user through `ps`. The
+    # GUI uses this for an ad-hoc "Authorization: Bearer …"; the var may hold
+    # several header lines separated by newlines.
+    hdr_env = getattr(args, "http_header_env", None)
+    if hdr_env and os.environ.get(hdr_env) is None:
+        raise SystemExit(
+            f"Error: ${hdr_env} is not set, so the HTTP header never arrived. "
+            f"Under --use-sudo the environment is reset; re-run without it, or "
+            f"allow sudo to preserve that variable.")
+    for line in (os.environ.get(hdr_env, "").splitlines() if hdr_env else []):
+        line = line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise SystemExit(
+                f"Error: ${hdr_env} expects 'Name: value' lines, got {line!r}")
+        k, _, v = line.partition(":")
+        headers[k.strip()] = v.strip()
+    for line in (getattr(args, "http_header", None) or []):
+        if ":" not in line:
+            raise SystemExit(
+                f"Error: --http-header expects 'Name: value', got {line!r}")
+        k, _, v = line.partition(":")
+        headers[k.strip()] = v.strip()
+    return url, headers
+
+
+def _http_looks_like_html_wall(resp, url):
+    """True when the server answered with an HTML page for a URL that does
+    not name an HTML file — almost always a login or terms page standing in
+    front of the real download (curl/wget save it silently; we refuse)."""
+    ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ct not in ("text/html", "application/xhtml+xml"):
+        return False
+    import urllib.parse
+    path = urllib.parse.urlsplit(url).path.lower()
+    return not path.endswith((".html", ".htm", ".xhtml"))
+
+
+def _http_wall_report(resp, url):
+    """Say what the server actually did, not just that the bytes look like HTML.
+
+    "returned an HTML page" names a symptom; the cause is a redirect chain that
+    ended somewhere else — a vendor download link bouncing to an SSO host is
+    invisible otherwise, and the useful fact is WHERE it landed, because that
+    is the domain the login cookie has to come from."""
+    lines = []
+    try:
+        final = resp.geturl()
+    except Exception:
+        final = url
+    try:
+        code = resp.getcode()
+    except Exception:
+        code = None
+    import urllib.parse
+    fhost = urllib.parse.urlsplit(final).hostname or ""
+    ohost = urllib.parse.urlsplit(url).hostname or ""
+    if final and final != url:
+        lines.append(f"redirected to {final}")
+        if fhost and fhost != ohost:
+            lines.append(f"a login on {ohost} is not enough — the session "
+                         f"lives on {fhost}")
+    if code and code != 200:
+        lines.insert(0, f"HTTP {code}")
+    return lines
+
+
+def _http_open(url, offset=0, headers=None):
+    """GET the URL (redirects followed). With offset, ask for a Range resume.
+    Returns (response, total_size_or_None, mtime_or_None, resumed)."""
+    import urllib.request
+    hdrs = {"User-Agent": "blitcp/" + __version__}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, headers=hdrs)
+    if offset:
+        req.add_header("Range", "bytes=%d-" % offset)
+    resp = urllib.request.urlopen(req, timeout=30)
+    resumed = (resp.getcode() == 206)
+    total = None
+    if resumed:
+        m = re.match(r"bytes\s+\d+-\d+/(\d+)",
+                     resp.headers.get("Content-Range", ""))
+        if m:
+            total = int(m.group(1))
+    else:
+        cl = resp.headers.get("Content-Length")
+        if cl and cl.isdigit():
+            total = int(cl)
+    mtime = None
+    lm = resp.headers.get("Last-Modified")
+    if lm:
+        try:
+            from email.utils import parsedate_to_datetime
+            mtime = parsedate_to_datetime(lm).timestamp()
+        except Exception:
+            pass
+    return resp, total, mtime, resumed
+
+
+def _relay_hasher(algo):
+    if not algo:
+        return None
+    return new_hasher() if algo == "xxh128" else hashlib.new(algo)
+
+
+def _http_pump(url, resp, total, fout, halgo, reopen_dst, start, headers=None):
+    """Pump resp → fout in 1 MB in-memory chunks (the R2R relay chunk size).
+    A broken HTTP stream is retried up to 3 times with a Range resume (same
+    auth headers); a server that ignores Range restarts the transfer from
+    zero (reopen_dst must hand back a truncated destination handle). Returns
+    (bytes_written, final_response, final_fout, hex_digest_or_None)."""
+    hasher = _relay_hasher(halgo)
+    written = 0
+    attempts = 0
+    while True:
+        try:
+            data = resp.read(1024 * 1024)
+        except (OSError, IOError) as e:
+            attempts += 1
+            if attempts > 3:
+                raise
+            try:
+                resp.close()
+            except Exception:
+                pass
+            msg = str(e).strip().splitlines()[0] if str(e).strip() else e.__class__.__name__
+            print(f"\n  {C.YELLOW}HTTP stream broke at {fmt_size(written)} "
+                  f"({msg}) — resuming (attempt {attempts}/3)…{C.RESET}")
+            resp, _t, _m, resumed = _http_open(url, offset=written,
+                                               headers=headers)
+            if not resumed and written:
+                print(f"  {C.YELLOW}Server does not support Range — "
+                      f"restarting from 0.{C.RESET}")
+                fout = reopen_dst(fout)
+                hasher = _relay_hasher(halgo)
+                written = 0
+            continue
+        if not data:
+            break
+        fout.write(data)
+        if hasher is not None:
+            hasher.update(data)
+        written += len(data)
+        if PROGRESS_JSON or total:
+            _tar_emit(written, total or 0, 0, 1, start)
+        else:
+            el = time.time() - start
+            sys.stdout.write(f"\r  {fmt_size(written)}  "
+                             f"{fmt_speed(written / el if el > 0 else 0)}   ")
+            sys.stdout.flush()
+    return written, resp, fout, (hasher.hexdigest() if hasher else None)
+
+
+def _http_skip_up_to_date(dst_size, dst_mtime, total, http_mtime, args):
+    """R2R's incremental rule: same size, and mtimes agree within 2s when
+    both sides know one."""
+    return (not args.overwrite and total is not None and dst_size == total
+            and (http_mtime is None or not dst_mtime
+                 or abs(dst_mtime - http_mtime) <= 2))
+
+
+def run_http_transfer(args):
+    """Driver for an http(s):// SOURCE. Destination must be SSH or SMB."""
+    if is_http_url(args.destination):
+        print(f"{C.RED}Error: an http(s):// URL can only be the source — "
+              f"plain HTTP has no generic upload.{C.RESET}")
+        return 1
+    if getattr(args, "extra_sources", None):
+        print(f"{C.RED}Error: an http(s):// source takes a single URL "
+              f"(got {len(args.extra_sources) + 1} sources).{C.RESET}")
+        return 1
+    url = args.source
+    import urllib.parse
+    fname = urllib.parse.unquote(
+        posixpath.basename(urllib.parse.urlsplit(url).path))
+    if not fname:
+        print(f"{C.RED}Error: the URL names no file "
+              f"(https://host/dir/file expected): {url}{C.RESET}")
+        return 1
+    try:
+        dst_spec = _object_spec(args.destination, args)
+        if dst_spec is not None and dst_spec.scheme == "smb":
+            return _http_to_smb(args, url, fname, dst_spec)
+        if dst_spec is not None:
+            print(f"{C.RED}Error: http(s) → cloud is not supported yet — "
+                  f"relay via an SSH or SMB destination, or download "
+                  f"locally first.{C.RESET}")
+            return 1
+        dst_remote = parse_remote_path(args.destination)
+        if dst_remote is None:
+            print(f"{C.RED}Error: an http(s):// source needs an SSH "
+                  f"(user@host:/path) or SMB (smb://host/share) destination. "
+                  f"For a local download use curl or wget.{C.RESET}")
+            return 1
+        return _http_to_ssh(args, url, fname, dst_remote)
+    except SystemExit:
+        raise
+    except Exception as e:
+        msg = _fmt_exc(e)
+        print(f"{C.RED}Error: {msg}{C.RESET}")
+        return 1
+
+
+def _http_to_ssh(args, url, fname, dst_remote):
+    """https://…/file → SSH destination, streamed over a pipelined SFTP handle
+    exactly like the R2R SFTP relay's destination half — or, when the
+    destination is SSH-only, over a `cat > file` exec channel instead.
+
+    Honouring that choice is not optional: a connection saved as protocol 'ssh'
+    (or --ssh-no-sftp) is one whose SFTP subsystem is off, and opening an SFTP
+    handle there used to fail with a bare "Channel closed." after the flag had
+    already been read and silently dropped."""
+    if not _load_paramiko():
+        print(f"{C.RED}Error: SSH transfers require paramiko.{C.RESET}")
+        return 1
+    start = time.time()
+    dst_remote = dst_remote._replace(port=args.ssh_port)
+    pw = _resolved_dst_pw(args)
+    if not pw and getattr(args, "ssh_password", False):
+        pw = getpass.getpass(
+            f"Password for {dst_remote.user}@{dst_remote.host}: ")
+    cli = _tar_ssh_connect(dst_remote, args.ssh_key, pw, args.compress)
+    resp = None
+    try:
+        use_sftp = not getattr(args, "ssh_no_sftp", False)
+        sftp = None
+        if use_sftp:
+            try:
+                sftp = cli.open_sftp()
+            except Exception as e:
+                # The server took the connection and then refused the channel —
+                # SSH on, SFTP off, a common NAS default. The exec writer below
+                # serves this case, so fall through to it rather than failing:
+                # the same shape as the shell fallback in _ssh_ls.
+                why = str(e).strip().splitlines()[0] or type(e).__name__
+                if getattr(args, "sftp_only", False):
+                    # An explicit --sftp-only is a restriction, not a
+                    # preference: opening a shell on a host the user confined
+                    # to SFTP is exactly what the flag exists to prevent.
+                    print(f"\n{C.RED}Error: {dst_remote.user}@"
+                          f"{dst_remote.host} accepted the SSH connection but "
+                          f"would not open an SFTP channel ({why}), and "
+                          f"--sftp-only forbids the shell fallback.{C.RESET}")
+                    if _env("TRACEBACK"):
+                        import traceback as _tb
+                        print(_tb.format_exc().rstrip())
+                    return 1
+                # Not announced: the banner below already says "(SSH only,
+                # cat over exec)", so the transport is on screen either way
+                # and a line on every run against an SFTP-less NAS is noise.
+                # BLITCP_TRACEBACK still shows where the SFTP attempt died.
+                if _env("TRACEBACK"):
+                    import traceback as _tb
+                    print(_tb.format_exc().rstrip())
+                sftp = None
+                use_sftp = False
+
+        # ── destination primitives, one shape over SFTP or an exec channel ──
+        def _d_stat(pth):
+            """('dir'|'file'|None, size, mtime)."""
+            if sftp is not None:
+                try:
+                    st = sftp.stat(pth)
+                except IOError:
+                    return None, 0, 0.0
+                return (("dir" if stat.S_ISDIR(st.st_mode) else "file"),
+                        st.st_size, st.st_mtime)
+            return _ssh_exec_stat(cli, pth)
+
+        def _d_mkdir(pth):
+            if sftp is not None:
+                _sftp_mkdir_p(sftp, pth)
+            else:
+                _ssh_run(cli, "mkdir -p " + shlex.quote(pth), timeout=60)
+
+        def _d_open(pth):
+            if sftp is not None:
+                f = sftp.open(pth, "wb")
+                f.set_pipelined(True)
+                return f
+            return _SshExecWriter(cli, pth)
+
+        def _d_utime(pth, when):
+            if sftp is not None:
+                try:
+                    sftp.utime(pth, (when, when))
+                except IOError:
+                    pass
+            else:
+                _ssh_run(cli, "touch -d @%d %s 2>/dev/null || true"
+                         % (int(when), shlex.quote(pth)), timeout=60)
+
+        target = dst_remote.path
+        # Single-file convention: an existing directory — or a path spelled
+        # with a trailing '/' — receives <dir>/<url filename>; any other
+        # path IS the target name (rename-on-copy).
+        kind, _sz, _mt = _d_stat(target)
+        is_dir = (kind == "dir") if kind else target.endswith("/")
+        if is_dir:
+            target = posixpath.join(target.rstrip("/") or "/", fname)
+        rel = posixpath.basename(target)
+        parent = posixpath.dirname(target) or "/"
+
+        url, hdrs = _http_resolve_auth(args, url)
+        resp, total, http_mtime, _ = _http_open(url, headers=hdrs)
+        banner("HTTP → SSH  [streaming relay]"
+               + ("" if use_sftp else "  (SSH only, cat over exec)"))
+        print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{url}{C.RESET}")
+        print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{dst_remote.user}@"
+              f"{dst_remote.host}:{target}{C.RESET}")
+        print(f"  Size:      "
+              f"{C.BOLD}{fmt_size(total) if total is not None else 'unknown'}{C.RESET}")
+        if not args.force and _http_looks_like_html_wall(resp, url):
+            print(f"  {C.RED}Error: the server returned an HTML page instead "
+                  f"of the file (a login or terms page?).{C.RESET}")
+            for _l in _http_wall_report(resp, url):
+                print(f"  {C.YELLOW}  → {_l}{C.RESET}")
+            print(f"  {C.DIM}Use the direct download link, or pass the needed "
+                  f"cookie/token via --http-header / --cookies; --force saves "
+                  f"the HTML anyway.{C.RESET}")
+            return 1
+
+        dkind, dsize, dmtime = _d_stat(target)
+        if dkind == "file" and _http_skip_up_to_date(dsize, dmtime,
+                                                     total, http_mtime, args):
+            print(f"  {C.GREEN}Up to date — skipped (same size"
+                  f"{'' if http_mtime is None else ' and mtime'}).{C.RESET}")
+            return 0
+        if args.dry_run:
+            print(f"  {C.YELLOW}Dry run — would stream to {target}.{C.RESET}")
+            return 0
+
+        # Hash the stream with an algorithm the destination can recompute,
+        # so verify never re-downloads. No exec channel (SFTP-only gateway)
+        # or no common tool → verify falls back to a size check.
+        caps = None
+        if not args.no_verify:
+            try:
+                caps = _ssh_exec_caps(cli, parent)
+            except Exception:
+                caps = None
+        halgo = caps["halgo"] if caps else None
+
+        _d_mkdir(parent)
+
+        def _reopen(old):
+            try:
+                old.close()
+            except Exception:
+                pass
+            return _d_open(target)
+
+        fout = _d_open(target)
+        try:
+            written, resp, fout, digest = _http_pump(
+                url, resp, total, fout, halgo, _reopen, start, headers=hdrs)
+        finally:
+            fout.close()
+        print()
+        if total is not None and written != total:
+            print(f"  {C.RED}Error: transfer truncated — got "
+                  f"{fmt_size(written)} of {fmt_size(total)}.{C.RESET}")
+            _log("error", rel, written, error="truncated HTTP stream")
+            return 1
+        if http_mtime:
+            _d_utime(target, http_mtime)
+        _log("copied", rel, written, method="http_relay")
+
+        verified = True
+        if not args.no_verify:
+            ok = None
+            if digest and caps and caps.get("hash"):
+                rh = _ssh_remote_hashes(cli, parent, [rel], caps).get(rel)
+                ok = (rh == digest) if rh else None
+            if ok is None:
+                vkind, vsize, _vm = _d_stat(target)
+                ok = (vkind == "file" and vsize == written)
+                print(f"  {C.YELLOW}Verified by size only (no common hash "
+                      f"tool on the destination).{C.RESET}")
+            verified = bool(ok)
+            if verified:
+                print(f"  {C.GREEN}Verified ✓{C.RESET}")
+            else:
+                print(f"  {C.RED}VERIFICATION FAILED — destination does not "
+                      f"match the downloaded stream.{C.RESET}")
+        el = time.time() - start
+        print(f"  {C.GREEN}Done: {fmt_size(written)} in {el:.1f}s "
+              f"({fmt_speed(written / el if el > 0 else 0)}){C.RESET}")
+        if PROGRESS_JSON:
+            _tar_emit(written, total or written, 1, 1, start, final=True)
+        return 0 if verified else 1
+    except Exception as e:
+        msg = _fmt_exc(e)
+        print(f"\n{C.RED}Error: {msg}{C.RESET}")
+        return 1
+    finally:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        cli.close()
+
+
+def _http_to_smb(args, url, fname, dst_spec):
+    """https://…/file → SMB share, streamed through an open write handle on
+    the share (never the local disk). Verify reads the file back and
+    re-hashes it — SMB has no server-side hash tool."""
+    start = time.time()
+    backend = make_backend(dst_spec, args)
+    resp = None
+    try:
+        key = dst_spec.prefix.rstrip("/")
+        st = backend.stat_key(key) if key else None
+        if not key or dst_spec.prefix.endswith("/") \
+                or (st is not None and stat.S_ISDIR(st.st_mode)):
+            key = (key + "/" + fname).lstrip("/")
+
+        url, hdrs = _http_resolve_auth(args, url)
+        resp, total, http_mtime, _ = _http_open(url, headers=hdrs)
+        banner("HTTP → SMB  [streaming relay]")
+        print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{url}{C.RESET}")
+        print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}smb://{backend.host}/"
+              f"{dst_spec.container}/{key}{C.RESET}")
+        print(f"  Size:      "
+              f"{C.BOLD}{fmt_size(total) if total is not None else 'unknown'}{C.RESET}")
+        if not args.force and _http_looks_like_html_wall(resp, url):
+            print(f"  {C.RED}Error: the server returned an HTML page instead "
+                  f"of the file (a login or terms page?).{C.RESET}")
+            for _l in _http_wall_report(resp, url):
+                print(f"  {C.YELLOW}  → {_l}{C.RESET}")
+            print(f"  {C.DIM}Use the direct download link, or pass the needed "
+                  f"cookie/token via --http-header / --cookies; --force saves "
+                  f"the HTML anyway.{C.RESET}")
+            return 1
+
+        tstat = backend.stat_key(key)
+        if tstat is not None and _http_skip_up_to_date(
+                tstat.st_size, tstat.st_mtime, total, http_mtime, args):
+            print(f"  {C.GREEN}Up to date — skipped (same size"
+                  f"{'' if http_mtime is None else ' and mtime'}).{C.RESET}")
+            return 0
+        if args.dry_run:
+            print(f"  {C.YELLOW}Dry run — would stream to {key}.{C.RESET}")
+            return 0
+
+        halgo = None if args.no_verify else _hash_name
+
+        def _reopen(old):
+            try:
+                old.close()
+            except Exception:
+                pass
+            return backend.open_write(key)
+
+        fout = backend.open_write(key)
+        try:
+            written, resp, fout, digest = _http_pump(
+                url, resp, total, fout, halgo, _reopen, start, headers=hdrs)
+        finally:
+            fout.close()
+        print()
+        if total is not None and written != total:
+            print(f"  {C.RED}Error: transfer truncated — got "
+                  f"{fmt_size(written)} of {fmt_size(total)}.{C.RESET}")
+            _log("error", key, written, error="truncated HTTP stream")
+            return 1
+        if http_mtime:
+            backend.set_key_mtime(key, http_mtime)
+        _log("copied", key, written, method="http_relay")
+
+        verified = True
+        if not args.no_verify and digest:
+            print(f"  Verifying (reading back from the share)…", end="",
+                  flush=True)
+            h = _relay_hasher(halgo)
+            fin, _rsz, _rm = backend.open_read(key)
+            try:
+                for chunk in iter(lambda: fin.read(1024 * 1024), b""):
+                    h.update(chunk)
+            finally:
+                fin.close()
+            verified = (h.hexdigest() == digest)
+            print(f"\r  {C.GREEN}Verified ✓{' ' * 40}{C.RESET}" if verified
+                  else f"\r  {C.RED}VERIFICATION FAILED — share content does "
+                       f"not match the downloaded stream.{C.RESET}")
+        el = time.time() - start
+        print(f"  {C.GREEN}Done: {fmt_size(written)} in {el:.1f}s "
+              f"({fmt_speed(written / el if el > 0 else 0)}){C.RESET}")
+        if PROGRESS_JSON:
+            _tar_emit(written, total or written, 1, 1, start, final=True)
+        return 0 if verified else 1
+    except Exception as e:
+        msg = _fmt_exc(e)
+        print(f"\n{C.RED}Error: {msg}{C.RESET}")
+        return 1
+    finally:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
 
 def _preserve_set(args):
@@ -14290,9 +15674,269 @@ def _download_from_cloud(args, src_spec):
         sys.exit(1)
 
 
+RELAY_CHUNK = 1024 * 1024  # relay chunk size — same as the R2R pipe
+
+
+def _unsafe_rel(rel):
+    """True for a relative path that could escape the destination root — the
+    source listing is UNTRUSTED (a hostile bucket/share can craft keys)."""
+    if not rel or rel.startswith(("/", "\\")):
+        return True
+    return any(p == ".." for p in rel.replace("\\", "/").split("/"))
+
+
+def _rel_excluded(rel, patterns):
+    """--exclude for the streaming relays: match the rel path or any of its
+    path components (same spirit as scan_source's name matching)."""
+    if not patterns:
+        return False
+    parts = rel.replace("\\", "/").split("/")
+    return any(fnmatch.fnmatch(rel, p) or any(fnmatch.fnmatch(c, p)
+               for c in parts) for p in patterns)
+
+
+def _spool_from_stream(fin, spool_mb, spool_dir, halgo, prog=None):
+    """Drain fin into a SpooledTemporaryFile — pure RAM up to spool_mb MB,
+    transparently overflowing to a temp file under spool_dir — hashing the
+    bytes in flight. Progress is credited at half weight (the download half;
+    the upload half lands on completion). Returns (spool, nbytes, digest)."""
+    import tempfile
+    h = _relay_hasher(halgo)
+    sp = tempfile.SpooledTemporaryFile(
+        max_size=max(0, int(spool_mb)) * 1024 * 1024, dir=spool_dir)
+    n = 0
+    while True:
+        data = fin.read(RELAY_CHUNK)
+        if not data:
+            break
+        sp.write(data)
+        if h is not None:
+            h.update(data)
+        n += len(data)
+        if prog is not None:
+            prog.update(len(data) // 2)
+            prog.display()
+    sp.seek(0)
+    return sp, n, (h.hexdigest() if h else None)
+
+
+def _cloud_relay_stream(args, src_spec, dst_spec):
+    """Cross-provider/container object relay that STREAMS every object through
+    a bounded per-object spool (CLOUD_RELAY_DESIGN.md §3–4) instead of landing
+    the whole dataset in a local temp dir. Disk/memory use is O(objects in
+    flight) — RAM up to --relay-spool-mb per object, overflow bounded by the
+    largest in-flight object, never the dataset."""
+    import tempfile
+    src = make_backend(src_spec, args)
+    dst = make_backend(dst_spec, args)
+    banner(f"RELAY (streaming) — {CLOUD_SCHEME_NAMES[src_spec.scheme]} → "
+           f"{CLOUD_SCHEME_NAMES[dst_spec.scheme]}")
+    print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{args.source}{C.RESET}")
+    print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{args.destination}{C.RESET}")
+
+    objects = {k: v for k, v in src.list_objects(src_spec.prefix).items()
+               if not k.endswith((CLOUD_MANIFEST_NAME,
+                                  LEGACY_CLOUD_MANIFEST_NAME))}
+    if not objects:
+        print(f"  {C.YELLOW}No objects found under that prefix.{C.RESET}")
+        return
+    sp = src_spec.prefix.rstrip("/")
+    dp = dst_spec.prefix.rstrip("/")
+
+    src_manifest = {} if args.no_cache else _load_cloud_manifest(src, src_spec.prefix)
+    dst_manifest = {} if args.no_cache else _load_cloud_manifest(dst, dst_spec.prefix)
+    dst_sizes = {}
+    for k, v in dst.list_objects(dst_spec.prefix).items():
+        r = k[len(dp):].lstrip("/") if dp and k.startswith(dp) else k
+        dst_sizes[r] = v["size"]
+
+    # Single-threaded classify (mirrors _upload_to_cloud): skip / primary /
+    # duplicate, BEFORE any byte moves. v1 dedup uses hashes known in advance
+    # (source manifest); unknown-hash objects simply relay (design §4.3).
+    new_manifest = {}
+    primaries = []   # (key, rel, dkey, size, want_hash)
+    dups = []        # (rel, primary_dkey, dkey, size, hash)
+    skipped = errors = 0
+    skip_bytes = 0
+    first_dkey_for_hash = {}
+    total_bytes = 0
+    for key, info in sorted(objects.items()):
+        rel = key[len(sp):].lstrip("/") if sp and key.startswith(sp) else key
+        rel = rel.lstrip("/") or key.rsplit("/", 1)[-1]
+        if _unsafe_rel(rel):
+            errors += 1
+            print(f"  {C.RED}Skipping unsafe key: {key}{C.RESET}")
+            continue
+        if _rel_excluded(rel, args.exclude):
+            continue
+        dkey = (dp + "/" + rel).lstrip("/") if dp else rel
+        size = info["size"]
+        total_bytes += size
+        h = (src_manifest.get(rel) or {}).get("hash")
+        prev = dst_manifest.get(rel)
+        if (not args.overwrite and h and prev and prev.get("hash") == h
+                and dst_sizes.get(rel) == size):
+            skipped += 1
+            skip_bytes += size
+            new_manifest[rel] = {"size": size, "hash": h}
+            continue
+        if h and not args.no_dedup and h in first_dkey_for_hash:
+            dups.append((rel, first_dkey_for_hash[h], dkey, size, h))
+        else:
+            primaries.append((key, rel, dkey, size, h))
+            if h and not args.no_dedup:
+                first_dkey_for_hash[h] = dkey
+    print(f"  Objects: {C.BOLD}{len(objects)}{C.RESET} ({fmt_size(total_bytes)})"
+          f"  ·  relay {len(primaries)}, dedup {len(dups)}, skip {skipped}")
+    if args.dry_run:
+        print(f"  {C.YELLOW}(dry run — nothing relayed){C.RESET}")
+        return
+
+    prog = Progress(total_bytes, len(objects))
+    if skipped:
+        prog.update(skip_bytes, skipped)
+        prog.display()
+    lock = threading.Lock()
+    relayed = deduped = 0
+    bytes_relayed = bytes_deduped = 0
+    spool_mb = getattr(args, "relay_spool_mb", 64)
+    spool_dir = tempfile.mkdtemp(prefix="blitcp_spool_")
+    try:
+        def _do_relay(item):
+            nonlocal relayed, bytes_relayed, errors
+            key, rel, dkey, size, want = item
+            try:
+                fin, _sz, smeta = src.open_read(key)
+                try:
+                    spool, n, digest = _spool_from_stream(
+                        fin, spool_mb, spool_dir, _hash_name, prog)
+                except Exception:
+                    raise
+                finally:
+                    try:
+                        fin.close()
+                    except Exception:
+                        pass
+                try:
+                    if want and digest and want != digest:
+                        raise RuntimeError(
+                            "source bytes do not match the source manifest "
+                            "hash — refusing to propagate corruption")
+                    meta = {"fc_relpath": _quote_rel(rel),
+                            "fc_hash": digest or "",
+                            "fc_hash_algo": _hash_name}
+                    for mk in ("fc_mtime", "fc_mode", "fc_uid", "fc_gid"):
+                        if smeta.get(mk):
+                            meta[mk] = smeta[mk]
+                    dst.upload_stream(spool, dkey, meta, n)
+                finally:
+                    spool.close()
+                with lock:
+                    relayed += 1
+                    bytes_relayed += n
+                    new_manifest[rel] = {"size": n, "hash": digest}
+                    prog.update(size - size // 2, 1)
+                    prog.display()
+            except Exception as ex:
+                msg = str(ex).strip().splitlines()[0] if str(ex).strip() \
+                    else ex.__class__.__name__
+                if os.environ.get("BLITCP_DEBUG"):
+                    import traceback
+                    traceback.print_exc()
+                with lock:
+                    errors += 1
+                    print(f"\n  {C.RED}Error relaying {rel}: {msg}{C.RESET}")
+                    prog.update(size, 1)
+                    prog.display()
+
+        workers = max(1, args.cloud_concurrency)
+        # Phase A — stream primaries; uploads overlap later downloads.
+        if primaries:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(as_completed([pool.submit(_do_relay, it)
+                                   for it in primaries]))
+        # Phase B — duplicates via server-side copy on the destination.
+        def _do_dup(item):
+            nonlocal deduped, bytes_deduped, errors
+            rel, pkey, dkey, size, h = item
+            try:
+                meta = {"fc_relpath": _quote_rel(rel), "fc_hash": h,
+                        "fc_hash_algo": _hash_name}
+                dst.server_side_copy(pkey, dkey, meta)
+                with lock:
+                    deduped += 1
+                    bytes_deduped += size
+                    new_manifest[rel] = {"size": size, "hash": h}
+                    prog.update(size, 1)
+                    prog.display()
+            except Exception as ex:
+                with lock:
+                    errors += 1
+                    print("\n  " + C.RED + _tr("Error copying {name}: {err}")
+                          .format(name=rel, err=ex) + C.RESET)
+                    prog.update(size, 1)
+                    prog.display()
+
+        if dups:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(as_completed([pool.submit(_do_dup, it) for it in dups]))
+        prog.finish()
+    finally:
+        shutil.rmtree(spool_dir, ignore_errors=True)
+
+    if not args.no_cache:
+        _save_cloud_manifest(dst, dst_spec.prefix, new_manifest)
+
+    # Verify: the in-flight hash already compared against the source manifest;
+    # sample the destination's metadata (real per-object metadata stores only —
+    # SMB's head() answers from the manifest we just wrote, proving nothing).
+    if not args.no_verify and relayed and dst.scheme != "smb":
+        import random
+        cand = [(r, m["hash"]) for r, m in new_manifest.items() if m.get("hash")]
+        smp = random.sample(cand, min(20, len(cand)))
+        print(f"  {C.DIM}Verifying {len(smp)} destination objects...{C.RESET}")
+        bad = 0
+        for r, hh in smp:
+            m = dst.head((dp + "/" + r).lstrip("/") if dp else r)
+            if not m or m.get("fc_hash") != hh:
+                bad += 1
+                print(f"  {C.RED}VERIFY MISMATCH: {r}{C.RESET}")
+        if bad == 0:
+            print(f"  {C.GREEN}✓ Verified {len(smp)} objects OK{C.RESET}")
+        errors += bad
+
+    banner("DONE")
+    print(f"  Relayed:  {C.BOLD}{relayed}{C.RESET} ({fmt_size(bytes_relayed)})"
+          f"  {C.DIM}streamed — no dataset temp dir{C.RESET}")
+    if deduped:
+        print(f"  Deduped:  {C.BOLD}{deduped}{C.RESET} via server-side copy "
+              f"({C.GREEN}{fmt_size(bytes_deduped)} bandwidth saved{C.RESET})")
+    if skipped:
+        print(f"  Skipped:  {C.BOLD}{skipped}{C.RESET} unchanged (cross-run)")
+    if errors:
+        print(f"  {C.RED}Errors:   {errors}{C.RESET}")
+    if args.log_file:
+        write_log_file(args.log_file, {
+            "source": args.source, "destination": args.destination,
+            "mode": f"relay_{src.scheme}_{dst.scheme}",
+            "total_files": len(objects), "copied": relayed, "linked": deduped,
+            "skipped": skipped, "errors": errors, "total_bytes": total_bytes,
+            "bytes_written": bytes_relayed, "dedup_saved": bytes_deduped,
+            "hash_algo": _hash_name,
+        })
+    if errors:
+        sys.exit(1)
+
+
 def _cloud_to_cloud(args, src_spec, dst_spec):
     """Cloud→cloud. Same provider + same container → server-side copy; otherwise
-    relay through a local temp directory (download then upload)."""
+    per-object streaming relay (_cloud_relay_stream)."""
+    if (src_spec.scheme == dst_spec.scheme
+            and src_spec.container == dst_spec.container
+            and getattr(src_spec, "host", None) == getattr(dst_spec, "host", None)
+            and src_spec.prefix.rstrip("/") == dst_spec.prefix.rstrip("/")):
+        print(f"{C.RED}Error: source and destination are the same location.{C.RESET}")
+        sys.exit(1)
     if (src_spec.scheme == dst_spec.scheme
             and src_spec.container == dst_spec.container
             and getattr(src_spec, "host", None) == getattr(dst_spec, "host", None)):
@@ -14340,19 +15984,9 @@ def _cloud_to_cloud(args, src_spec, dst_spec):
             sys.exit(1)
         return
 
-    # Cross-provider / cross-container → relay through a temp dir.
-    import tempfile
-    relay = tempfile.mkdtemp(prefix="blitcp_relay_")
-    try:
-        print(f"  {C.DIM}Relaying through local temp (cross-provider)...{C.RESET}")
-        dl = argparse.Namespace(**vars(args))
-        dl.destination = relay
-        _download_from_cloud(dl, src_spec)
-        up = argparse.Namespace(**vars(args))
-        up.source = relay
-        _upload_to_cloud(up, dst_spec)
-    finally:
-        shutil.rmtree(relay, ignore_errors=True)
+    # Cross-provider / cross-container → per-object streaming relay
+    # (bounded spool, nothing dataset-sized on the local disk).
+    return _cloud_relay_stream(args, src_spec, dst_spec)
 
 
 def _load_cloud_manifest(backend, prefix):
@@ -14464,46 +16098,147 @@ def _ssh_ls(target, overrides=None, cli_port=22, cli_key=None, cli_password=Fals
     where = f"{remote.user}@{remote.host}:{remote.path}"
     try:
         ssh.connect()
-        sftp = ssh.open_sftp()
-        # Stat first so we give an accurate message: a regular file is listed
-        # like `ls file`, a missing path says so, only directories are walked.
+        # SFTP first (sizes for free); when the server closes the sftp
+        # subsystem — SSH on, SFTP off, a common NAS default — list over the
+        # shell instead, exactly as the GUI's browser does. A connection saved
+        # as "SFTP only" never touches the shell.
         try:
-            st = sftp.stat(remote.path)
-        except IOError:
-            print(f"{C.RED}Error: no such path: {where}{C.RESET}")
-            ssh.close()
-            return 1
-        if not stat.S_ISDIR(st.st_mode):
-            print(f"    {fmt_size(st.st_size or 0):>10}  {remote.path}")
-            ssh.close()
-            return 0
-        entries = sftp.listdir_attr(remote.path)
+            kind, entries = _ssh_ls_via_sftp(ssh, remote.path)
+        except Exception as sftp_err:
+            if ssh.sftp_only:
+                raise
+            try:
+                kind, entries = _ssh_ls_via_shell(ssh, remote.path)
+            except Exception:
+                raise sftp_err
     except SystemExit:
         raise
     except Exception as e:
-        print(f"{C.RED}Error listing {where}: {e}{C.RESET}")
         ssh.close()
+        msg = _fmt_exc(e)
+        low = msg.lower()
+        if any(k in low for k in ("channel closed", "subsystem", "sftpclient")):
+            msg = ("SFTP is not available on the SSH server and the shell "
+                   "listing failed too. Enable SFTP (Synology: Control Panel "
+                   "→ File Services → FTP → “Enable SFTP service”).")
+        print(f"{C.RED}Error listing {where}: {msg}{C.RESET}")
         return 1
     try:
+        if kind == "missing":
+            print(f"{C.RED}Error: no such path: {where}{C.RESET}")
+            return 1
+        if kind == "file":
+            e = entries[0]
+            shown = fmt_size(e.st_size) if e.st_size is not None else ""
+            print(f"    {shown:>10}  {remote.path}")
+            return 0
         if not entries:
             print(f"  Empty directory: {where}")
             return 0
         # Directories first, then files, each sorted by name (like `ls`).
         entries.sort(key=lambda a: (0 if stat.S_ISDIR(a.st_mode) else 1, a.filename))
         files = sum(1 for a in entries if not stat.S_ISDIR(a.st_mode))
-        total = sum(a.st_size or 0 for a in entries if not stat.S_ISDIR(a.st_mode))
+        sized = [a for a in entries if not stat.S_ISDIR(a.st_mode) and a.st_size is not None]
+        total = sum(a.st_size for a in sized)
         print(f"  Entries in {where}:")
         for a in entries:
             is_dir = stat.S_ISDIR(a.st_mode)
-            shown = "<DIR>" if is_dir else fmt_size(a.st_size or 0)
+            if is_dir:
+                shown = "<DIR>"
+            else:
+                shown = fmt_size(a.st_size) if a.st_size is not None else ""
             name = a.filename + ("/" if is_dir else "")
             print(f"    {shown:>10}  {name}")
         plural = "entry" if len(entries) == 1 else "entries"
-        print(f"  {C.BOLD}{len(entries)} {plural}, {fmt_size(total)} "
-              f"in {files} file(s){C.RESET}")
+        if len(sized) == files:
+            print(f"  {C.BOLD}{len(entries)} {plural}, {fmt_size(total)} "
+                  f"in {files} file(s){C.RESET}")
+        else:
+            print(f"  {C.BOLD}{len(entries)} {plural}, {files} file(s){C.RESET} "
+                  f"{C.DIM}(sizes unavailable: listed over the shell without "
+                  f"GNU find){C.RESET}")
         return 0
     finally:
         ssh.close()
+
+
+class _LsEntry:
+    """The three attributes the `ls` printer reads, for shell-listed paths
+    (paramiko's SFTPAttributes has the same names). st_size None = unknown."""
+    __slots__ = ("filename", "st_mode", "st_size")
+
+    def __init__(self, filename, is_dir, size=None):
+        self.filename = filename
+        self.st_mode = stat.S_IFDIR if is_dir else stat.S_IFREG
+        self.st_size = size
+
+
+def _ssh_ls_via_sftp(ssh, path):
+    """Returns (kind, entries): kind is 'dir' | 'file' | 'missing'; entries are
+    SFTPAttributes for a dir, a one-element list for a file. Raises when the
+    server has no usable SFTP subsystem."""
+    sftp = ssh.open_sftp()
+    # Stat first so we give an accurate message: a regular file is listed
+    # like `ls file`, a missing path says so, only directories are walked.
+    try:
+        st = sftp.stat(path)
+    except IOError:
+        return "missing", []
+    if not stat.S_ISDIR(st.st_mode):
+        return "file", [_LsEntry(path, False, st.st_size or 0)]
+    return "dir", list(sftp.listdir_attr(path))
+
+
+def _ssh_ls_via_shell(ssh, path):
+    """Same contract as _ssh_ls_via_sftp, over the exec channel. With GNU find
+    the sizes come along; otherwise `ls -1ApL` gives names only (size None)."""
+    import shlex
+    q = shlex.quote(path)
+    out, err, rc = ssh.exec_cmd(
+        f"if [ -d {q} ]; then echo D; elif [ -e {q} ]; then echo F; "
+        f"wc -c < {q}; else echo M; fi", timeout=30)
+    head = out.strip().splitlines() or [""]
+    if head[0] == "M":
+        return "missing", []
+    if head[0] == "F":
+        try:
+            size = int(head[1].strip()) if len(head) > 1 else None
+        except ValueError:
+            size = None
+        return "file", [_LsEntry(path, False, size)]
+    if head[0] != "D":
+        raise OSError(err.strip() or f"unexpected reply: {out.strip()[:80]!r}")
+    entries = []
+    if ssh.caps.get("gnu_find"):
+        out, err, rc = ssh.exec_cmd(
+            f"LC_ALL=C find -L {q} -mindepth 1 -maxdepth 1 "
+            f"-printf '%y\\t%s\\t%f\\n' 2>/dev/null", timeout=60)
+        if rc == 0:
+            for line in out.splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) != 3:
+                    continue
+                kind, size, name = parts
+                if not name or name in (".", ".."):
+                    continue
+                try:
+                    sz = int(size)
+                except ValueError:
+                    sz = None
+                entries.append(_LsEntry(name, kind == "d", None if kind == "d" else sz))
+            return "dir", entries
+    out, err, rc = ssh.exec_cmd(f"LC_ALL=C ls -1ApL -- {q}", timeout=60)
+    if rc != 0:
+        raise OSError(err.strip() or f"ls exited {rc}")
+    for line in out.splitlines():
+        nm = line.rstrip("\r")
+        if not nm or nm in ("./", "../", ".", ".."):
+            continue
+        if nm.endswith("/"):
+            entries.append(_LsEntry(nm[:-1], True))
+        else:
+            entries.append(_LsEntry(nm, False))
+    return "dir", entries
 
 
 def cloud_ls(argv):
@@ -14514,7 +16249,8 @@ def cloud_ls(argv):
         print("Usage: blitcp ls <connection[:folder] | s3://bucket/prefix | user@host:/path>\n"
               "  List objects under a cloud location, or files in a remote SSH directory.\n"
               "  Cloud: a saved cloud connection name, or an s3:// / az:// / gs:// URL.\n"
-              "  SSH:   a saved ssh connection name, or a user@host:/path (listed via SFTP).\n"
+              "  SSH:   a saved ssh connection name, or a user@host:/path\n"
+              "         (via SFTP; over the shell when the server has SFTP off).\n"
               "  Examples:\n"
               "    blitcp ls aws_fastcopies\n"
               "    blitcp ls gcs_fastcopies:backup\n"
@@ -14644,6 +16380,46 @@ def _tar_ssh_connect(spec, key_path, password, compress):
     if tr:
         tr.set_keepalive(15)
     return cli
+
+
+def _sftp_subsystem_ok(spec, key_path, password, compress):
+    """Whether the server actually offers the SFTP subsystem: (available, err).
+
+    SSH on / SFTP off is a common NAS and managed-gateway default, and every
+    SFTP call in the copy path is made deep inside a transfer — the first one
+    lands after the scan, so without this the run dies halfway with a bare
+    "Channel closed." Probing once, before the transport is chosen, is what
+    lets the whole copy switch to tar-over-exec instead.
+
+    A probe that cannot even connect returns available=True with the error:
+    the caller must leave routing alone and let the real connection report an
+    auth or network failure properly, rather than silently taking a fallback
+    for a problem that has nothing to do with SFTP."""
+    cli = None
+    try:
+        cli = _tar_ssh_connect(spec, key_path, password, compress)
+    except Exception as e:                                  # noqa: BLE001
+        return True, e
+    try:
+        sf = cli.open_sftp()
+        try:
+            sf.close()
+        except Exception:
+            pass
+        return True, None
+    except Exception:                                       # noqa: BLE001
+        # Silent by default — the chosen transport is named in the banner. But
+        # a probe that decides this wrongly would otherwise be undebuggable,
+        # so the reason stays reachable through the usual escape hatch.
+        if _env("TRACEBACK"):
+            import traceback as _tb
+            print(_tb.format_exc().rstrip())
+        return False, None
+    finally:
+        try:
+            cli.close()
+        except Exception:
+            pass
 
 
 def _tar_emit(done, total, files_done, files_total, start, final=False):
@@ -14860,22 +16636,84 @@ def _hash_local_file(path, algo, buf=4 * 1024 * 1024):
     return h.hexdigest()
 
 
+class _SshExecWriter:
+    """Write handle backed by `cat > path` on an exec channel — the SFTP-free
+    stand-in for sftp.open(path, "wb").
+
+    A destination saved as protocol 'ssh' (or given --ssh-no-sftp) is one where
+    the SFTP subsystem is off or unreachable, so opening an SFTP handle there
+    dies with a bare "Channel closed." Exposes just the write()/close() surface
+    _http_pump needs, and turns a non-zero remote exit into the shell's own
+    stderr rather than a silent short file."""
+
+    def __init__(self, cli, path):
+        self.path = path
+        self._in, self._out, self._err = cli.exec_command(
+            "cat > %s" % shlex.quote(path))
+        self._chan = self._in.channel
+        self._closed = False
+
+    def write(self, data):
+        self._chan.sendall(data)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._chan.shutdown_write()
+        except Exception:
+            pass
+        rc = self._out.channel.recv_exit_status()
+        err = self._err.read().decode("utf-8", "replace").strip()
+        if rc:
+            raise IOError("remote write to %s failed (exit %d)%s"
+                          % (self.path, rc, ": " + err if err else ""))
+
+
+def _ssh_exec_stat(cli, path):
+    """('dir'|'file'|None, size, mtime) for a remote path over plain SSH.
+
+    One round trip standing in for sftp.stat(): the caller needs the same three
+    answers (is it a directory, how big, how old) and an exec-only destination
+    has no other way to ask. mtime falls back to 0 where neither GNU nor BSD
+    stat exists — the up-to-date check treats 0 as 'unknown' and compares sizes."""
+    q = shlex.quote(path)
+    cmd = ('if [ -d %s ]; then echo "D 0 0"; elif [ -e %s ]; then '
+           'echo "F $(wc -c < %s 2>/dev/null || echo 0) '
+           '$(stat -c %%Y %s 2>/dev/null || stat -f %%m %s 2>/dev/null || echo 0)"; '
+           'else echo "N 0 0"; fi') % (q, q, q, q, q)
+    out, _e, rc = _ssh_run(cli, cmd, timeout=60)
+    parts = out.split()
+    if rc != 0 or len(parts) < 3:
+        return None, 0, 0
+    kind = {"D": "dir", "F": "file"}.get(parts[0])
+    try:
+        return kind, int(parts[1]), float(parts[2])
+    except ValueError:
+        return kind, 0, 0.0
+
+
 def _ssh_exec_caps(cli, dest_dir):
     """Detect what the remote can do over plain SSH: a hash tool, GNU find
     -printf, and (in dest_dir) hardlink/symlink support."""
-    caps = {"hash": None, "halgo": None, "hardlink": False, "symlink": False,
-            "find_printf": False}
+    caps = {"hash": None, "halgo": None, "hashes": {}, "hardlink": False,
+            "symlink": False, "find_printf": False}
     # Prefer the remote tool whose digest matches the LOCAL hash, so the dedup DB
     # is shared with L2L. xxh128sum is byte-identical to Python's xxhash; fall
     # back to sha256/md5 when the remote doesn't have it.
     candidates = [("sha256sum", "sha256"), ("md5sum", "md5")]
     if _hash_name == "xxh128":
         candidates = [("xxh128sum", "xxh128"), ("xxhsum -H2", "xxh128")] + candidates
+    # Record EVERY tool this host has, not just its favourite. Two hosts can
+    # each have a first choice the other lacks while sharing a perfectly good
+    # second one — see _common_hash_algo.
     for tool, algo in candidates:
         o, _e, rc = _ssh_run(cli, "command -v " + shlex.quote(tool.split()[0]))
         if rc == 0 and o.strip():
-            caps["hash"], caps["halgo"] = tool, algo
-            break
+            caps["hashes"].setdefault(algo, tool)
+            if caps["hash"] is None:
+                caps["hash"], caps["halgo"] = tool, algo
     o, _e, rc = _ssh_run(cli, "cd / && find . -maxdepth 0 -printf x 2>/dev/null")
     caps["find_printf"] = (rc == 0 and "x" in o)
     q = shlex.quote(dest_dir)
@@ -14887,6 +16725,23 @@ def _ssh_exec_caps(cli, dest_dir):
     toks = o.split()
     caps["hardlink"], caps["symlink"] = ("HL" in toks), ("SL" in toks)
     return caps
+
+
+def _common_hash_algo(scaps, dcaps):
+    """Best hash algorithm BOTH remotes can run, or None.
+
+    Comparing each side's first choice was wrong: a NAS with only sha256sum
+    and a workstation with xxh128sum installed each picked a different
+    favourite, the two did not match, and a pair of hosts that both had
+    sha256sum AND md5sum was told it had "no common tool" — which silently
+    turned off deduplication and, worse, verification."""
+    pref = ["xxh128", "sha256", "md5"] if _hash_name == "xxh128" \
+        else ["sha256", "xxh128", "md5"]
+    have_s, have_d = scaps.get("hashes") or {}, dcaps.get("hashes") or {}
+    for algo in pref:
+        if algo in have_s and algo in have_d:
+            return algo
+    return None
 
 
 def _ssh_remote_listing(cli, root, caps):
@@ -15045,6 +16900,11 @@ def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
     if verified is not None:
         print(f"  {_pad(_tr('Verify:'), 11)}{C.GREEN}✓ {_tr('passed')}{C.RESET}" if verified
               else f"  {_pad(_tr('Verify:'), 11)}{C.RED}✗ {_tr('FAILED')}{C.RESET}")
+    else:
+        # An absent line is not a report. A run that could not verify has to
+        # say so, or "Done" reads as "checked and correct".
+        print(f"  {_pad(_tr('Verify:'), 11)}{C.YELLOW}"
+              f"{_tr('not run')}{C.RESET}")
 
 
 def _local_dedup_db_path(dst):
@@ -15318,7 +17178,16 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
     print(f"  dest FS links: {link_kind} · hash: {caps['hash'] or 'none'}")
 
     banner("Phase 1 — Scanning source")
-    # 1) enumerate local files: arcrel = <basename>/<relpath>
+    # 1) enumerate local files.
+    # A SINGLE directory source copies its CONTENTS; several sources keep their
+    # basenames so they cannot collide; a file always keeps its own name. This
+    # is what the SFTP, L2L and cloud paths already do — this transport nested
+    # every directory under <basename>/ unconditionally, so the same command
+    # landed files in a different place depending on the transport. That was
+    # survivable while --ssh-no-sftp was typed by hand; it is not, now that a
+    # server without the SFTP subsystem selects this path automatically.
+    # (The pull direction was fixed the same way in 876bcff.)
+    _multi_src = len(local_srcs or []) > 1
     files, ap_by_rel, size_by_rel = [], {}, {}
     for s in (local_srcs or []):
         s = os.path.abspath(s)
@@ -15327,6 +17196,7 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
             dcli.close()
             return 1
         base = os.path.basename(s.rstrip("/\\")) or s
+        _pfx = (base + "/") if _multi_src else ""
         if os.path.isfile(s):
             st = os.stat(s)
             files.append((base, st.st_size, st.st_mtime))
@@ -15339,7 +17209,7 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
                     _d[:] = [d for d in _d if d not in DEFAULT_DIR_EXCLUDES]
                 for f in fs:
                     ap = os.path.join(r, f)
-                    rel = base + "/" + os.path.relpath(ap, s).replace(os.sep, "/")
+                    rel = _pfx + os.path.relpath(ap, s).replace(os.sep, "/")
                     try:
                         st = os.stat(ap)
                     except OSError:
@@ -15725,10 +17595,27 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
     scaps = _ssh_exec_caps(scli, "/tmp")        # source: hash/find
     dcaps = _ssh_exec_caps(dcli, dst)            # dest: link support (+hash/find)
     # a hash algorithm both ends share (needed for dedup + verify)
-    algo = scaps["halgo"] if (scaps["halgo"] and scaps["halgo"] == dcaps["halgo"]) else None
+    algo = _common_hash_algo(scaps, dcaps)
+    if algo:
+        # Pin each side to the AGREED algorithm — its own favourite may be a
+        # different one, and the two digests would never compare equal.
+        scaps["hash"], scaps["halgo"] = scaps["hashes"][algo], algo
+        dcaps["hash"], dcaps["halgo"] = dcaps["hashes"][algo], algo
     link_kind = "hardlink" if dcaps["hardlink"] else ("symlink" if dcaps["symlink"] else "none")
-    banner("SSH (no SFTP) — remote → remote  [dedup · incremental · verify]")
-    print(f"  dest FS links: {link_kind} · hash: {algo or 'none (no common tool)'}")
+    # Say what this run will ACTUALLY do. The feature list used to be a fixed
+    # string, so a run with no shared hash tool still advertised "dedup ·
+    # verify" and then quietly did neither.
+    feats = ["incremental"] + (["dedup", "verify"] if algo else [])
+    banner("SSH (no SFTP) — remote → remote  [" + " · ".join(feats) + "]")
+    print(f"  dest FS links: {link_kind} · hash: {algo or 'none'}")
+    if not algo:
+        s_have = ", ".join(sorted(scaps.get("hashes") or {})) or "none"
+        d_have = ", ".join(sorted(dcaps.get("hashes") or {})) or "none"
+        print(f"  {C.YELLOW}Warning: no hash tool common to both ends "
+              f"(source has: {s_have}; destination has: {d_have}) — "
+              f"deduplication AND verification are OFF for this transfer. "
+              f"Install xxhsum or coreutils on the end that is missing "
+              f"one.{C.RESET}")
 
     banner("Phase 1 — Scanning source")
     smap = _ssh_remote_listing(scli, parent, scaps)
@@ -15903,7 +17790,7 @@ def copy_via_tar_ssh(src_remote, dst_remote, dst, local_srcs, args):
         print(f"{C.RED}Error: --ssh-no-sftp needs a remote source or destination.{C.RESET}")
         return 1
     except Exception as e:
-        msg = str(e).strip().splitlines()[0] if str(e).strip() else e.__class__.__name__
+        msg = _fmt_exc(e)
         print(f"{C.RED}Error: {msg}{C.RESET}")
         return 1
 
@@ -15978,6 +17865,11 @@ def main():
                                 "(s3/az/gs). Small-file transfers are latency-bound, "
                                 "so this defaults higher than --threads "
                                 "(default: {n})").format(n=DEFAULT_CLOUD_CONCURRENCY))
+    copy_grp.add_argument("--relay-spool-mb", type=int, default=64,
+                        metavar="N",
+                        help=_tr("Per-object memory buffer for streaming relays "
+                                 "(MB); a single object larger than this spills "
+                                 "to a temp file (0 = always spill; default: 64)"))
     copy_grp.add_argument("--dry-run", action="store_true",
                         help=_tr("Show copy plan without copying"))
     copy_grp.add_argument("-v", "--verbose", action="store_true",
@@ -16090,6 +17982,21 @@ def main():
                         help=argparse.SUPPRESS)
     cloud_grp.add_argument("--smb-no-encrypt", action="store_true",
                         help=_tr("Disable SMB3 transport encryption (on by default)"))
+    cloud_grp.add_argument("--http-user", default=None,
+                        help=_tr("Username for http(s):// sources (HTTP Basic auth)"))
+    cloud_grp.add_argument("--http-password", action="store_true",
+                        help=_tr("Prompt for the http(s) source password"))
+    cloud_grp.add_argument("--http-password-env", default=None, metavar="VAR",
+                        help=argparse.SUPPRESS)
+    cloud_grp.add_argument("--http-header-env", default=None, metavar="VAR",
+                        help=argparse.SUPPRESS)
+    cloud_grp.add_argument("--http-header", action="append", default=None,
+                        metavar="'Name: value'",
+                        help=_tr("Extra HTTP header for http(s):// sources, repeatable — e.g. \"Authorization: Bearer TOKEN\" or \"Cookie: session=…\" for downloads behind a login or terms page"))
+    cloud_grp.add_argument("--cookies", default=None, metavar="FILE",
+                        help=_tr("Netscape/Mozilla cookies.txt file for http(s):// sources — reuse a browser login you already have (what a \"cookies.txt\" browser extension exports, same format as curl -b / wget --load-cookies)"))
+    cloud_grp.add_argument("--cookies-from-browser", default=None, metavar="BROWSER",
+                        help=_tr("Read the LIVE login session for an http(s):// source straight from your browser: chrome, chromium, firefox, edge, brave, opera, safari (or 'browser' to try all). Needs the browser-cookie3 package."))
     cloud_grp.add_argument("--credentials-file", default=None, metavar="PATH",
                         help=_tr("Named-connection file for cloud credentials. Reference a connection by name (e.g. aws-dev, aws-dev:folder) or in a URL as s3://name@bucket/key. Defaults to credentials.json next to blitcp (override with this flag or $BLITCP_CREDENTIALS). Manage it with: blitcp creds add/list/edit/remove/test."))
 
@@ -16166,6 +18073,15 @@ def main():
     # (cloud or ssh) into their concrete form, and pull any SSH credentials
     # from the profile — before cloud/SSH routing below sees the paths.
     apply_named_endpoints(args)
+
+    # ── Plain HTTP(S) source routing ──────────────────────────────────
+    # A bare https://host/dir/file URL as the SOURCE streams that one file to
+    # an SSH or SMB destination through this machine — the same relay shape as
+    # R2R (in-memory chunks, nothing lands on the local disk). Intercepted
+    # BEFORE cloud/SMB routing and parse_remote_path: the latter would misread
+    # https://host as an SSH host named 'https'.
+    if is_http_url(args.source) or is_http_url(args.destination):
+        sys.exit(run_http_transfer(args))
 
     # ── Object storage routing (v4.0.0) ───────────────────────────────
     # If either endpoint is a cloud URL (s3:// / az:// / gs://) or an SMB/CIFS
@@ -16430,6 +18346,9 @@ def main():
 
     print()
 
+    if getattr(args, "_saved_protocol_note", None) and (src_remote or dst_remote):
+        print(f"  {C.DIM}SSH transport: {args._saved_protocol_note}{C.RESET}")
+
     # ── SFTP-only sanity checks (pure SFTP, no remote shell) ────────────
     if getattr(args, "sftp_only", False):
         if getattr(args, "ssh_no_sftp", False):
@@ -16441,6 +18360,39 @@ def main():
         if src_remote and dst_remote:
             print(f"{C.RED}Error: --sftp-only does not support remote-to-remote copies.{C.RESET}")
             sys.exit(1)
+
+    # ── Auto-detect a server with SSH on and SFTP off ──────────────────
+    # The transport is chosen here, but the first SFTP call happens after the
+    # scan — so a server without the subsystem used to die mid-run. One probe
+    # now picks the tar-over-exec transport for the whole copy instead.
+    # --sftp-only is an explicit choice and is never overridden: it is
+    # reported as a failure, because quietly opening a shell on a host the
+    # user restricted to SFTP is the one thing that flag exists to prevent.
+    if ((src_remote or dst_remote)
+            and not getattr(args, "ssh_no_sftp", False)
+            and not getattr(args, "sftp_only", False)):
+        _probe_spec = src_remote or dst_remote
+        if src_remote:
+            _probe_key = args.src_key
+            _probe_pw = _resolved_src_pw(args)
+            if not _probe_pw and args.src_password:
+                _probe_pw = getpass.getpass(
+                    f"Password for {src_remote.user}@{src_remote.host}: ")
+                args._resolved_src_password = _probe_pw   # never ask twice
+        else:
+            _probe_key = args.ssh_key
+            _probe_pw = _resolved_dst_pw(args)
+            if not _probe_pw and getattr(args, "ssh_password", False):
+                _probe_pw = getpass.getpass(
+                    f"Password for {dst_remote.user}@{dst_remote.host}: ")
+                args._resolved_dst_password = _probe_pw
+        _ok, _perr = _sftp_subsystem_ok(_probe_spec, _probe_key, _probe_pw,
+                                        args.compress)
+        if not _ok:
+            # Silent, like the shell fallback in _ssh_ls: each SSH-only path
+            # banners itself as "SSH (no SFTP)", so the transport is already
+            # visible without a warning on every run.
+            args.ssh_no_sftp = True
 
     # ── SSH-only (no SFTP) fast path: tar over the exec channel ─────────
     if getattr(args, "ssh_no_sftp", False) and (src_remote or dst_remote):
@@ -16652,8 +18604,18 @@ def main():
               f"({fmt_size(sparse_logical - sparse_alloc)} skippable as holes)")
 
     # ── Phase 2: Deduplication ───────────────────────────────────────
+    # Opening the hash cache is itself a write, so a preview must not do it:
+    # this created the destination and a ~36 KB SQLite file inside it, which
+    # made `blitcp src /typo/path --dry-run` leave the typo behind as a real
+    # directory. It stayed invisible because DedupDB prefers the mount root
+    # and only falls back to the destination — wherever /tmp is its own mount
+    # the file landed in /tmp, outside everything a test thought to look at,
+    # and only on a machine with /tmp on / did it appear where it could be
+    # caught. Skipping the cache costs a preview nothing: it is the path
+    # `--dry-run --no-cache` already takes, and the file counts are identical.
     dedup_db = None
-    if not src_remote and not dst_remote and not args.no_dedup and not args.no_cache:
+    if (not src_remote and not dst_remote and not args.no_dedup
+            and not args.no_cache and not getattr(args, 'dry_run', False)):
         _makedirs_or_die(dst)
         try:
             dedup_db = DedupDB(dst)
@@ -17095,7 +19057,8 @@ def main():
                       + (f" (after dedup saved {fmt_size(saved_bytes)})"
                          if saved_bytes > 0 else ""))
 
-            if not check_destination_space(dst, required, args.force):
+            if not check_destination_space(dst, required, args.force,
+                                           create=not args.dry_run):
                 src_ssh.close()
                 sys.exit(1)
 
@@ -17487,8 +19450,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # Files occupy whole blocks on the destination — the check must compare
     # ALLOCATED bytes against free space, not logical sizes, or many-small-
     # files jobs pass preflight and die mid-copy with a full disk.
-    _makedirs_or_die(dst)
-    block = _dest_block_size(dst)
+    # Same reason the hash cache is skipped above: a preview creates nothing.
+    # The check itself keeps its teeth — the destination's filesystem is the
+    # one its nearest existing parent is on, so the numbers are the real ones.
+    if not args.dry_run:
+        _makedirs_or_die(dst)
+    block = _dest_block_size(_existing_ancestor(dst))
     ndirs = len({os.path.dirname(e.rel) for e in copy_entries
                  if os.path.dirname(e.rel)})
     # If the destination filesystem can't dedup via links (FAT32, exFAT,
@@ -17538,7 +19505,8 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
               f"(+{fmt_size(required - logical)} block/metadata overhead, "
               f"{fmt_size(block)} blocks){C.RESET}")
 
-    if not check_destination_space(dst, required, args.force):
+    if not check_destination_space(dst, required, args.force,
+                                   create=not args.dry_run):
         sys.exit(1)
 
     # ── Phase 4: Resolve physical layout ──────────────────────────────
@@ -17709,6 +19677,43 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     _exit_for_verify(_verify_status)   # exit AFTER summary/audit/log were written
 
 
+def _group_writers_besides(gid, me_uid):
+    """Names of users in group `gid` other than root and uid `me_uid`.
+
+    Empty set = the group is effectively private, so group-write grants nobody
+    new the ability to modify the file. None = the group could not be read
+    (NIS/LDAP down, unknown gid), which must be treated as "unknown", not
+    "safe". Counts BOTH kinds of membership: the group's own member list and
+    every account whose PRIMARY group this is — the latter never appears in
+    gr_mem and is exactly how a user-private group looks.
+    """
+    try:
+        import grp
+        import pwd
+    except ImportError:                       # non-POSIX; caller is POSIX-only
+        return None
+    try:
+        members = set(grp.getgrgid(gid).gr_mem)
+    except (KeyError, OSError):
+        return None
+    try:
+        for pw in pwd.getpwall():
+            if pw.pw_gid == gid:
+                members.add(pw.pw_name)
+    except (OSError, KeyError):
+        return None
+    others = set()
+    for name in members:
+        try:
+            uid = pwd.getpwnam(name).pw_uid
+        except (KeyError, OSError):
+            others.add(name)                  # unresolvable → treat as a risk
+            continue
+        if uid not in (0, me_uid):
+            others.add(name)
+    return others
+
+
 def _reexec_under_sudo():
     """If --use-sudo is present and we're not already root, re-exec the whole
     command under sudo — so privileged subcommands work without the user typing
@@ -17741,18 +19746,60 @@ def _reexec_under_sudo():
                   f"(not root or invoking user uid={me}). Refusing to elevate.",
                   file=sys.stderr)
             sys.exit(1)
-        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            print(f"Error: --use-sudo: {label} {rp} is group/world writable "
+        if st.st_mode & stat.S_IWOTH:
+            print(f"Error: --use-sudo: {label} {rp} is world writable "
                   f"(mode={oct(st.st_mode & 0o777)}). Fix: chmod go-w {rp}",
                   file=sys.stderr)
             sys.exit(1)
+        if st.st_mode & stat.S_IWGRP:
+            # Group-writable only matters if the group HAS somebody else in it.
+            # Debian/Ubuntu/Kali give every user a private group and ship
+            # umask 002, so a plain `cp` produces 0664 files whose group is the
+            # user alone — refusing those made --use-sudo unusable out of the
+            # box while protecting against nobody.
+            others = _group_writers_besides(st.st_gid, me)
+            if others is None:
+                print(f"Error: --use-sudo: {label} {rp} is group writable "
+                      f"(mode={oct(st.st_mode & 0o777)}) and its group "
+                      f"(gid={st.st_gid}) could not be resolved, so who can "
+                      f"modify it is unknown. Fix: chmod g-w {rp}",
+                      file=sys.stderr)
+                sys.exit(1)
+            if others:
+                shown = ", ".join(sorted(others)[:3])
+                print(f"Error: --use-sudo: {label} {rp} is writable by group "
+                      f"members other than you ({shown}), who could modify it "
+                      f"before it runs as root. Fix: chmod g-w {rp}",
+                      file=sys.stderr)
+                sys.exit(1)
         return rp
     script_real = _check_safe_for_sudo(_get_self_path(), "script")
     _check_safe_for_sudo(os.path.dirname(script_real), "script directory")
     _check_safe_for_sudo(sys.executable, "Python interpreter")
     new_argv = [a for a in sys.argv if a != "--use-sudo"]
+    # Without a terminal sudo cannot ask for a password at all ("a terminal is
+    # required…"), which is why an elevated run launched from the GUI either
+    # stalled or went looking for the terminal the GUI happened to be started
+    # from. -A routes the prompt to $SUDO_ASKPASS instead; the GUI sets both.
+    # Only when the variable is present, so a normal terminal run is unchanged.
+    sudo_cmd = ["sudo"]
+    if os.environ.get("SUDO_ASKPASS"):
+        sudo_cmd.append("-A")
+    # sudo resets the environment, so every secret this process was handed by
+    # name — the GUI's http/ssh passwords, the credentials passphrase — is gone
+    # in the elevated process unless it is named here. Losing one used to be
+    # silent: the elevated run simply proceeded unauthenticated and failed
+    # later with a 401 or a login page. Only vars actually present are listed,
+    # so a plain terminal run still calls sudo with no extra flags.
+    carried = [v for v in ("FC_HTTP_PW", "FC_HTTP_HDR",
+                           "FC_SSH_SRC_PW", "FC_SSH_DST_PW",
+                           "BLITCP_CREDS_PASSPHRASE",
+                           "FAST_COPY_CREDS_PASSPHRASE")
+               if os.environ.get(v)]
+    if carried:
+        sudo_cmd.append("--preserve-env=" + ",".join(carried))
     try:
-        os.execvp("sudo", ["sudo", sys.executable] + new_argv)
+        os.execvp("sudo", sudo_cmd + [sys.executable] + new_argv)
     except (OSError, FileNotFoundError) as e:
         print(f"Error: cannot exec sudo: {e}", file=sys.stderr)
         sys.exit(1)
@@ -17791,7 +19838,7 @@ def cli_entry():
     if "--version" in sys.argv or "-V" in sys.argv:
         # First line stays byte-identical — scripts parse it.
         print(f"blitcp v{__version__}")
-        print(_tr("Support development: {url}").format(url=SUPPORT_URL))
+        print(_tr("Support development: {url}").format(url=SUPPORT_URL + " · " + SUPPORT_URL_ALT))
         sys.exit(0)
     if "--check-update" in sys.argv:
         check_update_info()

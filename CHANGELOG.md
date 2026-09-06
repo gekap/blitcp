@@ -1,5 +1,101 @@
 # Changelog
 
+## v4.2.9 — 2026-09-07
+
+### New features
+
+- **HTTP(S) URLs as a source.** `blitcp https://host/path/file user@server:/dir/`
+  streams a download straight to an SSH or SMB destination — nothing lands on
+  the machine you run it from. Single file, SSH/SMB destinations only.
+- **Downloads behind a login.** `--http-user` / `--http-password` /
+  `--http-password-env` for Basic auth, and `--http-header` (repeatable) for a
+  bearer token or a raw cookie.
+- **Reuse a browser session you already have.** `--cookies FILE` reads a
+  Netscape/Mozilla `cookies.txt` export; `--cookies-from-browser NAME` reads the
+  live login from Chrome, Chromium, Firefox, Edge, Brave, Opera or Safari. Both
+  are bundled into the standalone binaries, so no pip install is involved.
+- **`http` as a saved connection type.** Host, user/password, an extra header
+  and a cookie source, matched by host like SSH — a download behind a login
+  needs no flags once the connection exists. `blitcp creds add http`, or the
+  Connections sheet in the GUI.
+- **`Web` as a GUI source type.** Paste a URL and run it. A bar under the
+  sources shows what sign-in is in effect and opens a sheet for a one-off
+  cookies source, user/password or header, for a URL you download once and do
+  not want saved.
+- **Cookie picker in the GUI.** A file chooser for a `cookies.txt` export and
+  the browser list the engine supports, instead of a bare text field.
+
+### Improvements
+
+- **Every mixed transfer streams.** Cross-provider and cross-bucket object
+  copies, and object ↔ SSH relays, move per object in 1 MB chunks instead of
+  staging the dataset on local disk. Peak memory is a single chunk, whatever
+  the transfer size.
+- **Hashes ride the stream.** Deduplication and verification reuse the digest
+  computed while the bytes move, rather than reading everything a second time.
+- **A shared hash algorithm is negotiated between two remotes.** Each host's
+  full tool list is collected and intersected in preference order (xxh128,
+  sha256, md5), instead of comparing each side's favourite — a NAS with
+  sha256sum and a workstation with xxh128sum now agree on sha256 rather than
+  concluding they have nothing in common.
+- **A run states what it will actually do.** The feature banner is built from
+  what is available instead of always claiming "dedup · incremental · verify",
+  and the summary prints `Verify: not run` when verification was impossible.
+- **Secrets stay out of the process list.** The GUI passes an HTTP password or
+  header to the engine through the environment, never on the command line, and
+  `--http-header-env` was added for it. A sign-in is dropped when the URL moves
+  to another host.
+- **`--use-sudo` accepts ordinary file permissions.** Group-writable is judged
+  by who is actually in the group, so the 0664 files a default umask produces
+  on Debian, Ubuntu and Kali no longer block elevation. World-writable, and a
+  group with other members, are still refused.
+- **`--use-sudo` works from the GUI.** sudo cannot prompt without a terminal;
+  the engine now passes `-A` when `$SUDO_ASKPASS` is set and the GUI supplies a
+  0700 helper it deletes when the transfer ends. Secrets survive the elevation
+  instead of being silently dropped by sudo's environment reset.
+- **An NTFS or exFAT USB disk is treated as a local disk.** `fuseblk` is FUSE
+  over a block device, not a network mount, so those drives get the three HDD
+  fast paths — physical-order scan, local dedup DB, link audit — back.
+- **The GUI log reads properly.** Lines wrap instead of being clipped, so the
+  end of a long error — which is where the fix is — stays visible.
+- **The GUI header tracks the real phase.** "Copying…" during a copy, "Checking
+  space…" during the space check, instead of holding the last label it knew.
+- **Clearer refusals.** A blocked download says the server returned an HTML
+  page instead of the file; `BLITCP_TRACEBACK=1` now works on the relay paths.
+- **Documentation matches the code.** The remote→remote relay is described as
+  what it is — a 128 KB pass-through that stores nothing, with a peak RSS of
+  about 90 MB for a 4.5 GB file — and tar batching is described as grouping
+  whole files, which is what it does, rather than implying a large file is cut
+  into 100 MB pieces held in memory.
+
+### Bug fixes
+
+- **A login or terms page could be saved as if it were the file.** An HTML
+  response to a URL that does not name an HTML file is refused, with a note
+  saying so; `--force` overrides deliberately. Previously it was written to the
+  destination and reported as verified.
+- **Two remotes that shared a hash tool were told they had none**, which
+  silently turned off both deduplication and verification while the banner
+  still advertised them.
+- **A server with SSH on and SFTP off was crashed into.** The transport is
+  probed before it is committed to, `--sftp-only` is never silently overridden,
+  and the SSH-only fallback no longer nests a lone file one directory too deep.
+- **`--cookies-from-browser` dropped the cookies that mattered**, because the
+  lookup used the wrong domain.
+- **An HTTP source ignored an SSH destination's transport**, failing on servers
+  with no SFTP subsystem.
+- **A connection's saved SSH protocol was ignored from the terminal**, and
+  `blitcp ls` had no shell fallback for an endpoint without SFTP.
+- **`--dry-run` created the destination directory** and wrote a hash cache.
+- **S3 multipart uploads from the relay raced their own reads**, and SMB
+  streams did not hold the session lock for their whole lifetime.
+- **The macOS Intel binaries shipped without the browser cookie reader**, so
+  `--cookies-from-browser` could not work there.
+- **A sign-in entered before the URL was typed was not bound to any host**, so
+  it would have applied to whatever host was pasted next.
+- **The `--quiet` timing self-check failed correct builds** by measuring run
+  order rather than the flag.
+
 ## v4.1.6 — 2026-08-28
 
 The first public release of the 4.1 line — everything since v4.0.3 in one go.

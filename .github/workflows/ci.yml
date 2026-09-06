@@ -28,9 +28,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # 3.13, not 3.11: the PEP-701 f-string scan walks FSTRING_START tokens,
+      # which exist only on 3.12+. On an older interpreter the check cannot run
+      # at all -- and it is precisely the check that protects the 3.11 release
+      # build and every source install on an older Python.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
       # paramiko lets the SSH-shaped checks run against stubs instead of
       # skipping; xxhash exercises the hashing path the released binaries use.
       # Neither is installed for the UAT job below, which is what keeps the
@@ -96,26 +100,32 @@ jobs:
   # match); --version and --help then prove the module actually imports and
   # runs there rather than merely parsing.
   #
-  # The runner pinning is deliberate: setup-python ships no 3.8 build for
-  # ubuntu-24.04 (which ubuntu-latest now is) nor for arm64 macOS, so this job
-  # uses ubuntu-22.04 and macos-13 instead of the -latest labels.
+  # This runs in a container rather than on a runner label. Hosted images are
+  # retired on a schedule the floor version does not follow: macos-13 (the last
+  # x86 macOS, and the only one setup-python has a 3.8 build for) was removed in
+  # December 2025, and ubuntu-22.04 (the last Ubuntu image carrying 3.8) begins
+  # deprecation in September 2026. A container pins the interpreter itself, so
+  # this job keeps testing the floor the project promises for as long as the
+  # promise stands. Syntax is a property of the interpreter, not the OS; the
+  # per-platform coverage lives in the UAT job above.
   # ---------------------------------------------------------------------------
   python38:
-    name: Python 3.8 floor (${{ matrix.os }})
+    name: Python 3.8 floor
     if: github.repository == 'gekap/blitcp'
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    container: python:3.8-slim
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, macos-13, windows-latest]
     steps:
+      # The slim image has no git, and without it actions/checkout falls back to
+      # a REST tarball download that reports as a warning on every run.
+      - name: Install git for actions/checkout
+        run: apt-get update -qq && apt-get install -y -qq git
+
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.8'
+
       - name: Byte-compile both modules
         run: python -m py_compile blitcp.py blitcp_gui.py
+
       - name: Smoke-test the CLI
         run: |
           python blitcp.py --version

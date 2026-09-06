@@ -495,13 +495,25 @@ Three remote copy modes are supported:
 |------|-------------|
 | **Local → Remote** | Files are streamed as chunked tar batches over SSH. Remote runs `tar xf -` to extract on the fly |
 | **Remote → Local** | Remote runs `tar cf -`, local extracts with streaming extraction — files appear on disk as data arrives (no temp file) |
-| **Remote → Remote** | Data relays through your machine: source `tar cf` → SSH → local relay buffer → SSH → dest `tar xf` |
+| **Remote → Remote** | Data relays through your machine: source `tar cf` → SSH → relay buffer → SSH → dest `tar xf` |
 
-**Chunked tar streaming:** Files are split into ~100 MB batches. Each batch is a separate tar stream over SSH. This provides:
-- Progress updates per batch
-- Error recovery (partial batches don't lose completed work)
+**Chunked tar streaming:** the ~100 MB batches group *files*: many small files travel as one tar stream instead of one at a time, and a file larger than the batch size is a batch of its own. A single large file is therefore always one tar stream — batching never splits a file. This provides:
+- Progress updates as the stream moves (every 2 MB), not only per batch
+- Error recovery at batch granularity (completed batches are not resent)
 - No temp files — streaming extraction writes files directly to disk
-- Large files (≥1 MB) get per-chunk progress updates during extraction
+
+**Remote → remote relay:** your machine is a pipe, not a store. It reads a
+128 KB block from the source channel, writes it to the destination channel, and
+repeats — nothing is buffered to RAM or disk, and a 4.5 GB file moves with a
+peak RSS of about 90 MB. Each of the two links carries the file once, so the
+relay does not double the traffic on any single wire; what it adds is the
+store-and-forward hop, measured at about 5% against a direct pull.
+
+An overlapped version of this pump (reader thread, bounded queue, both legs
+moving at once) was tried in 4.2.9 and reverted in 4.2.10: it doubles
+throughput when a full-duplex link is genuinely underused, but on a saturated
+100 Mbit LAN — where the wire, not the pump, is the limit — it cost about 3%
+and won nothing.
 
 **Deduplication on remote sources:** File hashing runs on the remote server via `python3` or `sha256sum` over SSH, in batches of 5,000 files to avoid timeouts.
 

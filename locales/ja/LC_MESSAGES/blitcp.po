@@ -1041,3 +1041,132 @@ msgstr "作成できないか、書き込みできません"
 
 msgid "Support development: {url}"
 msgstr "開発を支援する: {url}"
+
+msgid "Per-object memory buffer for streaming relays (MB); a single object larger than this spills to a temp file (0 = always spill; default: 64)"
+msgstr "ストリーミングリレー用のオブジェクトごとのメモリバッファ（MB）。これより大きいオブジェクトは一時ファイルに退避します（0 = 常に退避。既定値: 64）"
+
+msgid "Username for http(s):// sources (HTTP Basic auth)"
+msgstr "http(s):// ソース用のユーザー名（HTTP Basic 認証）"
+
+msgid "Prompt for the http(s) source password"
+msgstr "http(s) ソースのパスワードを入力するよう促す"
+
+msgid "Extra HTTP header for http(s):// sources, repeatable — e.g. \"Authorization: Bearer TOKEN\" or \"Cookie: session=…\" for downloads behind a login or terms page"
+msgstr "http(s):// ソース用の追加 HTTP ヘッダー（繰り返し指定可）— 例: \"Authorization: Bearer TOKEN\" や \"Cookie: session=…\"（ログインや利用規約ページの背後にあるダウンロード用）"
+
+msgid "Netscape/Mozilla cookies.txt file for http(s):// sources — reuse a browser login you already have (what a \"cookies.txt\" browser extension exports, same format as curl -b / wget --load-cookies)"
+msgstr "http(s):// ソース用の Netscape/Mozilla cookies.txt ファイル — 既存のブラウザのログインを再利用します（\"cookies.txt\" ブラウザ拡張がエクスポートするもの、curl -b / wget --load-cookies と同じ形式）"
+
+msgid "Read the LIVE login session for an http(s):// source straight from your browser: chrome, chromium, firefox, edge, brave, opera, safari (or 'browser' to try all). Needs the browser-cookie3 package."
+msgstr "http(s):// ソースの現在のログインセッションをブラウザから直接読み取ります: chrome, chromium, firefox, edge, brave, opera, safari（または 'browser' ですべて試行）。browser-cookie3 パッケージが必要です。"
+
+msgid "Paste the direct download URL (https://host/path/file)"
+msgstr "直接ダウンロードURLを貼り付けてください (https://host/path/file)"
+
+msgid "An http(s):// URL can only be the source — there is no generic HTTP upload"
+msgstr "http(s):// URL はソースにしか指定できません — 汎用の HTTP アップロードはありません"
+
+msgid "A web source takes a single URL"
+msgstr "Web ソースは URL を1つだけ受け付けます"
+
+msgid "A web source must be an http:// or https:// URL"
+msgstr "Web ソースは http:// または https:// の URL である必要があります"
+
+msgid "The URL names no file (https://host/dir/file expected)"
+msgstr "URL がファイルを指していません (https://host/dir/file の形式が必要です)"
+
+msgid "A web source needs an SSH or SMB destination — it streams, it does not download locally"
+msgstr "Web ソースには SSH または SMB の宛先が必要です — ストリーミングであり、ローカルにダウンロードしません"
+
+msgid "Web → cloud is not supported yet — relay via SSH or SMB"
+msgstr "Web → クラウドはまだ未対応です — SSH または SMB 経由で中継してください"
+
+msgid "Administrator password"
+msgstr "管理者パスワード"
+
+msgid "This transfer runs with <b>--use-sudo</b>. Enter your password so the elevated copy can start — it is passed straight to sudo and never written to disk."
+msgstr "この転送は <b>--use-sudo</b> で実行されます。権限昇格したコピーを開始するためにパスワードを入力してください — sudo に直接渡され、ディスクに書き込まれることはありません。"
+
+msgid "Password"
+msgstr "パスワード"
+
+msgid "Choose a cookies.txt file"
+msgstr "cookies.txt ファイルを選択"
+
+msgid "Clear"
+msgstr "クリア"
+
+msgid "Cookie files (*.txt cookies*);;All files (*)"
+msgstr "Cookie ファイル (*.txt cookies*);;すべてのファイル (*)"
+
+msgid "Cookies / browser session"
+msgstr "Cookie / ブラウザーのセッション"
+
+msgid "Extra header (blank = none)"
+msgstr "追加ヘッダー (空 = なし)"
+
+msgid "For this run only, for downloads behind a login on "
+msgstr "この実行のみ有効。ログインの先にあるダウンロード用: "
+
+msgid "HTTP sign-in"
+msgstr "HTTP サインイン"
+
+msgid "Header must be 'Name: value'"
+msgstr "ヘッダーは 'Name: value' の形式にしてください"
+
+msgid "Leave everything blank for a public URL. Nothing here is saved — use Connections for that."
+msgstr "公開 URL の場合はすべて空のままにします。ここの内容は保存されません — 保存するには接続を使ってください。"
+
+msgid "Live session: "
+msgstr "ライブセッション: "
+
+msgid "No sign-in — fine for a public URL"
+msgstr "サインインなし — 公開 URL ならこれで十分"
+
+msgid "Sign in…"
+msgstr "サインイン…"
+
+msgid "The password and header reach the engine through the environment, not the command line, so they do not show up in the process list."
+msgstr "パスワードとヘッダーはコマンドラインではなく環境変数でエンジンに渡されるため、プロセス一覧には表示されません。"
+
+msgid "This run: "
+msgstr "この実行: "
+
+msgid "Use"
+msgstr "使用"
+
+msgid "User (blank = none)"
+msgstr "ユーザー (空 = なし)"
+
+msgid "Use…"
+msgstr "使用…"
+
+msgid "Using saved connection "
+msgstr "保存済み接続を使用: "
+
+msgid "cookies file: "
+msgstr "cookie ファイル: "
+
+msgid "cookies.txt file…"
+msgstr "cookies.txt ファイル…"
+
+msgid "cookies.txt path, or a browser name like 'firefox'"
+msgstr "cookies.txt のパス、または 'firefox' のようなブラウザー名"
+
+msgid "header"
+msgstr "ヘッダー"
+
+msgid "live session: "
+msgstr "ライブセッション: "
+
+msgid "Cookies / sign-in…"
+msgstr "Cookie / サインイン…"
+
+msgid "No sign-in yet — add cookies or a browser session if this download needs a login"
+msgstr "まだサインインなし — このダウンロードにログインが必要なら Cookie かブラウザーのセッションを追加してください"
+
+msgid "Use a cookies.txt export or a live browser session for this download"
+msgstr "このダウンロードに cookies.txt のエクスポートまたはブラウザーのライブセッションを使う"
+
+msgid "not run"
+msgstr "未実行"

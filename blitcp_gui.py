@@ -13,7 +13,10 @@ Icons use the bundled Tabler Icons webfont (assets/tabler-icons.ttf).
 import os
 import base64
 import re
+import urllib.parse
+import shutil
 import subprocess
+import tempfile
 import sys
 import time
 from collections import deque
@@ -90,11 +93,12 @@ _ensure_std_streams()
 # next to this file. Optional: the GUI still runs (with demo data) without it.
 # Released in lockstep with blitcp.py — used to fetch the MATCHING core engine
 # if someone runs the GUI without it next to them.
-GUI_VERSION = "4.1.6"
+GUI_VERSION = "4.2.3"
 GUI_REPO = "gekap/blitcp"
 # Shown only on the Settings version card, which the user opened on
 # purpose. Static URL — nothing is fetched, nothing is tracked.
 SUPPORT_URL = "https://ko-fi.com/blitcp"
+SUPPORT_URL_ALT = "https://liberapay.com/blitcp"
 
 try:
     import blitcp as fc
@@ -975,11 +979,31 @@ FIELDSETS = {
         ("port", "Port", "445", False),
         ("share", "Default share", "", False),
     ],
+    # Matched by HOST, like SSH: any http(s):// source on this host picks these
+    # up automatically, so a download behind a login needs no flags.
+    "http": [
+        ("host", "Host (as it appears in the URL)", "dl.example.com", False),
+        ("user", "User (blank = none, e.g. token-only auth)", "", False),
+        ("password", "Password", "", True),
+        ("header", "Extra header (blank = none)",
+         "Authorization: Bearer …", True),
+        ("cookies", "Cookies / browser session (blank = none)",
+         "cookies.txt path, or a browser name like 'firefox'", False),
+    ],
 }
+
+# Browsers whose live login blitcp can read (--cookies-from-browser). Kept in
+# step with the loader table in blitcp.py's _cookie_header_for(); "browser"
+# means "try all of them".
+COOKIE_BROWSERS = [
+    ("chrome", "Chrome"), ("chromium", "Chromium"), ("firefox", "Firefox"),
+    ("edge", "Edge"), ("brave", "Brave"), ("opera", "Opera"),
+    ("safari", "Safari"), ("browser", "Any browser (try all)"),
+]
 TYPE_LABELS = [
     ("s3", "Amazon S3 / compatible"), ("az", "Azure Blob"),
     ("gs", "Google Cloud Storage"), ("ssh", "SSH / SFTP"),
-    ("smb", "SMB / CIFS"),
+    ("smb", "SMB / CIFS"), ("http", "HTTP(S) download"),
 ]
 # SSH transport choice per connection. "ssh" (exec/tar, today's default) needs
 # a shell on the server; "sftp" works on SFTP-only endpoints (no exec channel,
@@ -989,6 +1013,178 @@ SSH_PROTOCOLS = [
     ("sftp", "SFTP only — no shell needed (managed/restricted servers)"),
     ("both", "SSH + SFTP — hybrid (SFTP large files, tar small)"),
 ]
+
+
+class CookieSourceRow(QWidget):
+    """One cookie source: a text field plus a picker that fills it in.
+
+    The engine takes either a cookies.txt path or a browser name in the same
+    string, and works out which is which. Typing that blind is the part nobody
+    guesses, so the picker offers a file chooser and the browser list, and the
+    field stays editable for a hand-typed value."""
+
+    def __init__(self, parent=None, value=""):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.edit = QLineEdit(value or "")
+        self.edit.setObjectName("fieldinput")
+        self.edit.setPlaceholderText(
+            _tr("cookies.txt path, or a browser name like 'firefox'"))
+        lay.addWidget(self.edit, 1)
+        self.pick = QComboBox()
+        self.pick.setObjectName("fieldinput")
+        self.pick.setMinimumWidth(150)
+        self.pick.addItem(_tr("Use…"), None)
+        self.pick.addItem(_tr("cookies.txt file…"), "@file")
+        for val, label in COOKIE_BROWSERS:
+            self.pick.addItem(_tr("Live session: ") + label, val)
+        self.pick.currentIndexChanged.connect(self._picked)
+        lay.addWidget(self.pick)
+
+    def _picked(self, _idx):
+        data = self.pick.currentData()
+        self.pick.setCurrentIndex(0)         # a menu, not a state
+        if data is None:
+            return
+        if data == "@file":
+            start = os.path.dirname(self.edit.text().strip()) or os.path.expanduser("~")
+            f, _ = QFileDialog.getOpenFileName(
+                self, _tr("Choose a cookies.txt file"), start,
+                _tr("Cookie files (*.txt cookies*);;All files (*)"))
+            if f:
+                self.edit.setText(f)
+            return
+        self.edit.setText(data)
+
+    def text(self):
+        return self.edit.text()
+
+    def setText(self, v):
+        self.edit.setText(v or "")
+
+    def value(self):
+        """(kind, value): kind is 'file', 'browser' or None. Matches the file
+        vs browser test the engine makes in _cookie_header_for()."""
+        src = self.edit.text().strip()
+        if not src:
+            return None, ""
+        looks_like_file = (os.sep in src or "/" in src
+                           or src.lower().endswith(".txt")
+                           or os.path.exists(os.path.expanduser(src)))
+        return ("file" if looks_like_file else "browser"), src
+
+
+class HttpAuthDialog(QDialog):
+    """Sign-in for ONE http(s):// source that has no saved connection.
+
+    The saved-connection route (Connections → HTTP(S) download) stays the way
+    to make a host's login permanent; this is the one-off equivalent, for a URL
+    you are downloading once and do not want in the credentials file."""
+
+    def __init__(self, parent, host, cur):
+        super().__init__(parent)
+        self.setWindowTitle(_tr("HTTP sign-in"))
+        self.setModal(True)
+        self.setFixedWidth(430)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 22)
+        lay.setSpacing(0)
+
+        t = QLabel(_tr("HTTP sign-in"))
+        t.setObjectName("sheettitle")
+        lay.addWidget(t)
+        lay.addSpacing(8)
+        s = QLabel(_tr("For this run only, for downloads behind a login on ")
+                   + f"<b>{host or '—'}</b>. "
+                   + _tr("Leave everything blank for a public URL. Nothing "
+                         "here is saved — use Connections for that."))
+        s.setObjectName("sub")
+        s.setWordWrap(True)
+        s.setTextFormat(Qt.RichText)
+        lay.addWidget(s)
+        lay.addSpacing(14)
+
+        lay.addWidget(self._lbl(_tr("Cookies / browser session")))
+        lay.addSpacing(5)
+        self.cookies = CookieSourceRow(self, cur.get("cookies", ""))
+        lay.addWidget(self.cookies)
+        lay.addSpacing(13)
+
+        lay.addWidget(self._lbl(_tr("User (blank = none)")))
+        lay.addSpacing(5)
+        self.user = QLineEdit(cur.get("user", ""))
+        self.user.setObjectName("fieldinput")
+        lay.addWidget(self.user)
+        lay.addSpacing(13)
+
+        lay.addWidget(self._lbl(_tr("Password")))
+        lay.addSpacing(5)
+        self.password = QLineEdit(cur.get("password", ""))
+        self.password.setObjectName("fieldinput")
+        self.password.setEchoMode(QLineEdit.Password)
+        lay.addWidget(self.password)
+        lay.addSpacing(13)
+
+        lay.addWidget(self._lbl(_tr("Extra header (blank = none)")))
+        lay.addSpacing(5)
+        self.header = QLineEdit(cur.get("header", ""))
+        self.header.setObjectName("fieldinput")
+        self.header.setPlaceholderText("Authorization: Bearer …")
+        self.header.setEchoMode(QLineEdit.Password)
+        lay.addWidget(self.header)
+        lay.addSpacing(8)
+        note = QLabel(_tr("The password and header reach the engine through "
+                          "the environment, not the command line, so they do "
+                          "not show up in the process list."))
+        note.setObjectName("sub")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        lay.addSpacing(16)
+
+        row = QHBoxLayout()
+        clear = textbtn(_tr("Clear"), oid="btn")
+        clear.clicked.connect(self._clear)
+        row.addWidget(clear)
+        row.addStretch(1)
+        cancel = textbtn(_tr("Cancel"), oid="btn")
+        cancel.clicked.connect(self.reject)
+        save = textbtn(_tr("Use"), "check", oid="btnprimary")
+        save.clicked.connect(self._ok)
+        row.addWidget(cancel)
+        row.addWidget(save)
+        lay.addLayout(row)
+        self.data = None
+
+    def _lbl(self, text):
+        l = QLabel(text)
+        l.setObjectName("fieldlbl")
+        return l
+
+    def _clear(self):
+        self.cookies.setText("")
+        self.user.clear()
+        self.password.clear()
+        self.header.clear()
+        self.data = {}
+        self.accept()
+
+    def _ok(self):
+        hdr = self.header.text().strip()
+        if hdr and ":" not in hdr:
+            # Same rule as the engine: it splits on the first ':'.
+            QMessageBox.warning(self, _tr("HTTP sign-in"),
+                                _tr("Header must be 'Name: value'"))
+            return
+        kind, cookies = self.cookies.value()
+        self.data = {k: v for k, v in (
+            ("cookies", cookies), ("cookies_kind", kind or ""),
+            ("user", self.user.text().strip()),
+            ("password", self.password.text()),
+            ("header", hdr),
+        ) if v}
+        self.accept()
 
 
 class ConnectionDialog(QDialog):
@@ -1044,6 +1240,14 @@ class ConnectionDialog(QDialog):
             for key, label, ph, pw in specs:
                 bl.addWidget(self._lbl(label))
                 bl.addSpacing(5)
+                if (t, key) == ("http", "cookies"):
+                    # Field + picker (file chooser / browser list), so the two
+                    # accepted forms are visible instead of placeholder-only.
+                    row = CookieSourceRow(self)
+                    bl.addWidget(row)
+                    bl.addSpacing(13)
+                    self.fields[(t, key)] = row
+                    continue
                 inp = self._inp("", ph)
                 if pw:
                     inp.setEchoMode(QLineEdit.Password)
@@ -1203,6 +1407,23 @@ class ConnectionDialog(QDialog):
                 e["port"] = int(_pt) if _pt else 445
             except ValueError:
                 e["port"] = 445
+        elif t == "http":
+            if not self.fields[(t, "host")].text().strip():
+                return None, "HTTP needs a host"
+            put("host", "host")
+            put("user", "user")
+            if self.fields[(t, "user")].text().strip() \
+                    and self.fields[(t, "password")].text():
+                e["password"] = self.fields[(t, "password")].text()
+            hdr = self.fields[(t, "header")].text().strip()
+            if hdr:
+                # The engine splits on the first ':' — reject a malformed line
+                # here rather than letting it become a header named after the
+                # whole string.
+                if ":" not in hdr:
+                    return None, "Header must be 'Name: value'"
+                e["header"] = hdr
+            put("cookies", "cookies")
         return name, e
 
 
@@ -1709,6 +1930,11 @@ class BlitcpGUI(QWidget):
             {"p": r"C:\projects\backups\data", "t": "Local"},
         ]
         self.dest_type = "Local"
+        # One-off sign-in for a Web source (set from HttpAuthDialog). A saved
+        # HTTP connection covers a host permanently; this covers a single run
+        # and is deliberately never written to disk.
+        self.http_auth = {}
+        self._http_auth_host = ""        # host it was entered for
         # Demo fallback — replaced by the real credentials.json when blitcp.py
         # is available (see _init_credentials()).
         self._demo_conns = {
@@ -2555,7 +2781,7 @@ class BlitcpGUI(QWidget):
         nm.setObjectName("connname")
         mt = QLabel(GUI_REPO)
         mt.setObjectName("connmeta")
-        sp = QLabel(_tr("Support development: {url}").format(url=SUPPORT_URL))
+        sp = QLabel(_tr("Support development: {url}").format(url=SUPPORT_URL + " · " + SUPPORT_URL_ALT))
         sp.setObjectName("connmeta")
         sp.setTextInteractionFlags(Qt.TextSelectableByMouse)
         col.addWidget(nm)
@@ -2822,7 +3048,9 @@ class BlitcpGUI(QWidget):
             path.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             path.editingFinished.connect(lambda le=path, idx=i: self.edit_source_path(idx, le.text()))
             rl.addWidget(path, 1)
-            for k in ("Local", "SSH", "Cloud"):
+            # Web is source-only — plain HTTP has no generic upload, so the
+            # destination chips below stay Local/SSH/Cloud.
+            for k in ("Local", "SSH", "Cloud", "Web"):
                 rl.addWidget(self._src_tag(s, multi, k, i))
             rm = QPushButton(ic("x"))
             rm.setObjectName("rm")
@@ -2832,6 +3060,134 @@ class BlitcpGUI(QWidget):
             self.sources_box.addWidget(row)
 
         self._render_source_warnings(counts, multi)
+        self._render_http_auth_bar()
+
+    # ── http(s) source sign-in (cookies / browser session / header) ──
+    @staticmethod
+    def _url_host(url):
+        try:
+            return urllib.parse.urlsplit(url.strip()).hostname or ""
+        except ValueError:                   # malformed URL, e.g. bad IPv6
+            return ""
+
+    def _web_source(self):
+        """The single Web source URL, or "" when there is none."""
+        for s in self.sources:
+            if s["t"] == "Web" and s["p"].strip():
+                return s["p"].strip()
+        return ""
+
+    def _match_http_conn(self, host):
+        """Name of a saved HTTP connection for this host, if any. Mirrors the
+        engine's host match (_http_creds_by_host), which is what actually
+        applies the saved cookies/header."""
+        if not host:
+            return None
+        for n, c in self.conns.items():
+            if isinstance(c, dict) and c.get("type") == "http" \
+                    and (c.get("host") or "").strip().lower() == host.lower():
+                return n
+        return None
+
+    def _valid_http_auth(self, host):
+        """The one-off sign-in, dropped if the URL has moved to another host.
+        Cookies and a Bearer token belong to the host they were given for;
+        replaying them at a different server is a leak, not a convenience."""
+        if not self.http_auth or not host:
+            return self.http_auth
+        if not self._http_auth_host:
+            # Entered before the URL was typed (the source field still held the
+            # example path, say). Pin it to the first host it is seen with —
+            # leaving it unpinned meant the guard below never fired, and the
+            # token followed whatever host was pasted next.
+            self._http_auth_host = host
+        elif self._http_auth_host.lower() != host.lower():
+            self.http_auth = {}
+            self._http_auth_host = ""
+        return self.http_auth
+
+    def _http_auth_summary(self, host):
+        bits = []
+        a = self._valid_http_auth(host)
+        if a.get("cookies"):
+            bits.append((_tr("live session: ") if a.get("cookies_kind") == "browser"
+                         else _tr("cookies file: ")) + a["cookies"])
+        if a.get("user"):
+            bits.append(a["user"] + ("+password" if a.get("password") else ""))
+        if a.get("header"):
+            bits.append(_tr("header"))
+        if bits:
+            return _tr("This run: ") + ", ".join(bits)
+        saved = self._match_http_conn(host)
+        if saved:
+            return _tr("Using saved connection ") + f"'{saved}'"
+        # Name the two things that work here. "No sign-in" alone told nobody
+        # that a cookies.txt export or a live browser login is what goes in.
+        return _tr("No sign-in yet — add cookies or a browser session if this "
+                   "download needs a login")
+
+    def _render_http_auth_bar(self):
+        url = self._web_source()
+        if not url:
+            return
+        host = self._url_host(url)
+        bar = QFrame()
+        bar.setObjectName("row")
+        bar.setFixedHeight(42)
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(12, 0, 9, 0)
+        bl.setSpacing(9)
+        ki = QLabel(ic("key"))
+        ki.setObjectName("rowicon")
+        bl.addWidget(ki)
+        txt = QLabel(self._http_auth_summary(host))
+        txt.setObjectName("connmeta" if self.http_auth else "warntext")
+        txt.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        bl.addWidget(txt, 1)
+        btn = QPushButton(_tr("Cookies / sign-in…"))
+        btn.setObjectName("tag")
+        btn.setCursor(Qt.PointingHandCursor)
+        # Always "on": an "off" tag reads as disabled, and this one is the only
+        # route to the sign-in sheet — it has to look like something to press.
+        btn.setProperty("state", "on")
+        btn.setToolTip(_tr("Use a cookies.txt export or a live browser "
+                           "session for this download"))
+        btn.clicked.connect(self.open_http_auth)
+        bl.addWidget(btn)
+        self.warn_wrap.addWidget(bar)
+        spacer = QWidget()
+        spacer.setFixedHeight(4)
+        self.warn_wrap.addWidget(spacer)
+
+    def open_http_auth(self):
+        url = self._web_source()
+        dlg = HttpAuthDialog(self, self._url_host(url), dict(self.http_auth))
+        if dlg.exec() and dlg.data is not None:
+            self.http_auth = dlg.data
+            self._http_auth_host = self._url_host(url)
+            self.render_sources()
+
+    def _http_auth_flags(self, url):
+        """(extra_argv, env) for a Web source. Secrets go through the
+        environment — a token or password in argv is readable by any other
+        user via `ps`, which is why the SSH path does the same."""
+        extra, env = [], {}
+        a = self._valid_http_auth(self._url_host(url))
+        if not a:
+            return extra, env            # saved connection (if any) still applies
+        kind = a.get("cookies_kind")
+        if a.get("cookies"):
+            extra += (["--cookies", a["cookies"]] if kind == "file"
+                      else ["--cookies-from-browser", a["cookies"]])
+        if a.get("user"):
+            extra += ["--http-user", a["user"]]
+            if a.get("password"):
+                env["FC_HTTP_PW"] = a["password"]
+                extra += ["--http-password-env", "FC_HTTP_PW"]
+        if a.get("header"):
+            env["FC_HTTP_HDR"] = a["header"]
+            extra += ["--http-header-env", "FC_HTTP_HDR"]
+        return extra, env
 
     def _src_tag(self, s, multi, k, idx):
         t = QPushButton(_tr(k))
@@ -2846,7 +3202,10 @@ class BlitcpGUI(QWidget):
         return t
 
     def _src_icon(self, t):
-        return "folder" if t == "Local" else "server-2" if t == "SSH" else "cloud"
+        # NOTE: only the names in TI exist; anything else renders "?" (as
+        # ic("world") on the language card already does).
+        return ("folder" if t == "Local" else "server-2" if t == "SSH"
+                else "arrow-down-circle" if t == "Web" else "cloud")
 
     def set_source_type(self, idx, k):
         self.sources[idx]["t"] = k
@@ -2921,6 +3280,10 @@ class BlitcpGUI(QWidget):
                 # Qt returns forward-slash paths even on Windows; show native form.
                 self.sources[idx]["p"] = self._normalize_local(d)
                 self.render_sources()
+        elif s["t"] == "Web":
+            # No listing exists for a download URL — the address IS the file.
+            self.show_toast(_tr("Paste the direct download URL "
+                                "(https://host/path/file)"))
         else:
             kind = "ssh" if s["t"] == "SSH" else "cloud"
 
@@ -3064,6 +3427,53 @@ class BlitcpGUI(QWidget):
         proto = self.conns[matched].get("protocol") if matched else None
         return proto if proto in ("ssh", "sftp", "both") else "ssh"
 
+    def _sudo_needs_password(self):
+        """True when sudo would prompt. `sudo -n` never prompts: it succeeds if
+        a cached or passwordless rule covers us, and fails otherwise."""
+        try:
+            r = subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                               timeout=10)
+            return r.returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            return True          # can't tell → ask, rather than stall later
+
+    def _sudo_askpass_env(self):
+        """Extra env that lets the elevated child get its password from us:
+        {} when sudo needs none, None if the user cancelled.
+
+        The password goes in a variable read by a 0700 helper script rather
+        than onto sudo's stdin, because the engine re-execs itself and its
+        stdin belongs to the transfer. This is the same exposure the SSH
+        password flags already accept (--ssh-password-env)."""
+        if not self._sudo_needs_password():
+            return {}
+        dlg = PasswordDialog(
+            self, _tr("Administrator password"),
+            _tr("This transfer runs with <b>--use-sudo</b>. Enter your "
+                "password so the elevated copy can start — it is passed "
+                "straight to sudo and never written to disk."),
+            _tr("Password"))
+        if not dlg.exec():
+            return None
+        pw = dlg.input.text()
+        if not pw:
+            return None
+        d = tempfile.mkdtemp(prefix="blitcp_askpass_")
+        os.chmod(d, 0o700)
+        helper = os.path.join(d, "askpass.sh")
+        with open(helper, "w") as f:
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$BLITCP_SUDO_PW\"\n")
+        os.chmod(helper, 0o700)
+        self._askpass_dir = d                # removed when the process ends
+        return {"SUDO_ASKPASS": helper, "BLITCP_SUDO_PW": pw}
+
+    def _clear_askpass(self):
+        """Delete the helper as soon as the transfer is over."""
+        d = getattr(self, "_askpass_dir", None)
+        if d:
+            self._askpass_dir = None
+            shutil.rmtree(d, ignore_errors=True)
+
     def _ssh_auth_flags(self, path, which):
         """SSH auth for one endpoint. which='dst'|'src'.
         Returns (extra_argv, env_dict), or None if the user cancelled.
@@ -3125,6 +3535,63 @@ class BlitcpGUI(QWidget):
             self.show_toast(_tr("Set a destination"))
             return
 
+        # --use-sudo re-execs the engine under sudo, and sudo with no terminal
+        # cannot prompt at all — it either fails with "a terminal is required"
+        # or, worse, goes hunting for the terminal the GUI was launched from
+        # and silently waits there while this window shows an empty log. Ask
+        # here instead and hand the answer to sudo through SUDO_ASKPASS.
+        sudo_env = {}
+        if self.flag_opts["--use-sudo"].property("active"):
+            r = self._sudo_askpass_env()
+            if r is None:
+                return                       # user cancelled
+            sudo_env = r
+
+        # An http(s):// URL is never a destination: plain HTTP has no generic
+        # upload. The chips offer no Web destination, but the field is free
+        # text, so a pasted URL has to be caught here too — the engine refuses
+        # it as well, just one process launch later.
+        if dest.lower().startswith(("http://", "https://")):
+            self.show_toast(_tr("An http(s):// URL can only be the source — "
+                                "there is no generic HTTP upload"))
+            return
+
+        # ── http(s):// source rules, checked here so a mistake is a toast
+        # rather than a launched process that fails a second later. These
+        # mirror run_http_transfer() in the engine exactly.
+        web = [i for i, sc in enumerate(self.sources)
+               if sc["t"] == "Web" and sc["p"].strip()]
+        if web:
+            if len(sources) > 1:
+                self.show_toast(_tr("A web source takes a single URL"))
+                return
+            url = sources[0]
+            if not url.lower().startswith(("http://", "https://")):
+                self.show_toast(_tr("A web source must be an http:// or "
+                                    "https:// URL"))
+                return
+            # The name comes from the URL path, never from the server, so a
+            # URL that ends at a directory names nothing to save.
+            tail = url.split("?")[0].split("#")[0].rstrip()
+            if not tail.rsplit("/", 1)[-1]:
+                self.show_toast(_tr("The URL names no file "
+                                    "(https://host/dir/file expected)"))
+                return
+            if self.dest_type == "Local":
+                self.show_toast(_tr("A web source needs an SSH or SMB "
+                                    "destination — it streams, it does not "
+                                    "download locally"))
+                return
+            if dest.lower().startswith(("s3://", "az://", "gs://")):
+                self.show_toast(_tr("Web → cloud is not supported yet — "
+                                    "relay via SSH or SMB"))
+                return
+
+        # Sign-in for the Web source: the one-off sheet if it was filled in,
+        # otherwise nothing — a saved HTTP connection is matched by the engine
+        # itself, by host, with no flags from here.
+        http_extra, http_env = self._http_auth_flags(sources[0]) if web else ([], {})
+
         # Resolve SSH auth (key / password) for remote endpoints.
         ssh_extra, ssh_env = [], {}
         involves_ssh = False
@@ -3171,10 +3638,14 @@ class BlitcpGUI(QWidget):
             env.insert("FAST_COPY_CREDS_PASSPHRASE", pw)
         for k, v in ssh_env.items():
             env.insert(k, v)
+        for k, v in http_env.items():
+            env.insert(k, v)
+        for k, v in sudo_env.items():
+            env.insert(k, v)
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("NO_COLOR", "1")
         proc.setProcessEnvironment(env)
-        core_argv = self._build_argv(dry, sources, dest) + ssh_extra
+        core_argv = self._build_argv(dry, sources, dest) + ssh_extra + http_extra
         if getattr(sys, "frozen", False):
             # bundled single-file build: re-invoke ourselves as the engine
             proc.setProgram(sys.executable)
@@ -3237,10 +3708,16 @@ class BlitcpGUI(QWidget):
                 self._add_log(line)
                 self._run_meta["errtail"] = line
 
+    # Every "Phase N — <name>" the engine can print has to match one of these,
+    # or the header keeps whatever it said last. It used to end at "block
+    # copy", so every SSH transfer sat on "Hashing…" from the end of
+    # deduplication until the run finished — while it was in fact copying.
+    # "copy" covers the block copy and all four remote copy phases.
     _PHASE_LABELS = (
         ("scanning", "Scanning…"), ("indexing", "Indexing…"),
         ("dedup", "Hashing…"), ("incremental", "Checking…"),
-        ("mapping", "Mapping…"), ("block copy", "Copying…"),
+        ("space check", "Checking space…"),
+        ("mapping", "Mapping…"), ("copy", "Copying…"),
         ("verif", "Verifying…"),
     )
 
@@ -3439,6 +3916,7 @@ class BlitcpGUI(QWidget):
         self.show_toast(_tr("Could not start blitcp.py"))
 
     def _on_proc_finished(self, code, status):
+        self._clear_askpass()   # the password helper outlives nothing
         # Drain anything still buffered in the pipe (finished can fire before the
         # last readyRead), then flush the trailing partial line.
         tail = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
@@ -3544,6 +4022,10 @@ class BlitcpGUI(QWidget):
     def _add_log(self, text, link=False):
         l = QLabel(text)
         l.setObjectName("logline")
+        # Wrap instead of running off the panel. An engine error puts what to
+        # do at the END of the line ("Fix: chmod go-w …"), and without this the
+        # log showed the complaint and clipped the remedy.
+        l.setWordWrap(True)
         v = DARK if self.dark else LIGHT
         if link:
             l.setTextFormat(Qt.RichText)
@@ -3564,7 +4046,9 @@ class BlitcpGUI(QWidget):
             if color:
                 from html import escape
                 l.setTextFormat(Qt.RichText)
-                l.setText(f"<span style='color:{color}; white-space:pre'>"
+                # pre-wrap, not pre: keeps the column alignment of progress
+                # and summary lines while still letting a long line wrap.
+                l.setText(f"<span style='color:{color}; white-space:pre-wrap'>"
                           f"{escape(text)}</span>")
         self.log_lay.insertWidget(self.log_lay.count() - 1, l)
         QTimer.singleShot(0, lambda: self.log_scroll.verticalScrollBar().setValue(
@@ -3588,6 +4072,15 @@ class BlitcpGUI(QWidget):
             a = (f"key={c['key']}" if c.get("key")
                  else "password=***" if c.get("password") else "agent")
             return f"{c.get('user')}@{c.get('host')}:{c.get('port', 22)}  {a}"
+        if t == "http":
+            auth = []
+            if c.get("user"):
+                auth.append(c["user"] + ("+password=***" if c.get("password") else ""))
+            if c.get("header"):
+                auth.append("header=***")
+            if c.get("cookies"):
+                auth.append(f"cookies={c['cookies']}")
+            return f"host={c.get('host')}  " + (" ".join(auth) or "no auth")
         return ""
 
     def _conn_card(self, name, c):
@@ -3598,7 +4091,8 @@ class BlitcpGUI(QWidget):
         cl.setSpacing(13)
         ctype = c.get("type", "s3")
         iconname = ("server-2" if ctype == "ssh" else "brand-google" if ctype == "gs"
-                    else "brand-azure" if ctype == "az" else "brand-aws")
+                    else "brand-azure" if ctype == "az"
+                    else "arrow-down-circle" if ctype == "http" else "brand-aws")
         cic = QLabel(ic(iconname))
         cic.setObjectName("connicon")
         col = QVBoxLayout()
@@ -4201,7 +4695,8 @@ class BlitcpGUI(QWidget):
 
     def _src_type(self):
         t = self.browse_conn["type"]
-        return "SSH" if t == "ssh" else "Local" if t == "local" else "Cloud"
+        return ("SSH" if t == "ssh" else "Local" if t == "local"
+                else "Web" if t == "http" else "Cloud")
 
     def _active_tree(self):
         t = self.browse_conn["type"]

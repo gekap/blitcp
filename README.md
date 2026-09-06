@@ -52,7 +52,7 @@ macOS and Windows are on the
 - **Block-order reads** — files are read in physical disk order (`FIEMAP`/`fcntl`/`FSCTL`), eliminating random seeks on HDDs
 - **Reflink copies** on btrfs / XFS / APFS / bcachefs — metadata-only CoW clones make a 10 GB same-volume copy complete in milliseconds
 - **Content-aware deduplication** — xxHash-128/SHA-256; each unique file is copied once, duplicates become hard links or reflinks, with a cross-run SQLite cache
-- **SSH transfers without SFTP** — chunked ~100 MB tar batches over raw SSH channels, local↔remote and remote↔remote relay
+- **SSH transfers without SFTP** — tar batches over raw SSH channels, local↔remote and remote↔remote relay (streamed through your machine, never stored)
 - **Cloud object storage** — `s3://`, `az://`, `gs://` as source or destination, with encrypted saved connections and a built-in passphrase generator
 - **SMB / UNC shares** — copy straight to `\\server\share` with saved credentials
 - **Sparse-file awareness** — VM images copied via `SEEK_DATA`/`SEEK_HOLE`; holes never hit the wire

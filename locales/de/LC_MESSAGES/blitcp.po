@@ -1041,3 +1041,132 @@ msgstr "kann nicht erstellt werden oder ist nicht beschreibbar"
 
 msgid "Support development: {url}"
 msgstr "Entwicklung unterstützen: {url}"
+
+msgid "Per-object memory buffer for streaming relays (MB); a single object larger than this spills to a temp file (0 = always spill; default: 64)"
+msgstr "Speicherpuffer pro Objekt für Streaming-Relays (MB); ein einzelnes Objekt, das größer ist, wird in eine temporäre Datei ausgelagert (0 = immer auslagern; Standard: 64)"
+
+msgid "Username for http(s):// sources (HTTP Basic auth)"
+msgstr "Benutzername für http(s)://-Quellen (HTTP-Basic-Auth)"
+
+msgid "Prompt for the http(s) source password"
+msgstr "Nach dem Passwort der http(s)-Quelle fragen"
+
+msgid "Extra HTTP header for http(s):// sources, repeatable — e.g. \"Authorization: Bearer TOKEN\" or \"Cookie: session=…\" for downloads behind a login or terms page"
+msgstr "Zusätzlicher HTTP-Header für http(s)://-Quellen, wiederholbar — z. B. \"Authorization: Bearer TOKEN\" oder \"Cookie: session=…\" für Downloads hinter einer Anmelde- oder Bedingungsseite"
+
+msgid "Netscape/Mozilla cookies.txt file for http(s):// sources — reuse a browser login you already have (what a \"cookies.txt\" browser extension exports, same format as curl -b / wget --load-cookies)"
+msgstr "Netscape/Mozilla-cookies.txt-Datei für http(s)://-Quellen — eine bereits vorhandene Browser-Anmeldung wiederverwenden (was eine \"cookies.txt\"-Browsererweiterung exportiert, gleiches Format wie curl -b / wget --load-cookies)"
+
+msgid "Read the LIVE login session for an http(s):// source straight from your browser: chrome, chromium, firefox, edge, brave, opera, safari (or 'browser' to try all). Needs the browser-cookie3 package."
+msgstr "Die aktive Anmeldesitzung für eine http(s)://-Quelle direkt aus deinem Browser lesen: chrome, chromium, firefox, edge, brave, opera, safari (oder 'browser' für alle). Benötigt das Paket browser-cookie3."
+
+msgid "Paste the direct download URL (https://host/path/file)"
+msgstr "Fügen Sie den direkten Download-Link ein (https://host/path/file)"
+
+msgid "An http(s):// URL can only be the source — there is no generic HTTP upload"
+msgstr "Eine http(s)://-URL kann nur die Quelle sein — es gibt keinen allgemeinen HTTP-Upload"
+
+msgid "A web source takes a single URL"
+msgstr "Eine Web-Quelle nimmt genau eine URL"
+
+msgid "A web source must be an http:// or https:// URL"
+msgstr "Eine Web-Quelle muss eine http://- oder https://-URL sein"
+
+msgid "The URL names no file (https://host/dir/file expected)"
+msgstr "Die URL benennt keine Datei (erwartet wird https://host/dir/file)"
+
+msgid "A web source needs an SSH or SMB destination — it streams, it does not download locally"
+msgstr "Eine Web-Quelle braucht ein SSH- oder SMB-Ziel — sie streamt, sie lädt nicht lokal herunter"
+
+msgid "Web → cloud is not supported yet — relay via SSH or SMB"
+msgstr "Web → Cloud wird noch nicht unterstützt — über SSH oder SMB weiterleiten"
+
+msgid "Administrator password"
+msgstr "Administratorkennwort"
+
+msgid "This transfer runs with <b>--use-sudo</b>. Enter your password so the elevated copy can start — it is passed straight to sudo and never written to disk."
+msgstr "Diese Übertragung läuft mit <b>--use-sudo</b>. Geben Sie Ihr Kennwort ein, damit der Kopiervorgang mit erhöhten Rechten starten kann — es wird direkt an sudo übergeben und nie auf die Festplatte geschrieben."
+
+msgid "Password"
+msgstr "Kennwort"
+
+msgid "Choose a cookies.txt file"
+msgstr "cookies.txt-Datei wählen"
+
+msgid "Clear"
+msgstr "Leeren"
+
+msgid "Cookie files (*.txt cookies*);;All files (*)"
+msgstr "Cookie-Dateien (*.txt cookies*);;Alle Dateien (*)"
+
+msgid "Cookies / browser session"
+msgstr "Cookies / Browser-Sitzung"
+
+msgid "Extra header (blank = none)"
+msgstr "Zusätzlicher Header (leer = keiner)"
+
+msgid "For this run only, for downloads behind a login on "
+msgstr "Nur für diesen Lauf, für Downloads hinter einem Login auf "
+
+msgid "HTTP sign-in"
+msgstr "HTTP-Anmeldung"
+
+msgid "Header must be 'Name: value'"
+msgstr "Header muss 'Name: Wert' sein"
+
+msgid "Leave everything blank for a public URL. Nothing here is saved — use Connections for that."
+msgstr "Für eine öffentliche URL alles leer lassen. Nichts davon wird gespeichert — dafür sind die Verbindungen da."
+
+msgid "Live session: "
+msgstr "Live-Sitzung: "
+
+msgid "No sign-in — fine for a public URL"
+msgstr "Keine Anmeldung — für eine öffentliche URL in Ordnung"
+
+msgid "Sign in…"
+msgstr "Anmelden…"
+
+msgid "The password and header reach the engine through the environment, not the command line, so they do not show up in the process list."
+msgstr "Kennwort und Header erreichen die Engine über die Umgebung, nicht über die Kommandozeile — sie tauchen daher nicht in der Prozessliste auf."
+
+msgid "This run: "
+msgstr "Dieser Lauf: "
+
+msgid "Use"
+msgstr "Übernehmen"
+
+msgid "User (blank = none)"
+msgstr "Benutzer (leer = keiner)"
+
+msgid "Use…"
+msgstr "Verwenden…"
+
+msgid "Using saved connection "
+msgstr "Verwendet gespeicherte Verbindung "
+
+msgid "cookies file: "
+msgstr "Cookie-Datei: "
+
+msgid "cookies.txt file…"
+msgstr "cookies.txt-Datei…"
+
+msgid "cookies.txt path, or a browser name like 'firefox'"
+msgstr "Pfad zu cookies.txt oder ein Browsername wie 'firefox'"
+
+msgid "header"
+msgstr "Header"
+
+msgid "live session: "
+msgstr "Live-Sitzung: "
+
+msgid "Cookies / sign-in…"
+msgstr "Cookies / Anmeldung…"
+
+msgid "No sign-in yet — add cookies or a browser session if this download needs a login"
+msgstr "Noch keine Anmeldung — Cookies oder eine Browser-Sitzung hinzufügen, falls dieser Download ein Login braucht"
+
+msgid "Use a cookies.txt export or a live browser session for this download"
+msgstr "Einen cookies.txt-Export oder eine aktive Browser-Sitzung für diesen Download verwenden"
+
+msgid "not run"
+msgstr "nicht ausgeführt"

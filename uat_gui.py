@@ -17,6 +17,7 @@ Companion to uat_blitcp.py (which black-box tests the CLI surface).
 """
 import os
 import sys
+import subprocess
 import tempfile
 import argparse
 
@@ -94,12 +95,12 @@ def s_conn_smb(w):
     d = g.ConnectionDialog(w, "", {"type": "smb"})
     d.f_type.setCurrentIndex(_types().index("smb")); d._sync_type()
     d.f_name.setText("win")
-    for k, v in [("host", "192.168.1.225"), ("user", "g.kapellakis@infinitum.gr"),
+    for k, v in [("host", "nas.example.lan"), ("user", "user@example.com"),
                  ("password", "pw"), ("domain", ""), ("share", "Documents"), ("port", "445")]:
         d.fields[("smb", k)].setText(v)
     name, e = d.result_data()
-    ok = (name == "win" and e.get("type") == "smb" and e.get("host") == "192.168.1.225"
-          and e.get("user") == "g.kapellakis@infinitum.gr" and e.get("password") == "pw"
+    ok = (name == "win" and e.get("type") == "smb" and e.get("host") == "nas.example.lan"
+          and e.get("user") == "user@example.com" and e.get("password") == "pw"
           and e.get("share") == "Documents" and e.get("port") == 445)
     return ok, "SMB host/user/password/share/port saved" if ok else f"got {e}"
 
@@ -317,11 +318,230 @@ def s_log_crlf(w):
     return True, "Windows \\r\\n log lines render"
 
 
+def s_conn_http(w):
+    """An http connection is matched by HOST, so a download behind a login
+    needs no flags — the engine picks these credentials up automatically."""
+    d = g.ConnectionDialog(w, "", {"type": "http"})
+    d.f_type.setCurrentIndex(_types().index("http")); d._sync_type()
+    d.f_name.setText("vendor")
+    for k, v in [("host", "dl.example.com"), ("user", "u"), ("password", "pw"),
+                 ("header", "Authorization: Bearer T"), ("cookies", "firefox")]:
+        d.fields[("http", k)].setText(v)
+    name, e = d.result_data()
+    ok = (name == "vendor" and e.get("type") == "http"
+          and e.get("host") == "dl.example.com" and e.get("user") == "u"
+          and e.get("password") == "pw"
+          and e.get("header") == "Authorization: Bearer T"
+          and e.get("cookies") == "firefox")
+    return ok, "http host/user/password/header/cookies saved" if ok else f"got {e}"
+
+
+def s_conn_http_validation(w):
+    # a host is required
+    d = g.ConnectionDialog(w, "", {"type": "http"})
+    d.f_type.setCurrentIndex(_types().index("http")); d._sync_type()
+    d.f_name.setText("x")
+    n1, m1 = d.result_data()
+    # a header without ':' would become a header named after the whole string
+    d2 = g.ConnectionDialog(w, "", {"type": "http"})
+    d2.f_type.setCurrentIndex(_types().index("http")); d2._sync_type()
+    d2.f_name.setText("x")
+    d2.fields[("http", "host")].setText("h")
+    d2.fields[("http", "header")].setText("no-colon")
+    n2, m2 = d2.result_data()
+    ok = n1 is None and n2 is None
+    return ok, "rejects missing host and a malformed header" if ok else \
+        f"validation too lax: {m1!r} / {m2!r}"
+
+
+def _web_run(w, sources, dest, dest_type):
+    """Drive run_transfer without a modal password prompt or a real child."""
+    toasts, argv = [], []
+
+    class _Sig:
+        def connect(self, *a, **k):
+            pass
+
+    class _Proc:
+        def __init__(self, *a, **k):
+            pass
+
+        def setArguments(self, a):
+            argv.append(list(a))
+
+        def start(self, *a, **k):
+            pass
+
+        def __getattr__(self, n):
+            return _Sig() if n.startswith(("ready", "finished", "error", "state")) \
+                else (lambda *a, **k: None)
+
+    old_toast, old_auth, old_proc = w.show_toast, w._ssh_auth_flags, g.QProcess
+    old_running, old_sources = w.running, w.sources
+    old_dt, old_dest = w.dest_type, w.dst_input.text()
+    try:
+        w.show_toast = lambda m, *a, **k: toasts.append(str(m))
+        w._ssh_auth_flags = lambda path, which: ([], {})
+        g.QProcess = _Proc
+        w.running = False
+        w.sources = list(sources)
+        w.dest_type = dest_type
+        w.dst_input.setText(dest)
+        w.run_transfer(dry=True)
+    finally:
+        w.show_toast, w._ssh_auth_flags, g.QProcess = old_toast, old_auth, old_proc
+        w.running, w.sources = old_running, old_sources
+        w.dest_type = old_dt
+        w.dst_input.setText(old_dest)
+    return toasts, (argv[0] if argv else None)
+
+
+def s_web_source_refusals(w):
+    """The GUI must refuse what run_http_transfer() refuses, before launching:
+    a URL cannot be downloaded locally, cannot go to object storage, must name
+    a file, must actually be a URL, and must be the only source."""
+    url = "https://h/dir/file.iso"
+    web = [{"p": url, "t": "Web"}]
+    cases = [
+        ("local dest", web, "/tmp/x", "Local", "SSH or SMB"),
+        ("cloud dest", web, "s3://b/k/", "Cloud", "not supported yet"),
+        ("no filename", [{"p": "https://h/dir/", "t": "Web"}], "u@h:/t/", "SSH",
+         "names no file"),
+        ("not a URL", [{"p": "/etc/hostname", "t": "Web"}], "u@h:/t/", "SSH",
+         "http:// or https://"),
+        ("two sources", web + [{"p": "/etc/hostname", "t": "Local"}], "u@h:/t/",
+         "SSH", "single URL"),
+    ]
+    for label, srcs, dest, dt, needle in cases:
+        toasts, argv = _web_run(w, srcs, dest, dt)
+        if argv is not None:
+            return False, f"{label}: launched instead of refusing"
+        if not any(needle in t for t in toasts):
+            return False, f"{label}: no message about {needle!r} (got {toasts})"
+    return True, "all five web-source refusals reported before launch"
+
+
+def s_web_source_argv(w):
+    """A valid web source reaches the engine as a plain URL argument — the CLI
+    already knows what to do with it, so the GUI adds nothing of its own."""
+    url = "https://h/dir/file.iso"
+    for dest, dt in (("u@h:/srv/", "SSH"), ("smb://nas/share/", "Cloud")):
+        toasts, argv = _web_run(w, [{"p": url, "t": "Web"}], dest, dt)
+        if argv is None:
+            return False, f"{dt} destination was refused: {toasts}"
+        if url not in argv or dest not in argv:
+            return False, f"{dt}: url/dest missing from argv {argv[:4]}"
+        if argv.index(url) > argv.index(dest):
+            return False, f"{dt}: url must precede the destination"
+    return True, "web → SSH and web → SMB both launch with the URL as source"
+
+
+def s_http_never_a_destination(w):
+    """An http(s):// URL must never be accepted as a destination.
+
+    The chips offer no Web destination, but the field is free text, so a
+    pasted URL has to be refused explicitly — whatever endpoint type is
+    selected, and whatever case it is typed in. A legitimate smb:// share
+    must still go through."""
+    for dest, dt in (("https://h/up.bin", "Cloud"), ("http://h/up.bin", "Cloud"),
+                     ("HTTPS://H/UP.BIN", "Cloud"), ("https://h/up.bin", "SSH")):
+        toasts, argv = _web_run(w, [{"p": "/etc/hostname", "t": "Local"}], dest, dt)
+        if argv is not None:
+            return False, f"{dest} ({dt}) was accepted as a destination"
+        if not any("only be the source" in t for t in toasts):
+            return False, f"{dest}: no refusal message (got {toasts})"
+    toasts, argv = _web_run(w, [{"p": "/etc/hostname", "t": "Local"}],
+                            "smb://nas/share/", "Cloud")
+    if argv is None:
+        return False, f"a legitimate smb:// destination was refused: {toasts}"
+    return True, "http(s) destinations refused in any case; smb:// still runs"
+
+
+def s_sudo_askpass(w):
+    """--use-sudo must ask HERE, not on whatever terminal launched the GUI.
+
+    sudo with no controlling terminal cannot prompt at all; from the GUI it
+    either failed with "a terminal is required" or went looking for the
+    terminal the app happened to be started from and waited there, leaving
+    this window on an empty log. The password is handed to sudo through
+    SUDO_ASKPASS, never written to disk, and the helper is removed when the
+    transfer ends.
+    """
+    real_needs, real_dlg = w._sudo_needs_password, g.PasswordDialog
+    try:
+        # passwordless: no prompt, nothing to pass
+        w._sudo_needs_password = lambda: False
+        if w._sudo_askpass_env() != {}:
+            return False, "prompted even though sudo needs no password"
+
+        w._sudo_needs_password = lambda: True
+
+        class _Dlg:
+            def __init__(self, *a, **k):
+                class _I:
+                    def text(self_inner):
+                        return "s3cret"
+                self.input = _I()
+
+            def exec(self):
+                return True
+
+        g.PasswordDialog = _Dlg
+        env = w._sudo_askpass_env()
+        if sorted(env) != ["BLITCP_SUDO_PW", "SUDO_ASKPASS"]:
+            return False, f"unexpected env {sorted(env)}"
+        helper = env["SUDO_ASKPASS"]
+        if os.stat(helper).st_mode & 0o077:
+            return False, "askpass helper is readable by others"
+        if os.stat(os.path.dirname(helper)).st_mode & 0o077:
+            return False, "askpass directory is readable by others"
+        if "s3cret" in open(helper).read():
+            return False, "the password was written into the helper script"
+        out = subprocess.run(["/bin/sh", helper], capture_output=True, text=True,
+                             env={**os.environ,
+                                  "BLITCP_SUDO_PW": env["BLITCP_SUDO_PW"]})
+        if out.stdout.strip() != "s3cret":
+            return False, f"helper returned {out.stdout.strip()!r}"
+
+        class _Cancel(_Dlg):
+            def exec(self):
+                return False
+
+        g.PasswordDialog = _Cancel
+        if w._sudo_askpass_env() is not None:
+            return False, "cancelling the prompt did not abort the transfer"
+
+        w._clear_askpass()
+        if os.path.exists(helper):
+            return False, "the askpass helper survived the transfer"
+    finally:
+        w._sudo_needs_password, g.PasswordDialog = real_needs, real_dlg
+    return True, "asks in-app, passes via SUDO_ASKPASS, nothing left on disk"
+
+
+def s_web_source_icon(w):
+    """Every icon name must exist in TI — ic() silently renders '?' otherwise."""
+    missing = [t for t in ("Local", "SSH", "Cloud", "Web")
+               if g.ic(w._src_icon(t)) == "?"]
+    if missing:
+        return False, f"source types with no glyph: {missing}"
+    if "http" not in _types():
+        return False, "http is not offered as a connection type"
+    return True, "Web source type has a real glyph; http is an offered type"
+
+
 SCENARIOS = [
     ("GUI-CONN-1", "S3 connection saves credentials", s_conn_s3),
     ("GUI-CONN-2", "SSH connection saves credentials", s_conn_ssh),
     ("GUI-CONN-3", "SMB connection saves credentials", s_conn_smb),
     ("GUI-CONN-4", "required-field validation (host/keys/name)", s_conn_validation),
+    ("GUI-CONN-5", "HTTP connection saves credentials", s_conn_http),
+    ("GUI-CONN-6", "HTTP required-field / header validation", s_conn_http_validation),
+    ("GUI-WEB-1", "web source refusals happen before launch", s_web_source_refusals),
+    ("GUI-WEB-2", "web source reaches the engine as a URL argument", s_web_source_argv),
+    ("GUI-WEB-3", "web source type has a real icon", s_web_source_icon),
+    ("GUI-WEB-4", "http(s) is never accepted as a destination", s_http_never_a_destination),
+    ("GUI-SUDO-1", "--use-sudo asks in-app, not on the launching terminal", s_sudo_askpass),
     ("GUI-DLG-1", "connection dialog auto-sizes to fit fields + buttons", s_dialog_autosize),
     ("GUI-ARGV-1", "base argv (src/dst/threads/preserve)", s_argv_defaults),
     ("GUI-ARGV-2", "dedup/verify/dry-run/hash toggles", s_argv_toggles),

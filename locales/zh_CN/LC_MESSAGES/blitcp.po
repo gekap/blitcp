@@ -1041,3 +1041,132 @@ msgstr "无法创建，或不可写入"
 
 msgid "Support development: {url}"
 msgstr "支持开发：{url}"
+
+msgid "Per-object memory buffer for streaming relays (MB); a single object larger than this spills to a temp file (0 = always spill; default: 64)"
+msgstr "流式中继的每对象内存缓冲区（MB）；超过此大小的单个对象将溢出到临时文件（0 = 始终溢出；默认：64）"
+
+msgid "Username for http(s):// sources (HTTP Basic auth)"
+msgstr "http(s):// 源的用户名（HTTP Basic 认证）"
+
+msgid "Prompt for the http(s) source password"
+msgstr "提示输入 http(s) 源的密码"
+
+msgid "Extra HTTP header for http(s):// sources, repeatable — e.g. \"Authorization: Bearer TOKEN\" or \"Cookie: session=…\" for downloads behind a login or terms page"
+msgstr "用于 http(s):// 源的额外 HTTP 头，可重复指定 — 例如 \"Authorization: Bearer TOKEN\" 或 \"Cookie: session=…\"，用于登录或条款页面背后的下载"
+
+msgid "Netscape/Mozilla cookies.txt file for http(s):// sources — reuse a browser login you already have (what a \"cookies.txt\" browser extension exports, same format as curl -b / wget --load-cookies)"
+msgstr "http(s):// 源的 Netscape/Mozilla cookies.txt 文件 — 复用你已有的浏览器登录（\"cookies.txt\" 浏览器扩展导出的内容，格式与 curl -b / wget --load-cookies 相同）"
+
+msgid "Read the LIVE login session for an http(s):// source straight from your browser: chrome, chromium, firefox, edge, brave, opera, safari (or 'browser' to try all). Needs the browser-cookie3 package."
+msgstr "直接从浏览器读取 http(s):// 源的当前登录会话：chrome、chromium、firefox、edge、brave、opera、safari（或 'browser' 尝试全部）。需要 browser-cookie3 软件包。"
+
+msgid "Paste the direct download URL (https://host/path/file)"
+msgstr "请粘贴直接下载链接 (https://host/path/file)"
+
+msgid "An http(s):// URL can only be the source — there is no generic HTTP upload"
+msgstr "http(s):// URL 只能作为源 — 没有通用的 HTTP 上传"
+
+msgid "A web source takes a single URL"
+msgstr "网络源只接受一个 URL"
+
+msgid "A web source must be an http:// or https:// URL"
+msgstr "网络源必须是 http:// 或 https:// 的 URL"
+
+msgid "The URL names no file (https://host/dir/file expected)"
+msgstr "该 URL 未指向文件 (应为 https://host/dir/file)"
+
+msgid "A web source needs an SSH or SMB destination — it streams, it does not download locally"
+msgstr "网络源需要 SSH 或 SMB 目标 — 它是流式传输，不会下载到本地"
+
+msgid "Web → cloud is not supported yet — relay via SSH or SMB"
+msgstr "Web → 云端尚不支持 — 请通过 SSH 或 SMB 中转"
+
+msgid "Administrator password"
+msgstr "管理员密码"
+
+msgid "This transfer runs with <b>--use-sudo</b>. Enter your password so the elevated copy can start — it is passed straight to sudo and never written to disk."
+msgstr "此传输使用 <b>--use-sudo</b> 运行。请输入密码以启动提权复制 — 密码直接传递给 sudo，绝不会写入磁盘。"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "Choose a cookies.txt file"
+msgstr "选择 cookies.txt 文件"
+
+msgid "Clear"
+msgstr "清除"
+
+msgid "Cookie files (*.txt cookies*);;All files (*)"
+msgstr "Cookie 文件 (*.txt cookies*);;所有文件 (*)"
+
+msgid "Cookies / browser session"
+msgstr "Cookie / 浏览器会话"
+
+msgid "Extra header (blank = none)"
+msgstr "额外请求头（留空 = 无）"
+
+msgid "For this run only, for downloads behind a login on "
+msgstr "仅本次运行有效，用于需要登录才能下载的 "
+
+msgid "HTTP sign-in"
+msgstr "HTTP 登录"
+
+msgid "Header must be 'Name: value'"
+msgstr "请求头必须是 'Name: value' 格式"
+
+msgid "Leave everything blank for a public URL. Nothing here is saved — use Connections for that."
+msgstr "公开 URL 请全部留空。此处内容不会保存 — 需要保存请使用“连接”。"
+
+msgid "Live session: "
+msgstr "实时会话："
+
+msgid "No sign-in — fine for a public URL"
+msgstr "未登录 — 公开 URL 无需登录"
+
+msgid "Sign in…"
+msgstr "登录…"
+
+msgid "The password and header reach the engine through the environment, not the command line, so they do not show up in the process list."
+msgstr "密码和请求头通过环境变量传给引擎，而不是命令行，因此不会出现在进程列表中。"
+
+msgid "This run: "
+msgstr "本次运行："
+
+msgid "Use"
+msgstr "使用"
+
+msgid "User (blank = none)"
+msgstr "用户（留空 = 无）"
+
+msgid "Use…"
+msgstr "使用…"
+
+msgid "Using saved connection "
+msgstr "使用已保存的连接 "
+
+msgid "cookies file: "
+msgstr "cookie 文件："
+
+msgid "cookies.txt file…"
+msgstr "cookies.txt 文件…"
+
+msgid "cookies.txt path, or a browser name like 'firefox'"
+msgstr "cookies.txt 路径，或浏览器名称，如 'firefox'"
+
+msgid "header"
+msgstr "请求头"
+
+msgid "live session: "
+msgstr "实时会话："
+
+msgid "Cookies / sign-in…"
+msgstr "Cookie / 登录…"
+
+msgid "No sign-in yet — add cookies or a browser session if this download needs a login"
+msgstr "尚未登录 — 如果此下载需要登录，请添加 Cookie 或浏览器会话"
+
+msgid "Use a cookies.txt export or a live browser session for this download"
+msgstr "为此下载使用 cookies.txt 导出文件或实时浏览器会话"
+
+msgid "not run"
+msgstr "未执行"
