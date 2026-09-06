@@ -569,15 +569,42 @@ def b_dedup(ws):
 
 
 def _shares_extents(a, b):
-    """True if two files share physical storage (reflink/CoW dedup) — via
-    filefrag. Best-effort: False if filefrag is missing."""
+    """True if two files share physical storage — a reflink on btrfs/XFS or a
+    clone on APFS.
+
+    filefrag answers directly, but it is e2fsprogs and exists on Linux only, so
+    on macOS every clone read as "not deduplicated" and the dedup scenarios
+    failed on a platform where dedup had in fact worked. macOS can be asked
+    properly: F_LOG2PHYS maps a file's first logical byte to a device offset,
+    and two clones report the same one."""
     try:
         import subprocess as _sp
         o = _sp.run(["filefrag", "-v", a, b], capture_output=True,
                     text=True, timeout=15).stdout
-        return "shared" in o
-    except Exception:
-        return False
+        if o.strip():
+            return "shared" in o
+    except Exception:                                      # noqa: BLE001
+        pass
+    if sys.platform == "darwin":
+        pa, pb = _phys_offset(a), _phys_offset(b)
+        if pa is not None and pb is not None:
+            return pa == pb
+    return False
+
+
+def _phys_offset(path):
+    """Device offset of a file's first byte, or None if it cannot be asked.
+    macOS F_LOG2PHYS fills struct log2phys {u32 flags; off_t contigbytes;
+    off_t devoffset;}."""
+    try:
+        import fcntl
+        import struct
+        buf = bytearray(struct.calcsize("=IQQ"))
+        with open(path, "rb") as f:
+            fcntl.fcntl(f.fileno(), 49, buf)               # F_LOG2PHYS
+        return struct.unpack("=IQQ", bytes(buf))[2]
+    except Exception:                                      # noqa: BLE001
+        return None
 
 
 def c_dedup(ws, rc, out, info):
@@ -732,7 +759,12 @@ def c_glob(ws, rc, out, info):
     if rc != 0:
         return False, f"exit {rc}"
     dst = os.path.join(ws, "dst")
-    got = sorted(f for _r, _d, fs in os.walk(dst) for f in fs)
+    # The dedup database is blitcp's own bookkeeping, and where it lands
+    # depends on whether the per-user cache directory is usable — on the CI
+    # runners it is not, so it sits beside the copy. It is not a copied file
+    # and must not count as one.
+    got = sorted(f for _r, _d, fs in os.walk(dst) for f in fs
+                 if not f.startswith(".blitcp_") and not f.startswith(".fast_copy_"))
     if got != ["r1.csv", "r2.csv"]:
         return False, f"glob copied {got}, expected the two .csv only"
     return True, "glob selected only *.csv"
@@ -2077,10 +2109,10 @@ SCENARIOS = [
     S("UAT-LOCAL-6", "local", "--exclude drops matching files", b_exclude, c_exclude),
     S("UAT-LOCAL-7", "local", "--overwrite replaces a stale destination file", b_overwrite, c_overwrite),
     S("UAT-LOCAL-8", "local", "--hash sha256 copies with integrity", b_sha256, c_sha256),
-    S("UAT-LOCAL-9", "local", "--preserve mode keeps file permissions", b_preserve_mode, c_preserve_mode),
+    S("UAT-LOCAL-9", "local", "--preserve mode keeps file permissions", b_preserve_mode, c_preserve_mode, needs="posix"),
     S("UAT-LOCAL-10", "local", "--log-file writes a structured JSON log", b_logfile, c_logfile),
     S("UAT-LOCAL-11", "local", "glob source selects only matches", b_glob, c_glob),
-    S("UAT-LOCAL-12", "local", "symlink handled without error", b_symlink, c_symlink),
+    S("UAT-LOCAL-12", "local", "symlink handled without error", b_symlink, c_symlink, needs="symlink"),
     S("UAT-LOCAL-13", "local", "sparse file content preserved", b_sparse, c_sparse),
     S("UAT-LOCAL-14", "local", "unreadable source → verify exits 3 (distinct from corruption)", b_verify_catches_missing, c_verify_catches_missing),
     S("UAT-LOCAL-15", "local", "664/775 file modes survive the small-file tar stream", b_stream_file_modes, c_stream_file_modes),
@@ -2152,6 +2184,40 @@ def _short(a, ws):
     return str(a).replace(ws + "/", "").replace(ws, ".")
 
 
+def _force_utf8_stdout():
+    """Windows consoles default to cp1252, and the scenario titles contain a
+    '→'. Printing one raised UnicodeEncodeError and took the whole run down
+    AFTER the scenarios had already been decided — a suite that had passed
+    reported as a crash."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (getattr(stream, "encoding", "") or "").lower() not in ("utf-8", "utf8"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                  # noqa: BLE001
+            pass
+
+
+def _can_symlink():
+    """Windows grants symlink creation only with Developer Mode or elevation,
+    and that is a property of the machine rather than of the platform name —
+    so ask the OS once instead of guessing."""
+    if os.name == "posix":
+        return True
+    d = tempfile.mkdtemp(prefix="uat_symcap_")
+    try:
+        tgt = os.path.join(d, "t")
+        open(tgt, "w").close()
+        os.symlink(tgt, os.path.join(d, "l"))
+        return True
+    except (OSError, NotImplementedError, AttributeError):
+        return False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+_CAN_SYMLINK = _can_symlink()
+
+
 def _indent(text, p="      | "):
     return "\n".join(p + ln for ln in text.splitlines()[-25:])
 
@@ -2174,6 +2240,14 @@ def _run_one(sc, target, manual, keep):
             return None, "set FC_UAT_CLOUD_URL (+BLITCP_CREDS_PASSPHRASE) to test cloud"
         if "https" in needs and CERT_MISSING:
             return None, f"no way to make a test certificate: {CERT_MISSING}"
+        # Platform tokens. These are not dependencies that could be installed —
+        # they are properties Windows does not have, so asserting them there
+        # tests the operating system rather than blitcp.
+        if "posix" in needs and os.name != "posix":
+            return None, "POSIX file modes do not exist on this platform"
+        if "symlink" in needs and not _CAN_SYMLINK:
+            return None, ("creating a symlink needs Developer Mode or "
+                          "administrator rights here")
     ws = tempfile.mkdtemp(prefix=f"{sc['id']}_")
     info = {}
     try:
@@ -2219,6 +2293,7 @@ def _run_one(sc, target, manual, keep):
 
 
 def main(argv=None):
+    _force_utf8_stdout()   # before the first '→' reaches a cp1252 console
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", default=os.path.join(HERE, "blitcp.py"))
