@@ -1019,8 +1019,8 @@ msgstr "{n} 个文件到达目标时内容有误。"
 msgid "could not be read back from the destination: {rel}"
 msgstr "无法从目标重新读取：{rel}"
 
-msgid "{n} by existence + size: links, clones and sparse copies"
-msgstr "{n} 个仅校验存在性与大小：hard link、reflink 克隆和 sparse 副本"
+msgid "{n} by existence + size: links and clones"
+msgstr "{n} 个仅按存在性和大小检查：链接和克隆"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} 个未校验内容：源文件不可读"

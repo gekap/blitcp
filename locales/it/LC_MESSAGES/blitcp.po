@@ -1019,8 +1019,8 @@ msgstr "{n} file sono arrivati a destinazione con contenuto errato."
 msgid "could not be read back from the destination: {rel}"
 msgstr "non è stato possibile rileggerlo dalla destinazione: {rel}"
 
-msgid "{n} by existence + size: links, clones and sparse copies"
-msgstr "{n} solo per esistenza + dimensione: hard link, cloni reflink e copie sparse"
+msgid "{n} by existence + size: links and clones"
+msgstr "{n} solo per esistenza + dimensione: link e cloni"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} senza verifica del contenuto: sorgente illeggibile"

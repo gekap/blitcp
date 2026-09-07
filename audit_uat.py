@@ -52,6 +52,7 @@ import contextlib
 import builtins
 import io
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -3308,6 +3309,200 @@ def _check_lookup_scope_in_sql(rep, ctx):
            "drive-wide scope still unfiltered")
 
 
+def _check_sparse_verification_sees_content(rep, ctx):
+    """Verification must actually compare a sparse copy's bytes.
+
+    Regression guard. Sparse copies used to be recorded as
+    __content_check_na__ and skipped: the run printed "Verified: all N files
+    OK" and exited 0 while the destination held zeros where the source had
+    data. Proven by fault injection — a one-byte corruption in the sparse copy
+    path was reported as success, while the same corruption in the dense path
+    was caught. That blind spot is what let the _copy_sparse desynchronisation
+    ship (see _check_sparse_copy_integrity).
+
+    Exercises _sparse_content_equal directly: it must accept an honest copy,
+    reject a single flipped byte, and — importantly — not raise a false alarm
+    when the two sides merely differ in how the filesystem laid out the holes.
+    """
+    target = ctx["target"]
+    if not (hasattr(os, "SEEK_DATA") and hasattr(os, "SEEK_HOLE")):
+        rep.skip("sparse verification", "SEEK_DATA/SEEK_HOLE unavailable")
+        return
+    try:
+        mod = _import_target(ctx)
+    except Exception as e:
+        rep.skip("sparse verification", f"could not import target: {e}")
+        return
+    cmp_fn = getattr(mod, "_sparse_content_equal", None)
+    if cmp_fn is None:
+        rep.fail("sparse verification",
+                 "_sparse_content_equal is gone — sparse copies are no longer "
+                 "content-verified")
+        return
+
+    with temp_workspace() as ws:
+        a = os.path.join(ws, "a.img")
+        rnd = random.Random(4242)
+        with open(a, "wb") as f:
+            for i in range(120):
+                f.seek(i * 65536 + rnd.randint(0, 60000))
+                f.write(bytes(rnd.randrange(256) for _ in range(64)))
+            f.truncate(120 * 65536)
+
+        # 1. an honest copy must pass
+        b = os.path.join(ws, "b.img")
+        shutil.copyfile(a, b)
+        if cmp_fn(a, b) is not True:
+            rep.fail("sparse verification",
+                     "an identical copy was not recognised as identical")
+            return
+
+        # 2. a dense copy of the same bytes must still pass: holes and stored
+        #    zeros are the same content, and flagging that would make the
+        #    check unusable on filesystems that do not punch holes.
+        c = os.path.join(ws, "c.img")
+        with open(a, "rb") as src, open(c, "wb") as dst:
+            while True:
+                blk = src.read(1 << 20)
+                if not blk:
+                    break
+                dst.write(blk)
+        if cmp_fn(a, c) is not True:
+            rep.fail("sparse verification",
+                     "a dense copy of identical bytes was reported as different")
+            return
+
+        # 3. one flipped byte inside a data extent must be caught
+        with open(a, "rb") as f:
+            pos = None
+            off = 0
+            while off < os.path.getsize(a):
+                try:
+                    ds = os.lseek(f.fileno(), off, os.SEEK_DATA)
+                except OSError:
+                    break
+                pos = ds
+                break
+        if pos is None:
+            rep.skip("sparse verification", "filesystem reported no data extent")
+            return
+        with open(b, "r+b") as f:
+            f.seek(pos)
+            orig = f.read(1)
+            f.seek(pos)
+            f.write(bytes([(orig[0] + 1) & 0xFF]))
+        if cmp_fn(a, b) is not False:
+            rep.fail("sparse verification",
+                     f"a flipped byte at offset {pos} was NOT detected — a "
+                     f"corrupt sparse copy would report success")
+            return
+
+        # 4. a truncated destination must be caught
+        d = os.path.join(ws, "d.img")
+        shutil.copyfile(a, d)
+        with open(d, "r+b") as f:
+            f.truncate(os.path.getsize(a) - 4096)
+        if cmp_fn(a, d) is not False:
+            rep.fail("sparse verification", "a short destination was not detected")
+            return
+
+        rep.ok("sparse verification",
+               "sparse copies are content-compared: identical accepted, "
+               "hole-layout difference tolerated, flipped byte and short "
+               "destination both caught")
+
+
+def _check_sparse_copy_integrity(rep, ctx):
+    """A sparse copy must reproduce the source byte for byte.
+
+    Regression guard. _copy_sparse walks the source with
+    os.lseek(SEEK_DATA/SEEK_HOLE) to skip holes. Those probes ran on the very
+    descriptor wrapped by the BufferedReader doing the reading, so they moved
+    the raw file position behind its back; the reader then served bytes from
+    its stale readahead window — which usually sat inside a hole — and real
+    data was silently written out as zeros. Same size, same mtime, wrong
+    contents, and blitcp's own verification could not see it because sparse
+    copies are exempt from the content digest (__content_check_na__).
+
+    Measured on a real /var/lib/longhorn/replicas tree: 28 of 168 .img files
+    corrupted across 20 of 22 replicas, 0 of the 205 non-sparse files touched.
+
+    The layout matters. A file with one hole and one data run copies correctly
+    even with the bug — that is why it shipped. The fault needs MANY small
+    data extents, which is exactly the shape of a Longhorn replica or a VM
+    image, so that is what this builds.
+    """
+    target = ctx["target"]
+    if not (hasattr(os, "SEEK_DATA") and hasattr(os, "SEEK_HOLE")):
+        rep.skip("sparse copy integrity",
+                 "SEEK_DATA/SEEK_HOLE unavailable on this platform")
+        return
+    with temp_workspace() as ws:
+        src = os.path.join(ws, "src")
+        os.makedirs(src)
+        rnd = random.Random(20260907)
+
+        # Three layouts, each a spread of small data runs among holes.
+        # 'unaligned' deliberately straddles 4 KiB boundaries: the original
+        # loss was 8 bytes at offset 4088 of an 8192-byte extent.
+        plans = {
+            "many_extents.img":  (500, 32768, lambda: rnd.randint(1, 5000), 0),
+            "tiny_runs.img":     (200, 65536, lambda: rnd.randint(1, 120),
+                                  lambda: rnd.randint(0, 60000)),
+            "unaligned.img":     (50, 131072, lambda: rnd.randint(40, 300), 4096),
+        }
+        for name, (count, stride, size_fn, skew) in plans.items():
+            with open(os.path.join(src, name), "wb") as f:
+                for i in range(count):
+                    if callable(skew):
+                        pos = i * stride + skew()
+                    elif skew:
+                        pos = i * stride + skew - rnd.randint(1, 40)
+                    else:
+                        pos = i * stride
+                    f.seek(pos)
+                    f.write(os.urandom(size_fn()))
+                f.truncate(count * stride)
+
+        want = {}
+        for name in plans:
+            path = os.path.join(src, name)
+            st = os.stat(path)
+            blocks = getattr(st, "st_blocks", None)
+            if blocks is None:
+                rep.skip("sparse copy integrity",
+                         "st_blocks unavailable: cannot confirm the files are sparse")
+                return
+            if blocks * 512 >= st.st_size:
+                rep.skip("sparse copy integrity",
+                         f"filesystem did not keep {name} sparse")
+                return
+            want[name] = _hash_file(path)
+
+        dst = os.path.join(ws, "dst")
+        rc, out, err = run_fc(target, [src, dst])
+        if rc != 0:
+            rep.fail("sparse copy integrity", f"copy failed rc={rc}")
+            return
+
+        copied = os.path.join(dst, os.path.basename(src))
+        if not os.path.isdir(copied):
+            copied = dst
+        bad = []
+        for name, digest in want.items():
+            out_path = os.path.join(copied, name)
+            if not os.path.exists(out_path):
+                bad.append(f"{name}: missing")
+            elif _hash_file(out_path) != digest:
+                bad.append(f"{name}: contents differ")
+        if bad:
+            rep.fail("sparse copy integrity",
+                     "sparse copy did not reproduce the source: " + "; ".join(bad))
+        else:
+            rep.ok("sparse copy integrity",
+                   f"{len(want)} multi-extent sparse files copied byte for byte")
+
+
 def _check_reported_speed(rep, ctx):
     """The reported throughput must describe the copy that actually happened.
 
@@ -3797,6 +3992,8 @@ def section_bugs(rep, ctx):
     _check_translation_coverage(rep, ctx)
     _check_pip_install_not_self_updated(rep, ctx)
     _check_reported_speed(rep, ctx)
+    _check_sparse_copy_integrity(rep, ctx)
+    _check_sparse_verification_sees_content(rep, ctx)
     _check_quiet_time_matches(rep, ctx)
     _check_sudo_askpass_route(rep, ctx)
     _check_fuseblk_is_local(rep, ctx)

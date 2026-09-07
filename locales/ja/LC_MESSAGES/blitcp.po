@@ -1019,8 +1019,8 @@ msgstr "{n} 個のファイルが誤った内容で宛先に到達しました�
 msgid "could not be read back from the destination: {rel}"
 msgstr "宛先から読み戻せませんでした: {rel}"
 
-msgid "{n} by existence + size: links, clones and sparse copies"
-msgstr "{n} 件は存在とサイズのみ: hard link、reflink クローン、sparse コピー"
+msgid "{n} by existence + size: links and clones"
+msgstr "{n} 件は存在とサイズのみ: リンクとクローン"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} 件は内容未検証: 転送元を読み取れません"

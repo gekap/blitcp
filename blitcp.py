@@ -176,7 +176,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.2.9"
+__version__ = "4.2.10"
 # Shown only where the user explicitly asked for it (--version, GUI
 # About/Settings). A plain static URL: no redirect, no tracking, no
 # network call of any kind is made on our side.
@@ -1834,7 +1834,8 @@ class _SourceDigests:
     further than existence + size."""
 
     SKIP = "__fs_guaranteed__"        # CoW clone / hard link — same extents
-    NA = "__content_check_na__"       # sparse copy — no whole-file digest exists
+    NA = "__content_check_na__"       # content check genuinely impossible
+    SPARSE = "__sparse_extent_check__"  # compare allocated extents, not a digest
 
     def __init__(self):
         self.enabled = False
@@ -1860,12 +1861,102 @@ class _SourceDigests:
     def mark_not_applicable(self, rel):
         self.put(rel, self.NA)
 
+    def mark_sparse(self, rel):
+        """A sparse copy: no whole-file digest, but the content IS verifiable by
+        comparing the allocated extents of both sides. See
+        _sparse_content_equal."""
+        self.put(rel, self.SPARSE)
+
     def snapshot(self):
         with self._lock:
             return dict(self._d)
 
 
 _SRC_DIGESTS = _SourceDigests()
+
+
+def _data_extents(fd, size):
+    """The [start, end) ranges of a file that actually hold allocated blocks."""
+    out = []
+    off = 0
+    while off < size:
+        try:
+            ds = os.lseek(fd, off, os.SEEK_DATA)
+        except OSError as e:
+            if e.errno == errno.ENXIO:      # no more data: rest is hole
+                break
+            raise
+        try:
+            hs = os.lseek(fd, ds, os.SEEK_HOLE)
+        except OSError:
+            hs = size                        # data runs to EOF
+        if hs <= ds:
+            break
+        out.append((ds, min(hs, size)))
+        off = hs
+    return out
+
+
+def _sparse_content_equal(src_path, dst_path, chunk=1 << 20):
+    """Whether two files hold identical bytes, reading only allocated data.
+
+    A sparse copy never streams the holes, so there is no whole-file digest to
+    compare — and hashing both sides in full would mean materialising the
+    logical size twice (hours for a 2.3 TB image whose real data is 12 GB).
+
+    Instead compare the UNION of both files' allocated extents. A range that is
+    a hole on both sides is identical by construction and never read. A range
+    allocated on one side only is still compared correctly, because reading a
+    hole returns zeros without touching the disk — so a destination that
+    allocated zeros where the source had a hole still matches.
+
+    Returns True, False, or None when either side cannot be read.
+
+    Reads go through os.pread: it takes an explicit offset and leaves the file
+    position alone, so this cannot repeat the desynchronisation that made
+    _copy_sparse write zeros over real data in the first place.
+    """
+    sfd = dfd = None
+    try:
+        sfd = os.open(_long_path(src_path), os.O_RDONLY)
+        dfd = os.open(_long_path(dst_path), os.O_RDONLY)
+        ssize = os.fstat(sfd).st_size
+        dsize = os.fstat(dfd).st_size
+        if ssize != dsize:
+            return False
+        if not (hasattr(os, "SEEK_DATA") and hasattr(os, "SEEK_HOLE")):
+            # No extent introspection here: fall back to reading both in full
+            # rather than silently declaring the file verified.
+            spans = [(0, ssize)]
+        else:
+            spans = []
+            for a, b in sorted(_data_extents(sfd, ssize)
+                               + _data_extents(dfd, dsize)):
+                if spans and a <= spans[-1][1]:
+                    spans[-1][1] = max(spans[-1][1], b)
+                else:
+                    spans.append([a, b])
+        for a, b in spans:
+            pos = a
+            while pos < b:
+                n = min(chunk, b - pos)
+                sbuf = os.pread(sfd, n, pos)
+                dbuf = os.pread(dfd, n, pos)
+                if sbuf != dbuf:
+                    return False
+                if not sbuf:
+                    break                    # short read at EOF on both sides
+                pos += len(sbuf)
+        return True
+    except OSError:
+        return None
+    finally:
+        for fd in (sfd, dfd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 def _digest_sink():
@@ -8316,7 +8407,16 @@ def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
             print(f"\n  {C.RED}Refusing to follow symlink at destination: {dst_path}{C.RESET}")
             return None  # skip THIS file (not an abort — see caller)
         raise
-    with os.fdopen(src_fd_raw, "rb") as fin, os.fdopen(dst_fd_raw, "wb") as fout:
+    # The source is opened UNBUFFERED on purpose. The extent walk below probes
+    # with os.lseek(SEEK_DATA/SEEK_HOLE) on this same descriptor, which moves the
+    # raw file position. A BufferedReader caches its own idea of that position
+    # along with a readahead window, so those probes desynchronise it and the
+    # copy then serves bytes from the wrong offset — in practice the readahead
+    # sits inside a hole, so real data is silently written out as zeros.
+    # We do our own buffering into `buf` (1 MB), so there is nothing to gain
+    # from a second layer here. The destination stays buffered: it is never
+    # lseek'd behind its back, and a BufferedWriter cannot short-write.
+    with os.fdopen(src_fd_raw, "rb", 0) as fin, os.fdopen(dst_fd_raw, "wb") as fout:
         src_fd = fin.fileno()
         src_size = os.fstat(src_fd).st_size
         offset = 0
@@ -8467,12 +8567,14 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     continue
                 if not ok:
                     return  # cancelled — abort the batch
-                # Sparse copy walks data extents and never reads the holes, so
-                # there is no whole-file digest to compare against. Verifying
-                # content here would mean materialising the logical size on both
-                # sides — hours for a 2.3 TB image whose real data is 12 GB.
-                # These stay on existence + size, and say so.
-                _SRC_DIGESTS.mark_not_applicable(entry.rel)
+                # Sparse copy walks data extents and never reads the holes,
+                # so there is no whole-file digest to compare against. It is
+                # still content-verified: _sparse_content_equal compares the
+                # allocated extents of both sides, which costs one read of the
+                # real data rather than of the logical size. Leaving these on
+                # existence + size is what let a copy that silently wrote zeros
+                # over real data report "all files OK".
+                _SRC_DIGESTS.mark_sparse(entry.rel)
             else:
                 try:
                     src_fd_raw = _safe_open_read_fd(entry.src)
@@ -9240,6 +9342,18 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
             def _check(item):
                 entry, expected_digest = item
                 dst_path = os.path.join(dst_root, entry.rel)
+                if expected_digest == _SourceDigests.SPARSE:
+                    # No digest exists for a sparse copy; compare the allocated
+                    # extents of both sides instead. Same verdict, but it reads
+                    # the real data rather than the logical size.
+                    same = _sparse_content_equal(entry.src, dst_path)
+                    with clock:
+                        content_checked[0] += 1
+                        if content_checked[0] % 500 == 0:
+                            _verify_emit(content_checked[0], len(todo))
+                    if same is None:
+                        return ("unreadable", entry.rel)
+                    return None if same else ("mismatch", entry.rel)
                 actual = hash_file(_long_path(dst_path))
                 if actual is None:
                     # A file just written can still be held briefly — Defender
@@ -9301,8 +9415,8 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
             # "all N files OK" would imply content checking that never ran.
             notes = []
             if content_skipped:
-                notes.append(_tr("{n} by existence + size: links, clones and "
-                                 "sparse copies").format(n=content_skipped))
+                notes.append(_tr("{n} by existence + size: links and clones")
+                             .format(n=content_skipped))
             if content_nosource:
                 notes.append(_tr("{n} not content-checked: source unreadable")
                              .format(n=content_nosource))

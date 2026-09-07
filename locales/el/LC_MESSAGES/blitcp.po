@@ -1019,8 +1019,8 @@ msgstr "{n} αρχείο/α έφτασαν στον προορισμό με λά
 msgid "could not be read back from the destination: {rel}"
 msgstr "δεν διαβάστηκε πίσω από τον προορισμό: {rel}"
 
-msgid "{n} by existence + size: links, clones and sparse copies"
-msgstr "{n} μόνο με ύπαρξη + μέγεθος: hard links, reflink κλώνοι και sparse αντίγραφα"
+msgid "{n} by existence + size: links and clones"
+msgstr "{n} μόνο με ύπαρξη + μέγεθος: hard links και reflink κλώνοι"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} χωρίς έλεγχο περιεχομένου: η πηγή δεν διαβάστηκε"
