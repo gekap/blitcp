@@ -1,5 +1,46 @@
 # Changelog
 
+## v4.2.10 — 2026-09-07
+
+### Bug Fixes
+
+- **A sparse copy could write zeros over real data.** The extent walk probed the
+  source with `os.lseek(SEEK_DATA/SEEK_HOLE)` on the very descriptor a buffered
+  reader was reading from. Those probes moved the raw file position behind the
+  reader's back, so it served bytes from a readahead window that no longer
+  matched the file — usually one sitting inside a hole — and real data was
+  written out as zeros. Size, mtime and mode all came out correct; only the
+  contents were wrong, in short runs near extent boundaries. The source is now
+  opened unbuffered, since the copy already buffers into its own 1 MB block and
+  the second layer bought nothing while costing correctness.
+
+  Only files with many small data extents break. One hole and one data run
+  copies correctly even with the fault, which is how it survived since 3.1.0,
+  where sparse handling was introduced with this shape. Measured on a 373-file
+  Longhorn replica tree: 28 of 168 `.img` files corrupted across 20 of 22
+  replicas, and none of the 205 non-sparse files touched.
+
+### Improvements
+
+- **Sparse copies are content-verified instead of counted as "existence +
+  size".** They used to be exempt, so a corrupted one printed
+  `Verified: all N files OK` and exited 0 — injecting a one-byte fault confirmed
+  the asymmetry, with the dense path reporting `content mismatch` and exit 1
+  while the sparse path reported success. The exemption existed for a real
+  reason: hashing both sides in full means materialising the logical size twice,
+  hours for a 2.3 TB image whose real data is 12 GB. The check now walks the
+  union of both files' allocated extents with `os.pread` instead. A range that
+  is a hole on both sides is identical by construction and never read, and a
+  hole on one side still compares correctly, because reading it returns zeros
+  without touching the disk. On a 2 GiB logical pair holding 2.46 MiB of data,
+  verifying reads 2.46 MiB and takes no measurable time.
+
+### Upgrade notes
+
+- Anything sparse copied with an earlier version is worth re-checking: `cmp`
+  against the source, or a re-copy under 4.2.10, will say. Sizes and timestamps
+  will not — they were always correct.
+
 ## v4.2.9 — 2026-09-07
 
 ### New features
