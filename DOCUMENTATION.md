@@ -1,3 +1,5 @@
+[English](DOCUMENTATION.md) | [简体中文](DOCUMENTATION.zh-CN.md)
+
 # blitcp Documentation
 
 High-speed file copier with deduplication, physical disk order optimization, and SSH remote support.
@@ -144,11 +146,36 @@ CLI: `-p`, `--progress`
 
 ### Skip verification
 
-Skips the post-copy check. By default, blitcp verifies that every copied file exists on the destination with the exact expected size; on SSH transfers it additionally hash-checks a random sample of up to 20 files (SHA-256 on both sides).
+Skips the post-copy check. How much that check does depends on where the destination is, so the table below is the short answer and the rest of the section is the detail.
 
-This is a **completeness** check, not an integrity one. It catches the ways a copy actually fails — missing files, truncated or half-written files, a destination that filled up, an interrupted transfer. It does **not** detect content that changed while keeping the same size (failing media writing garbage, a bit flip in non-ECC RAM); catching that requires hashing every file, which means reading the whole destination back. SSH transfers are protected in flight by SSH's own per-packet integrity checks, so corruption on the wire drops the connection rather than landing silently.
+| Mode | What is verified |
+|---|---|
+| local → local | Existence + size for every file, **plus a content hash of every byte-copied file** |
+| local → remote (push) | Existence + size on the remote, plus SHA-256 on a random sample of up to 20 files |
+| remote → local (pull) | Existence + size only |
+| remote → remote (relay) | Existence + size only |
+| cloud upload | Sampled `HEAD` of up to 20 objects against the hash recorded at upload |
 
-**When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Recommended to leave verification ON for external drives, USB sticks, or network destinations where errors are more likely.
+**A local copy compares content.** Every file, copied or linked, is checked for existence and for the exact expected size in a single walk of the destination. On top of that, each byte-copied file is re-read from the destination and its hash compared against the digest the copy engine captured from the source while those bytes were already in the buffer — so the check costs one destination read, not a read of both sides. The algorithm is whichever one `--hash` selected (xxh128 by default, SHA-256 when forced or when `xxhash` is absent); it is not pinned to SHA-256. It costs about 35% on a verified run [measured: v4.1.6 release notes, [CHANGELOG.md](CHANGELOG.md)].
+
+Four cases inside a local copy carry no comparable digest:
+
+| Case | Why | What happens instead |
+|---|---|---|
+| Reflink/CoW clones and hard links written as unique files | the filesystem shares the very same extents, so there is nothing that can diverge | existence + size; the summary says so — `(N by existence + size: links and clones)` |
+| Deduplicated duplicates (the link map) | same reason | existence only, and this one is **not** called out in the summary line |
+| Sparse copies | no whole-file digest exists; producing one would mean materialising the holes | the allocated extents of both sides are byte-compared — content **is** compared, just not via a hash |
+| Files written by the tar block-stream engine (`--small-files stream`) | that engine does not feed the digest collector | the source is hashed as well, so content is still compared — at the cost of reading both sides |
+
+**A pull is not content-checked.** `blitcp user@host:/data /local` verifies existence and size and stops there: the digest collector is armed only by the local copy engine, so a pulled file has no source digest on this machine to compare against. Note that the run prints the same `✓ Verified: all N files OK` line as a content-verified local copy — **nothing in the output distinguishes the two**, so do not read that line as a content guarantee unless the copy was local → local.
+
+**A push samples; a relay samples nothing.** For a push, up to 20 files are picked at random and hashed with SHA-256 on both sides (`sha256sum` or `python3` on the remote, locally on the source). For a remote → remote relay the same code runs, but the "local" side of the comparison is the *remote source* path, which does not exist on the relaying machine — the read fails and the file is passed over. A relay is therefore checked for existence and size only.
+
+**Remote verification is trust-based either way.** The far side reports its own hashes, so a compromised server can report whatever it likes. What SSH does guarantee is the wire: its per-packet integrity checks mean corruption in flight drops the connection rather than landing silently.
+
+**An incremental re-run verifies what it copied, not what it skipped.** Files already up to date never enter the copy list and so never reach this phase — they were content-compared earlier, by the incremental check in Phase 2b.
+
+**When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Leave verification ON for external drives, USB sticks, or network destinations where errors are more likely. On a pull or a relay, where the check is existence + size, a second run is the stronger tool: it compares content and re-copies anything that differs.
 
 CLI: `--no-verify`
 
@@ -1051,7 +1078,7 @@ Dedup found 46,951 duplicates (51.2%), saving 378.5 MB of transfer. Files stream
   Speed:   4.0 MB/s
 ```
 
-Uploaded in 6 tar batches. Remote hard links created via batched Python script over SSH (5,000 links per batch). 3x faster than SFTP-based transfer.
+Uploaded in 6 tar batches. Remote hard links created via batched Python script over SSH (5,000 links per batch). Note the two sizes: 888 MB is the tree, 509.8 MB is what crossed the wire after dedup, and the 4.0 MB/s above is the wire figure. No scp or SFTP time was measured for this tree, so there is no comparison to draw from it.
 
 ### Remote-to-Remote: 3 files (1.7 GB) relay through local machine
 

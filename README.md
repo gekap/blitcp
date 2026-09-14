@@ -1,3 +1,5 @@
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 # blitcp — High-Speed File Copier with Deduplication & SSH Streaming
 
 [![Release](https://img.shields.io/github/v/release/gekap/blitcp?color=00b37e&label=release)](https://github.com/gekap/blitcp/releases/latest)
@@ -27,9 +29,9 @@ large SSH transfers. CLI + desktop GUI, in 7 languages.
 | Thousands of small files copy painfully slow | **Bundles small files** into tar stream batches |
 | Duplicate files waste space and time | **Content-aware dedup** — copies once, hard-links or reflinks the rest |
 | No space check until copy fails mid-way | **Pre-flight space check** before any data is written |
-| Copies that quietly fail half-way | **Post-copy verification** — every copied file is read back and its content hashed against the source, with an exit code a script can act on |
+| Copies that quietly fail half-way | **Post-copy verification** — a local copy re-reads every copied file and hashes its content against the source; remote and cloud destinations get existence, size and a hashed sample. Either way the run ends on an exit code a script can act on |
 | Copying between two servers is painful | **Remote-to-remote relay** via SSH tar pipe streaming |
-| SFTP is slow | **Raw SSH tar streaming** bypasses SFTP overhead — 3–5× faster |
+| SFTP is disabled, or the box has nothing installed on it | **Raw SSH tar streaming** using the remote's own `tar` — duplicates hard-linked on the far side rather than sent twice |
 
 ## Quickstart
 
@@ -68,10 +70,15 @@ macOS and Windows are on the
 | Scenario | Result |
 |---|---|
 | Linux, 12,347 small files, cold HDD → SSD | **2.5× faster than `cp -ar`** (5.9s vs 15.0s, dedup+verify ON) |
-| Windows, 9,578 files off USB 2.0 | **1.3× faster than robocopy** — with verification ON |
-| SSH, many small files over LAN | **3–5× faster than scp/SFTP** via tar streaming |
+| Windows, 9,578 files off USB 2.0 | **1.3× faster than robocopy** (2m28s vs 3m16s `/MT:1`, verification ON) |
+| SSH, 1,098 files / 1.1 GB over LAN | **Level with `scp -r`** (1m50.4s vs 1m55.4s, verify+dedup ON) via tar streaming — single run |
 
 Full methodology and more scenarios: [blitcp.dev/benchmarks](https://blitcp.dev/benchmarks/) · [DOCUMENTATION.md](DOCUMENTATION.md#real-world-benchmarks)
+
+The SSH row is one run, not a median of three, and to a Windows drive through
+WSL `scp` was ahead. Over SSH blitcp is not sold on speed: what it adds is
+verification, dedup and a resumable second run.
+[Both runs, with the caveats.](https://blitcp.dev/compare/scp/)
 
 ## Desktop GUI
 
@@ -89,6 +96,7 @@ point and click. [More screenshots →](https://blitcp.dev/#screenshots)
 - **[blitcp.dev/docs](https://blitcp.dev/docs/)** — guides: local copies, SSH transfers, cloud storage, sparse files, everyday options
 - **[DOCUMENTATION.md](DOCUMENTATION.md)** — the full manual: every option, how it works internally, examples, benchmarks
 - **[CHANGELOG.md](CHANGELOG.md)** — release history
+- **简体中文** — [README.zh-CN.md](README.zh-CN.md) · [DOCUMENTATION.zh-CN.md](DOCUMENTATION.zh-CN.md) · [glossary.zh-CN.md](glossary.zh-CN.md)
 
 ## Support
 
