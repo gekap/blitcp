@@ -457,7 +457,10 @@ def s_ssh_unknown_host_no_hang(tmp):
     with open(os.path.join(src, "one.txt"), "w") as fh:
         fh.write("payload")
     env = dict(os.environ)
-    env.update({"HOME": home, "NO_COLOR": "1",
+    # USERPROFILE too: on Windows expanduser("~") ignores HOME, so an
+    # isolated HOME alone left the child reading (and writing) the runner's
+    # real ~/.ssh — the seeded known_hosts was never looked at.
+    env.update({"HOME": home, "USERPROFILE": home, "NO_COLOR": "1",
                 "BLITCP_CREDENTIALS": os.path.join(home, "credentials.json")})
     env.pop("BLITCP_CREDS_PASSPHRASE", None)
     env.pop("FAST_COPY_CREDS_PASSPHRASE", None)
@@ -514,7 +517,10 @@ def _ssh_probe_run(tmp, seed_known_host=False, extra=()):
     with open(os.path.join(src, "one.txt"), "w") as fh:
         fh.write("payload")
     env = dict(os.environ)
-    env.update({"HOME": home, "NO_COLOR": "1",
+    # USERPROFILE too: on Windows expanduser("~") ignores HOME, so an
+    # isolated HOME alone left the child reading (and writing) the runner's
+    # real ~/.ssh — the seeded known_hosts was never looked at.
+    env.update({"HOME": home, "USERPROFILE": home, "NO_COLOR": "1",
                 "BLITCP_CREDENTIALS": os.path.join(home, "credentials.json")})
     for k in ("BLITCP_CREDS_PASSPHRASE", "FAST_COPY_CREDS_PASSPHRASE",
               "SSH_AUTH_SOCK"):
