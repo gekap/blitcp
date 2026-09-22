@@ -2307,6 +2307,12 @@ def _run_one(sc, target, manual, keep):
         if manual:
             print(_indent(out.strip()))
         ok, detail = sc["check"](ws, rc, out, info)
+        # "exit 1" alone says nothing about why: on a CI runner there is no
+        # second chance to look, so a failure carries the tail of what the
+        # tool itself printed.
+        if ok is False and not manual and out.strip():
+            tail = out.strip().splitlines()[-15:]
+            detail = f"{detail}\n" + "\n".join("    | " + ln for ln in tail)
         if manual:
             ans = input(f"  Accept {sc['id']}? [y/n] (auto: {_verdict(ok)} — {detail}) ").strip().lower()
             if ans in ("y", "n"):
