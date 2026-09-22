@@ -1801,6 +1801,39 @@ def write_sudo_audit(src_display, dst_display, summary):
 # ════════════════════════════════════════════════════════════════════════════
 _is_tty = sys.stdout is not None and sys.stdout.isatty()
 
+
+def _stdin_is_tty():
+    """True only when a person can answer a prompt on stdin.
+
+    sys.stdin.isatty() is not that question on Windows. isatty() there asks
+    "is this a character device?", and NUL is one — so a child started with
+    stdin=DEVNULL (a scheduled task, a service, CI, `blitcp ... < NUL`) reads
+    as a terminal. The host-key and credential prompts were then printed to
+    nobody, read EOF, and reported "Host key ... rejected by user". A real
+    console is the thing GetConsoleMode accepts; NUL, pipes and files are not.
+    """
+    s = sys.stdin
+    if s is None:
+        return False
+    try:
+        if not s.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(s.fileno())
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(
+            ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except Exception:                                       # noqa: BLE001
+        # No answer: keep the old one rather than silently refusing prompts
+        # in a console that would have worked.
+        return True
+
 class C:
     GREEN  = "\033[92m" if _is_tty else ""
     YELLOW = "\033[93m" if _is_tty else ""
@@ -4065,7 +4098,7 @@ class _InteractiveHostKeyPolicy:
         # goes looking for them. An error message may state only what
         # happened; the fingerprint stays, because that is what someone needs
         # in order to add the key.
-        if not (sys.stdin and sys.stdin.isatty()):
+        if not (_stdin_is_tty()):
             raise paramiko.SSHException(
                 f"no terminal available to confirm the host key for {hostname} "
                 f"({key_type}, SHA256:{fingerprint_sha256}). Add it to "
@@ -4187,7 +4220,7 @@ class SSHConnection:
                     # terminal to answer it (e.g. launched from the GUI via QProcess).
                     # getpass would hang forever on a stdin nobody can type into — the
                     # cause of the GUI "stuck at 0%" hang. Fail clearly instead.
-                    if not (sys.stdin and sys.stdin.isatty()):
+                    if not (_stdin_is_tty()):
                         print(f"  {C.RED}Error: "
                               f"{_ssh_auth_diagnosis(self.spec, self.key_path, self.password)}"
                               f" (no terminal for a password prompt){C.RESET}")
@@ -12074,7 +12107,7 @@ def _asking_is_appropriate():
     if QUIET or _env("NO_UPDATE_CHECK"):
         return False
     try:
-        return bool(sys.stdin and sys.stdin.isatty()
+        return bool(_stdin_is_tty()
                     and sys.stdout and sys.stdout.isatty())
     except (ValueError, AttributeError):
         return False
@@ -12472,7 +12505,7 @@ def _post_update_dep_check():
           f"installed:{C.RESET}")
     for d, s, f in missing:
         print(f"    {C.DIM}• {d} — {f}{C.RESET}")
-    if sys.stdin.isatty():
+    if _stdin_is_tty():
         try:
             ans = input("  Install them now with pip? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -12896,7 +12929,7 @@ def _conns_for_named_endpoints(args=None):
     if not os.path.isfile(path):
         return {}
     if _file_is_encrypted(path) and not _have_creds_passphrase() \
-            and not sys.stdin.isatty():
+            and not _stdin_is_tty():
         return {}
     # In a terminal this prompts for the passphrase; a wrong one surfaces a clean
     # single-line error rather than silently copying to the wrong place.
@@ -13717,7 +13750,7 @@ def _creds_passphrase(confirm=False):
         _scrub_passphrase_env()
     if _creds_passphrase_cache is not None:
         return _creds_passphrase_cache  # from env, or already entered — don't re-ask
-    if not sys.stdin.isatty():
+    if not _stdin_is_tty():
         raise SystemExit("Error: encrypted credentials need a passphrase. Set "
                          "BLITCP_CREDS_PASSPHRASE or run in a terminal.")
     pw = getpass.getpass("  Credentials passphrase: ")
@@ -14929,7 +14962,7 @@ def _prompt_secret(prompt):
     nothing at all). Backspace erases the last character. Falls back to getpass
     (no echo) when stdin isn't a real TTY or the terminal can't be put into raw
     mode — so pipes, CI, and odd terminals keep working unchanged."""
-    if not sys.stdin.isatty():
+    if not _stdin_is_tty():
         return getpass.getpass(prompt)
     try:
         if _system == "Windows":
@@ -15298,7 +15331,7 @@ def creds_manager(argv):
         # Guard against silently clobbering an existing connection of the same
         # name (the classic "second profile overwrote my first" surprise).
         if name in conns and not force:
-            if not sys.stdin.isatty():
+            if not _stdin_is_tty():
                 print(f"{C.RED}Error: connection {name!r} already exists. "
                       f"Pass --force to overwrite.{C.RESET}")
                 return 1
@@ -15329,7 +15362,7 @@ def creds_manager(argv):
         if not name or name not in conns:
             print(f"{C.RED}Error: no connection named {name!r} in {path}{C.RESET}")
             return 1
-        if not sys.stdin.isatty():
+        if not _stdin_is_tty():
             print(f"{C.RED}Error: 'creds edit' is interactive; run it in a "
                   f"terminal (or use 'creds add {name} --force').{C.RESET}")
             return 1
@@ -15520,7 +15553,7 @@ def creds_manager(argv):
             print(f"  {path} is already encrypted.")
             return 0
         if gen_words is not None:
-            if not sys.stdin.isatty():
+            if not _stdin_is_tty():
                 print(f"{C.RED}Error: --generate needs a terminal (the "
                       f"passphrase is shown once and confirmed).{C.RESET}",
                       file=sys.stderr)
