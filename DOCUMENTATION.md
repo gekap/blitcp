@@ -156,7 +156,7 @@ Skips the post-copy check. How much that check does depends on where the destina
 | remote → remote (relay) | Existence + size only |
 | cloud upload | Sampled `HEAD` of up to 20 objects against the hash recorded at upload |
 
-**A local copy compares content.** Every file, copied or linked, is checked for existence and for the exact expected size in a single walk of the destination. On top of that, each byte-copied file is re-read from the destination and its hash compared against the digest the copy engine captured from the source while those bytes were already in the buffer — so the check costs one destination read, not a read of both sides. The algorithm is whichever one `--hash` selected (xxh128 by default, SHA-256 when forced or when `xxhash` is absent); it is not pinned to SHA-256. It costs about 35% on a verified run [measured: v4.1.6 release notes, [CHANGELOG.md](CHANGELOG.md)].
+**A local copy compares content.** Every file, copied or linked, is checked for existence and for the exact expected size in a single walk of the destination. On top of that, each byte-copied file is re-read from the destination and its hash compared against the digest the copy engine captured from the source while those bytes were already in the buffer — so the check costs one destination read, not a read of both sides. The algorithm is whichever one `--hash` selected (xxh128 by default, SHA-256 when forced or when `xxhash` is absent); it is not pinned to SHA-256. Cost, measured on 81,703 files / 1.26 GiB SSD to SSD: 16.5s → 22.2s, about +35% [measured: v4.1.6 release notes, [CHANGELOG.md](CHANGELOG.md)].
 
 Four cases inside a local copy carry no comparable digest:
 
@@ -700,7 +700,41 @@ The convenience flag re-execs the tool under sudo, so anything blitcp does while
 - **`--use-sudo` preflight on script + interpreter.** Refuses to elevate if `blitcp.py`, its directory, or `sys.executable` is owned by someone other than root/invoker, or is group/world-writable. Closes the "edit the script and wait" trojan path.
 - **SSH `known_hosts` routed to `~$SUDO_USER`** so accepted TOFU keys persist for the human operator rather than disappearing into `/root/.ssh/`.
 
-No CLI change for non-elevated copies of regular files. Under sudo, the only behavior change is that symlinks in the source are skipped (with a visible warning) rather than silently followed.
+No CLI change for non-elevated copies of regular files. Under sudo, symlinks in
+the source are skipped (with a visible warning) rather than silently followed —
+and, since 4.2.11, a symlinked directory in the *destination* is refused as
+well. That one has its own section below, because it is not an fd guard and it
+applies to unelevated remote transfers too.
+
+### Symlinks in the destination path (v4.2.11+)
+
+`O_NOFOLLOW` above stops a symlinked **leaf** — the file blitcp is about to
+create. It says nothing about a symlinked **parent directory**: the path
+resolves through the parent to an ordinary file and passes every fd check.
+These are two separate guards, and the second one is a policy:
+
+| Where you are copying | A symlinked directory inside the destination |
+|---|---|
+| Local, as yourself | Followed, the way `cp -r` follows it |
+| Local, under `--use-sudo` | **Refused** |
+| Any remote destination — pull, push or relay | **Refused**, elevated or not |
+
+A destination that is *itself* a symlink is refused in every case, and nothing
+is created on the far side at all: no directory, no manifest sidecar, no
+verification pass.
+
+The reason for refusing under elevation is that a symlink which was already
+there is not consent. It is planted *before* the run, precisely because the
+attacker knows the run is coming, and blitcp cannot tell that link apart from
+one you made yourself. For a remote destination, the argument that a symlinked
+directory is your own layout is not something anyone can check from this side
+of an SSH connection — and both transports are covered, SFTP and the
+tar-over-SSH path a server with the SFTP subsystem off selects by itself.
+
+A run that refuses says which directory, where it points and how many files it
+affects, once, before anything is written. The fix is to name the real path: a
+server that reaches `/home` through a link, as Synology does, needs the target
+path written out.
 
 ### Hash algorithm selection
 

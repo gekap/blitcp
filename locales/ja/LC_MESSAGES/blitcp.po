@@ -1170,3 +1170,39 @@ msgstr "このダウンロードに cookies.txt のエクスポートまたは�
 
 msgid "not run"
 msgstr "未実行"
+
+msgid "Keep hard-link deduplication even when the destination is inside a cloud-synced folder (OneDrive, Dropbox, Google Drive). Off by default: the sync client uploads every path anyway, so links save no remote space, and the shared inode means editing one copy rewrites the other. Windows only; no other platform is affected."
+msgstr "コピー先がクラウド同期フォルダー (OneDrive、Dropbox、Google ドライブ) の中にある場合でもハードリンクによる重複排除を維持します。既定では無効です: 同期クライアントはいずれにせよすべてのパスをアップロードするためリンクによるリモート容量の節約はなく、inode を共有するので一方のコピーを編集すると他方も書き換わります。Windows のみ。他のプラットフォームには影響しません。"
+
+msgid "{n} file(s) were refused and not written"
+msgstr "{n} 個のファイルが拒否され、書き込まれませんでした"
+
+msgid "Destination contains a symlinked directory:"
+msgstr "コピー先にシンボリックリンクのディレクトリがあります:"
+
+msgid "{n} incoming file(s) resolve outside the destination and will be refused."
+msgstr "受信ファイル {n} 件はコピー先の外に解決されるため拒否されます。"
+
+msgid "Fix: point the destination at {path} instead."
+msgstr "対処: コピー先に {path} を直接指定してください。"
+
+msgid "permission bits taken from the remote (--trust-remote-modes)"
+msgstr "パーミッションビットはリモートの値を使用します (--trust-remote-modes)"
+
+msgid "Keep the group/world write bits a remote source sends. Off by default: a pulled file that was 0664 lands 0644, so a machine you do not control cannot decide that what it sends is group-writable on yours. setuid and setgid are stripped either way."
+msgstr "リモート送信元が送るグループ/その他の書き込みビットを保持します。既定では無効: 0664 のファイルは 0644 として配置され、管理していないマシンが送信物をこちら側でグループ書き込み可能にすることはできません。setuid と setgid はいずれの場合も除去されます。"
+
+msgid "{n} file(s) were refused and not written:"
+msgstr "{n} 個のファイルが拒否され、書き込まれませんでした:"
+
+msgid "... and {m} more"
+msgstr "… ほか {m} 件"
+
+msgid "{n} refused"
+msgstr "{n} 件拒否"
+
+msgid "{n} failed"
+msgstr "{n} 件失敗"
+
+msgid "Nothing was written: the destination path leads outside itself."
+msgstr "何も書き込まれていません: 宛先パスは自分自身の外を指しています。"

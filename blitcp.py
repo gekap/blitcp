@@ -176,7 +176,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.2.10"
+__version__ = "4.2.13"
 # Shown only where the user explicitly asked for it (--version, GUI
 # About/Settings). A plain static URL: no redirect, no tracking, no
 # network call of any kind is made on our side.
@@ -373,7 +373,11 @@ def _log(action, rel_path, size, **extra):
     recorded here even with logging OFF, so verification can explain a missing
     destination file (e.g. 'permission denied' / locked) instead of a blanket
     'corrupted'."""
-    if action == "error" and extra.get("error"):
+    # "refused" is logged like an error and lands in _COPY_ERRORS for the same
+    # reason — verification has to explain a missing destination file — but it
+    # is NOT an error: nothing failed, a policy said no. Keeping the two apart
+    # here is what lets the audit record count them separately.
+    if action in ("error", "refused") and extra.get("error"):
         with _log_lock:
             # Store (message, is_source_read) so verify can tell a benign
             # source-READ failure (exclude & re-run) from a destination-WRITE
@@ -389,9 +393,34 @@ def _log(action, rel_path, size, **extra):
         _log_entries.append(entry)
 
 
+_RECORD_INCONSISTENT = None     # set by write_log_file; read by _exit_for_verify
+
+
 def write_log_file(path, summary):
-    """Write JSON log with per-file entries and summary."""
+    """Write JSON log with per-file entries and summary.
+
+    The summary line on screen checks its own arithmetic and refuses to say
+    DONE when the buckets do not account for the total. The record — the thing
+    automation reads, unattended, when nobody is looking at a screen — had no
+    such check, and shipped "6 copied" for a destination holding one file.
+    It has one now: same arithmetic, and a record that cannot close says so in
+    its own body AND fails the run. A record that screams beats a record that
+    lies quietly."""
+    global _RECORD_INCONSISTENT
     import datetime
+    total = int(summary.get("total_files", 0) or 0)
+    buckets = {k: int(summary.get(k, 0) or 0)
+               for k in ("copied", "linked", "refused", "skipped", "errors")}
+    closed = sum(buckets.values())
+    if closed != total:
+        _RECORD_INCONSISTENT = (
+            "%s = %d, not %d — the record does not account for every file"
+            % (" + ".join("%d %s" % (v, k) for k, v in buckets.items()),
+               closed, total))
+        summary = dict(summary, consistency_error=_RECORD_INCONSISTENT)
+        print(f"  {C.RED}Log:     inconsistent record — {_RECORD_INCONSISTENT}. "
+              f"Treat this run as unreported, not as done.{C.RESET}",
+              file=sys.stderr)
     log = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "summary": summary,
@@ -408,10 +437,33 @@ LEGACY_SUDO_AUDIT_FILE = ".fast_copy_audit.jsonl"  # frozen — compat contract
 
 
 def _is_elevated():
-    """True when running with elevated privileges (sudo or direct root)."""
+    """True when running with elevated privileges — sudo, root, or Windows
+    Administrator.
+
+    THE predicate for destination-path decisions (_dest_policy). Ownership
+    questions use _is_elevated_for_preserve() instead, which is stricter.
+
+
+    Windows counts. This was geteuid-only, which meant an Administrator shell
+    on Windows read as unprivileged — and the destination-path policy hangs off
+    this answer, so an elevated Windows copy was getting the permissive branch.
+    A junction or a directory symlink on NTFS redirects a write exactly as a
+    POSIX symlink does; the platform differs, the threat does not.
+    """
     if os.environ.get("SUDO_USER"):
         return True
-    return hasattr(os, "geteuid") and os.geteuid() == 0
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _system == "Windows":
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:                                   # noqa: BLE001
+            # No answer is not the same as "not elevated", but refusing to run
+            # would be worse. Fail open here and closed in the policy: an
+            # untrusted name is checked strictly whatever this returns.
+            return False
+    return False
 
 
 def _safe_open_read_fd(path):
@@ -505,6 +557,23 @@ _preserve_stats = {
 _preserve_dst_caps = {"xattr": None, "acl": None}  # None=unknown, True/False after probe
 
 
+# --trust-remote-modes. Off by default: an untrusted remote does not get to
+# decide that what it sends lands group- or world-writable. On, the remote's
+# bits are honoured as they were before 4.2.11 — for the person pulling into a
+# shared, group-writable tree on purpose.
+#
+# setuid and setgid are NOT covered by this flag and never will be. Those were
+# stripped long before this release, they are a privilege escalation under
+# --use-sudo, and an opt-out that handed them back would be a hole with a
+# command-line switch in front of it.
+_trust_remote_modes = False
+
+
+def _set_trust_remote_modes(on):
+    global _trust_remote_modes
+    _trust_remote_modes = bool(on)
+
+
 def _set_preserve_spec(spec):
     """Module-wide singleton; set once from main() after argparse."""
     global _preserve_spec
@@ -512,7 +581,12 @@ def _set_preserve_spec(spec):
 
 
 def _is_elevated_for_preserve():
-    """Stricter than _is_elevated(): chown only works as real root."""
+    """Can this process chown? Real root only — sudo -u does not count.
+
+    For OWNERSHIP decisions exclusively. Never for a destination-path
+    decision: that question is _is_elevated(), and answering it here is what
+    made create_links disagree with the copy engines about the same directory.
+    """
     return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
@@ -1142,6 +1216,21 @@ def _apply_owner_via_fd(fd, src_st):
     than 'error' since this is the expected case for non-elevated copies
     with --preserve owner."""
     if not _is_elevated_for_preserve():
+        # Not every unprivileged copy loses ownership: a file that already
+        # belongs to the invoking user needs no chown, and reporting it as
+        # "skipped (need root)" told the user something had been dropped when
+        # nothing had. _record_remote_owner asks the filesystem on the pull
+        # side; this asks the same question with the fd it already holds, so
+        # the two directions cannot answer the same question differently.
+        if fd is not None and hasattr(os, "fstat"):
+            try:
+                _dst_st = os.fstat(fd)
+                if (_dst_st.st_uid, _dst_st.st_gid) == (src_st.st_uid,
+                                                        src_st.st_gid):
+                    _preserve_stats["owner_ok"] += 1
+                    return True
+            except OSError:
+                pass
         _preserve_stats["owner_skip_unprivileged"] += 1
         return False
     if fd is None or not hasattr(os, "fchown"):
@@ -1157,6 +1246,46 @@ def _apply_owner_via_fd(fd, src_st):
     except OSError:
         _preserve_stats["owner_err"] += 1
         return False
+
+
+def _record_remote_owner(dst_path, uid, gid):
+    """Account for — and where it can, apply — the ownership an UNTRUSTED
+    remote source asked for on a file that has just landed locally.
+
+    A pull reported nothing about ownership. `--preserve owner` over a pull
+    ran the whole transfer, dropped every uid on the floor and printed not one
+    line, while the byte-identical local copy said "skipped on N (need root)".
+    _safe_tar_extract's own docstring claimed the count was taken "at the start
+    of the R2L copy phase"; no such count existed anywhere in the file. What
+    did exist was an unconditional `owner_ok += 1` on the elevated branch — a
+    success reported for a chown nobody had looked at.
+
+    So the answer is measured, not assumed: ask the filesystem who owns the
+    file. Ownership that already matches — the ordinary case, pulling your own
+    files — is a success and not a skip, which is more than the local flow's
+    predicate can say. Only a difference this process cannot close is reported
+    as needing root, and under elevation the chown is made here rather than
+    left to a tar filter that swallows its own EPERM.
+    """
+    if not _preserve_spec.owner:
+        return
+    try:
+        st = os.lstat(dst_path)
+    except OSError:
+        _preserve_stats["owner_err"] += 1
+        return
+    if (st.st_uid, st.st_gid) == (uid, gid):
+        _preserve_stats["owner_ok"] += 1
+        return
+    if not _is_elevated_for_preserve() or not hasattr(os, "chown"):
+        _preserve_stats["owner_skip_unprivileged"] += 1
+        return
+    try:
+        os.chown(dst_path, uid, gid, follow_symlinks=False)
+        _preserve_stats["owner_ok"] += 1
+    except (OSError, NotImplementedError) as e:
+        _preserve_stats["owner_err"] += 1
+        _preserve_stats["_last_acl_err"] = "chown %s: %s" % (dst_path, e)
 
 
 def _apply_extended_meta(fd, src_path, dst_path, src_st, apply_owner=True):
@@ -2043,19 +2172,614 @@ def _validate_rel_path(rel):
     return True
 
 
-def _safe_local_dest(real_root, rel):
-    """Resolve `rel` under an already-realpath'd destination root and confirm it
-    cannot escape — via '..'/absolute strings OR a symlinked directory component.
-    Returns the joinable absolute path, or None if it would escape. Used for
-    untrusted object keys / fc_relpath metadata on cloud downloads."""
+def _safe_pull_link_dest(dst_root, rel):
+    """Destination for a dedup link whose name came from a remote listing.
+
+    The pull path's link loop does os.remove() at the joined path before it
+    links, so an unchecked name is an arbitrary DELETE as well as an arbitrary
+    write — '../../etc/passwd' removed the real file and hardlinked over it.
+    Returns the joinable path, or None to refuse.
+    """
+    return _safe_local_dest(os.path.realpath(dst_root), rel,
+                            trusted_source=False)
+
+
+# Resolved destination roots, memoised. _dest_policy is called once per
+# file by every copy engine, and realpath() on the root costs one stat per
+# path component each time — the per-file metadata cost that made a network
+# destination 2.47x worse than scp. Caching is also marginally safer than
+# recomputing: if the root were swapped for a symlink mid-run, a fresh
+# realpath would follow it and call the attacker's directory the destination,
+# while the cached value keeps writes pointed where the run started.
+_REAL_ROOT_CACHE = {}
+
+# Names the destination-path check refused this run. A refusal is a file the
+# user asked for and did not get, so it has to reach the exit code the same
+# way a verification failure does — the copy engines have no other channel.
+_REFUSED_PATHS = []
+_REFUSED_LOCK = threading.Lock()
+
+
+def _note_refusal(rel):
+    """The ONE way a policy refusal is recorded. Every refusal — an engine's,
+    a link's dup name, a link's target — goes here and nowhere else, so the
+    summary has a single list to count and cannot disagree with itself. A
+    refusal is not an error the run can absorb: the file was asked for and not
+    written, so it also decides the exit code (_exit_for_verify).
+
+    Deduplicated because the same rel can be refused twice (a link whose dup
+    name AND target both escape), and a name counted twice would inflate the
+    refused total past the number of files.
+    """
+    with _REFUSED_LOCK:
+        if rel not in _REFUSED_PATHS:
+            _REFUSED_PATHS.append(rel)
+
+
+def _reset_refused_paths():
+    with _REFUSED_LOCK:
+        del _REFUSED_PATHS[:]
+
+
+def _real_dst_root(dst_root):
+    got = _REAL_ROOT_CACHE.get(dst_root)
+    if got is None:
+        got = os.path.realpath(dst_root)
+        _REAL_ROOT_CACHE[dst_root] = got
+    return got
+
+
+def _dest_policy(dst_root, rel, trusted_source=True):
+    """THE decision: may this rel be written under this dst_root?
+
+    Returns (path, reason). `path` is the joinable absolute path, or None when
+    the answer is no, in which case `reason` says why in one phrase. On success
+    `reason` is "".
+
+    One function, one predicate. The question used to be answered in five
+    places with three different notions of "elevated": the copy engines asked
+    _is_elevated(), create_links asked _is_elevated_for_preserve(),
+    _safe_tar_extract never asked and was always strict, and the preflight did
+    not ask at all — so --small-files stream refused what the default engine
+    copied, and a SUDO_USER shell without root disagreed with both.
+
+      untrusted name (remote/cloud)  -> refuse if it resolves outside the root
+      local name AND elevated        -> refuse if it resolves outside the root
+      local name AND not elevated    -> textual check only (cp -r follows the
+                                        user's own symlinked directories)
+
+    The textual check runs in all three: a name is a name whoever sent it.
+
+    Elevation here is _is_elevated() and only that. _is_elevated_for_preserve()
+    answers a different question — "can we chown?" — and using it for a path
+    decision is what made create_links disagree with the engines.
+
+    It is tempting to treat a symlink that was already there as the user's own
+    layout, and therefore consent. It is not. A local unprivileged attacker
+    plants dst/photos -> /etc and waits, precisely BECAUSE they know an
+    elevated copy is coming; the symlink pre-existing is the attack, not
+    evidence against it. Nothing in the code can tell the two apart, so
+    elevation refuses both.
+
+    This per-file check is the security boundary, and it runs even when
+    report_symlinked_dest_dirs() has already reported the same directory. That
+    preflight is a REPORT: it exists so the user is told once instead of once
+    per file. Trusting its earlier answer would be the TOCTOU window that the
+    validated-directory cache was rejected for opening.
+
+    Demonstrated by audit_uat's "engine parity on symlinked dst", which runs
+    the real flow under both engines and both elevation routes and requires
+    identical verdicts.
+    """
+    if _validate_rel_path(rel) is not True:
+        return None, "unsafe name"
+    real_root = _real_dst_root(dst_root)
+    full = os.path.join(real_root, rel.replace("/", os.sep))
+    if trusted_source and not _is_elevated():
+        return full, ""
+    real_full = os.path.realpath(full)
+    if real_full != real_root and not real_full.startswith(real_root + os.sep):
+        return None, "resolves outside the destination"
+    return full, ""
+
+
+def _safe_local_dest(real_root, rel, trusted_source=False):
+    """Resolve `rel` under an already-realpath'd destination root.
+
+    Two separate questions, and conflating them was a bug:
+
+      1. Does the NAME escape textually — '..', an absolute path, a null byte?
+         Always asked. A name is a name whoever supplied it.
+      2. Does the path RESOLVE outside the root through a symlinked directory?
+         Asked when the answer matters, which is not always.
+
+    Question 2 refuses a destination the user deliberately laid out with a
+    symlinked directory — `dst/photos -> /mnt/big/photos` — and `cp -r`, which
+    this tool replaces, follows those. For a local copy the names come from our
+    own scan of the user's own tree and nobody else chose them, so refusing is
+    a regression with nothing bought.
+
+    Except under elevation, and this is the part worth reading twice.
+
+    It is tempting to reason that a symlink which was already there is the
+    user's own layout, and therefore consent. It is not. A local unprivileged
+    attacker plants `dst/photos -> /etc` and waits, precisely BECAUSE they know
+    a `--use-sudo` copy is coming; the symlink pre-existing is the attack, not
+    evidence against it. The code cannot see who created it, and "it was there
+    first" distinguishes nothing. So elevation restores the full check even for
+    names we trust, and the legitimate "my own symlink, run as root" case is
+    refused along with the attack. A clear refusal beats a silent root write
+    through a link nobody inspected.
+
+    Demonstrated, not asserted: audit_uat's "elevated copy into symlinked dst"
+    runs the real flow with elevation mocked and fails if a single byte lands
+    outside the destination.
+
+      trusted_source=True,  not elevated -> textual check only (cp -r)
+      trusted_source=True,  elevated     -> full check
+      trusted_source=False               -> full check
+
+    The default is False so a caller that does not know about this gets the
+    strict behaviour, not the permissive one.
+
+    Returns the joinable absolute path, or None if it must be refused.
+    """
     if _validate_rel_path(rel) is not True:
         return None
     full = os.path.join(real_root, rel.replace("/", os.sep))
+    if trusted_source and not _is_elevated():
+        return full
     real_full = os.path.realpath(full)
     if real_full != real_root and not real_full.startswith(real_root + os.sep):
         return None
     return full
-def _validate_tar_member(member, dst_root):
+
+
+def report_symlinked_dest_dirs(dst_root, rels, trusted_source=True):
+    """Name the symlinked destination directories that will cause refusals.
+
+    Without this the discovery is one refused file at a time: a symlinked
+    directory with four thousand files under it produces four thousand
+    identical lines, which is a flood rather than a diagnosis. Called once
+    before copying starts; returns a list of
+    {rel, target, count} and prints nothing itself.
+
+    `trusted_source` MUST be the same answer the caller's write path will
+    give, because this asks _dest_policy the question the write path is going
+    to ask. It defaulted to trusted for every caller, and the two callers that
+    hand it remote names — the SSH pull and the cloud download — enforce with
+    trusted_source=False. So the report asked "would a LOCAL copy be refused?",
+    got "no", printed nothing, and the download then refused all four thousand
+    keys one line at a time: the exact flood this function exists to replace.
+    A preflight that does not ask the enforcement's question is not a
+    preflight.
+    """
+    try:
+        real_root = os.path.realpath(dst_root)
+    except OSError:
+        return []
+    # Only report what the policy would actually refuse. Printing "will be
+    # refused" for files that are about to be copied — which is what happens
+    # unelevated on a LOCAL copy, where the policy allows the user's own
+    # symlinks — is worse than printing nothing.
+    counts = {}
+    checked = {}
+    for rel in rels:
+        if _dest_policy(dst_root, rel, trusted_source=trusted_source)[0] is not None:
+            continue
+        parts = rel.replace("\\", "/").split("/")[:-1]
+        acc = ""
+        for part in parts:
+            acc = part if not acc else acc + "/" + part
+            if acc in checked:
+                if checked[acc] is not None:
+                    counts[acc] = counts.get(acc, 0) + 1
+                    break
+                continue
+            full = os.path.join(real_root, acc.replace("/", os.sep))
+            try:
+                if not os.path.islink(full):
+                    checked[acc] = None
+                    continue
+                resolved = os.path.realpath(full)
+            except OSError:
+                checked[acc] = None
+                continue
+            if resolved == real_root or resolved.startswith(real_root + os.sep):
+                checked[acc] = None          # a link, but it stays inside
+                continue
+            checked[acc] = resolved
+            counts[acc] = counts.get(acc, 0) + 1
+            break
+    return [{"rel": r, "target": checked[r], "count": n}
+            for r, n in sorted(counts.items())]
+
+
+def warn_symlinked_dest_dirs(dst_root, rels, trusted_source=True):
+    """Print the report from report_symlinked_dest_dirs(), once.
+
+    Pass the SAME trusted_source the write path will use — see that function.
+    """
+    return _print_symlinked_dest_dirs(
+        dst_root, report_symlinked_dest_dirs(dst_root, rels,
+                                             trusted_source=trusted_source))
+
+
+def _dest_dir_ladder(rels):
+    """Every directory an incoming rel would be written into, parents first."""
+    dirs = set()
+    for rel in rels:
+        parts = str(rel).replace("\\", "/").split("/")[:-1]
+        acc = ""
+        for part in parts:
+            if not part:
+                continue
+            acc = part if not acc else acc + "/" + part
+            dirs.add(acc)
+    return sorted(dirs, key=lambda d: (d.count("/"), d))
+
+
+def _escaping_dest_dirs(dirs, is_link, realpath):
+    """Which of `dirs` are symlinks that lead OUT of the destination root, as
+    {dir_rel: where it leads}.
+
+    `is_link(rel)` and `realpath(rel)` are the two questions a transport has
+    to answer about a path under the destination root; realpath("") is the
+    root itself. Nothing else here knows whether the answers came from an
+    SFTP channel, a remote shell or the local filesystem.
+
+    A symlink that stays inside the root is not an escape and is left alone —
+    the same answer _dest_policy gives locally.
+
+    `dirs` arrives parents-first, so a directory under one that already
+    escapes is never probed: its files are refused by the ancestor, and the
+    remote round trip for it would buy nothing.
+    """
+    root = realpath("")
+    if not root:
+        # No answer is not the same as "nothing escapes", but refusing the
+        # whole transfer because one probe failed would be worse. The
+        # per-transport callers say when this happens; see there.
+        return {}
+    root = root.rstrip("/") or "/"
+    escaping = {}
+    for d in dirs:
+        if any(d == p or d.startswith(p + "/") for p in escaping):
+            continue
+        if not is_link(d):
+            continue
+        resolved = realpath(d)
+        if not resolved:
+            continue
+        if resolved == root or resolved.startswith(root + "/"):
+            continue
+        escaping[d] = resolved
+    return escaping
+
+
+def _print_symlinked_dest_dirs(dst_root, found):
+    """The one place the symlinked-destination report is worded.
+
+    Local and remote destinations reach it from different code with the same
+    facts, so the user reads the same sentence either way."""
+    if not found:
+        return found
+    print(f"\n  {C.YELLOW}"
+          + _tr("Destination contains a symlinked directory:") + f"{C.RESET}")
+    for e in found:
+        # rel "" is the destination path itself — the symlink is the thing the
+        # user named, not something under it.
+        _where = os.path.join(dst_root, e["rel"]) if e["rel"] else dst_root
+        print(f"    {C.BOLD}{_where}{C.RESET} -> {e['target']}")
+        print("      " + _tr(
+            "{n} incoming file(s) resolve outside the destination and will "
+            "be refused.").format(n=f"{e['count']:,}"))
+        print("      " + _tr("Fix: point the destination at {path} instead.")
+              .format(path=e["target"]))
+    return found
+
+
+def _remote_dest_refusals(dst_root, rels, is_link, realpath):
+    """_dest_policy's question, asked about a REMOTE destination.
+
+    ONE ANSWER FOR EVERY REMOTE DESTINATION, and there is deliberately no
+    parameter left to vary it with. This took the elevation gate _dest_policy
+    uses locally, and that produced a split nobody could have predicted from
+    the outside: a relay refused (its names come from a remote, so they are
+    untrusted) while an unelevated push into the byte-identical destination
+    wrote 4 of 5 files through the symlink and exited 0. Same destination,
+    same symlink, opposite answers, decided by where the SOURCE happened to
+    be — which has nothing to do with the question being asked.
+
+    The local rule that "a symlinked directory is the user's own layout, so
+    an unelevated copy follows it like cp -r" is an argument about a tree the
+    user is standing in and can see. On the far side of an SSH connection it
+    is not available: the layout was not laid out here, it is not being
+    looked at, and "the bytes left the directory you named" is worth stopping
+    for whoever is running. So a remote destination is strict, elevated or
+    not, and the elevation question is not asked at all.
+
+    The local flow is unchanged and keeps cp -r's behaviour; the two are
+    different questions about different filesystems, and this docstring is
+    the place that says so.
+
+    Where this cannot match the local enforcement: a local write refuses per
+    file through an O_NOFOLLOW fd, so a symlink planted mid-run is caught.
+    Over SFTP or a remote shell there is no such fd to hold, so this asks
+    once, before the first byte, and refuses everything under the answer it
+    got then. Weaker against a race, identical against the case that
+    actually happens — a destination laid out with a symlinked directory
+    before the run starts.
+
+    Returns (refused rels, report entries) — the report entries are the same
+    {rel, target, count} shape report_symlinked_dest_dirs returns.
+    """
+    dirs = _dest_dir_ladder(rels)
+    if not dirs:
+        return set(), []
+    escaping = _escaping_dest_dirs(dirs, is_link, realpath)
+    if not escaping:
+        return set(), []
+    refused, counts = set(), {}
+    for rel in rels:
+        parts = str(rel).replace("\\", "/").split("/")[:-1]
+        acc = ""
+        for part in parts:
+            if not part:
+                continue
+            acc = part if not acc else acc + "/" + part
+            if acc in escaping:
+                refused.add(rel)
+                counts[acc] = counts.get(acc, 0) + 1
+                break
+    return refused, [{"rel": r, "target": escaping[r], "count": n}
+                     for r, n in sorted(counts.items())]
+
+
+def _sftp_dest_probe(ssh, dst_root):
+    """(is_link, realpath) for a destination reached over SFTP."""
+    sftp = ssh.open_sftp()
+
+    def _full(rel):
+        return posixpath.join(dst_root, rel) if rel else dst_root
+
+    def is_link(rel):
+        try:
+            return stat.S_ISLNK(sftp.lstat(_full(rel)).st_mode or 0)
+        except (IOError, OSError):
+            return False                 # not there yet: nothing to redirect
+
+    def realpath(rel):
+        try:
+            return sftp.normalize(_full(rel))
+        except (IOError, OSError):
+            return None
+
+    return is_link, realpath
+
+
+def _shell_dest_probe(run, dst_root, dirs, chunk=200):
+    """(is_link, realpath) for a destination reached over a remote shell.
+
+    One round trip per 200 directories instead of two per directory: the
+    answers for the whole ladder are fetched up front and the callables read
+    from what came back. `run(cmd)` returns (stdout, exit_code).
+    """
+    root_out, rc = run("cd %s 2>/dev/null && pwd -P" % shlex.quote(dst_root))
+    root = (root_out or "").strip().splitlines()
+    root = root[-1].strip() if (rc == 0 and root) else None
+    links = {}
+    for i in range(0, len(dirs), chunk):
+        args = " ".join(shlex.quote(d) for d in dirs[i:i + chunk])
+        out, rc = run(
+            "cd %s 2>/dev/null || exit 0; for d in %s; do [ -L \"$d\" ] && "
+            "printf '%%s\\t%%s\\n' \"$d\" \"$(readlink -f -- \"$d\" "
+            "2>/dev/null)\"; done; exit 0" % (shlex.quote(dst_root), args))
+        for line in (out or "").splitlines():
+            if "\t" in line:
+                d, _, target = line.partition("\t")
+                links[d] = target.strip() or None
+
+    def is_link(rel):
+        return rel in links
+
+    def realpath(rel):
+        return root if not rel else links.get(rel)
+
+    return is_link, realpath
+
+
+def _dest_path_chain(abs_dst):
+    """Every component prefix of an absolute destination path, shallowest first."""
+    chain, acc = [], ""
+    for part in [p for p in abs_dst.split("/") if p]:
+        acc = acc + "/" + part
+        chain.append(acc)
+    return chain
+
+
+def _remote_dest_path_escape(probe_abs, dst, cwd=None):
+    """Is the destination path the user named the directory that gets written?
+
+    _dest_policy resolves the destination ROOT with realpath and then guards
+    everything against the RESULT, so it never asks this. A destination that is
+    itself a symlink — `dst -> /somewhere/else` — therefore passed every check
+    in the file: the copy ran, "✓ Verified" was printed, and the files (and the
+    manifest sidecar) landed in a directory the user never named. Measured on
+    both sides before this existed: local and remote, elevated and not, exit 0
+    and nothing refused.
+
+    So the components of the named path are lstat'd on the remote side, before
+    anything is created there, and a symlink among them means the bytes leave
+    the path that was typed. Returns (component, where it leads), shallowest
+    first — everything below the first redirect is already somewhere else — or
+    None when the path is what it says it is.
+
+    `probe_abs(paths)` is the transport's one question: which of these absolute
+    remote paths are symlinks, and where do they point. A relative destination
+    cannot be judged without the remote's working directory; when `cwd` is
+    unknown the check returns None rather than guessing, and says nothing.
+    """
+    if dst.startswith("/"):
+        abs_dst = posixpath.normpath(dst)
+    elif cwd:
+        abs_dst = posixpath.normpath(posixpath.join(cwd, dst))
+    else:
+        return None
+    links = probe_abs(_dest_path_chain(abs_dst))
+    if not links:
+        return None
+    first = min(links, key=lambda p: p.count("/"))
+    return first, links[first]
+
+
+def _sftp_abs_probe(ssh):
+    """probe_abs over an SFTP channel: one lstat per component, no writes."""
+    sftp = ssh.open_sftp()
+
+    def probe(paths):
+        out = {}
+        for p in paths:
+            try:
+                if stat.S_ISLNK(sftp.lstat(p).st_mode or 0):
+                    out[p] = sftp.normalize(p)
+            except (IOError, OSError):
+                pass                      # not there yet: nothing to redirect
+        return out
+
+    return probe
+
+
+def _sftp_remote_cwd(ssh):
+    try:
+        return ssh.open_sftp().normalize(".")
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _shell_remote_cwd(run, dst):
+    """The remote's working directory, asked for only when it is needed.
+
+    An absolute destination needs no round trip to be understood, and this is
+    on the path of every push — so the question is not asked at all unless the
+    destination is relative and cannot be judged without it.
+    """
+    if dst.startswith("/"):
+        return None
+    out, rc = run("pwd")
+    lines = [l.strip() for l in (out or "").splitlines() if l.strip()]
+    return lines[-1] if (rc == 0 and lines) else None
+
+
+def _shell_abs_probe(run):
+    """probe_abs over a remote shell: one round trip for the whole chain."""
+    def probe(paths):
+        out = {}
+        if not paths:
+            return out
+        args = " ".join(shlex.quote(p) for p in paths)
+        o, _rc = run("for p in %s; do [ -L \"$p\" ] && printf '%%s\\t%%s\\n' "
+                     "\"$p\" \"$(readlink -f -- \"$p\" 2>/dev/null)\"; "
+                     "done; exit 0" % args)
+        for line in (o or "").splitlines():
+            if "\t" in line:
+                k, _, v = line.partition("\t")
+                v = v.strip()
+                if v:
+                    out[k] = v
+        return out
+
+    return probe
+
+
+def _record_remote_refusals(dst_root, refused, found, size_of):
+    """Say it once, then record every refused rel on the ONE list.
+
+    _REFUSED_PATHS is what the summary, the record and the exit code all read,
+    so a remote refusal lands in exactly the same place a local engine's does
+    and no caller has to remember to count it a second time. `size_of(rel)`
+    gives the logical size the refusal kept off the wire.
+    """
+    _print_symlinked_dest_dirs(dst_root, found)
+    for rel in sorted(refused):
+        _note_refusal(rel)
+        _log("refused", rel, size_of(rel),
+             error="refused: resolves outside the destination")
+
+
+def _refuse_remote_dest(dst_root, copy_entries, link_map, refused, found):
+    """Record the remote refusals and hand back what is still to be copied.
+
+    The refused rels stay OUT of the engines' lists and IN _REFUSED_PATHS.
+    The caller keeps the unfiltered lists for the summary: _print_files_summary
+    counts a file as refused by looking it up on that list, so a list it never
+    sees is a file the buckets cannot account for.
+    """
+    size_by_rel = {e.rel: e.size for e in copy_entries}
+    _record_remote_refusals(dst_root, refused, found,
+                            lambda rel: size_by_rel.get(rel, 0))
+    if not refused:
+        return copy_entries, link_map
+    return ([e for e in copy_entries if e.rel not in refused],
+            {k: v for k, v in (link_map or {}).items() if k not in refused})
+
+
+class _ExtractCtx:
+    """Per-batch scratch for the tar extraction checks.
+
+    Everything cached here is work that was previously redone for every member
+    of the same batch against the same destination. It caches ANSWERS, never
+    permission to skip a check: a validation that has no context still runs the
+    full check, so `ctx=None` — the default, and what any future caller gets by
+    accident — behaves exactly as before.
+
+    Bound to one dst_root. If a caller hands a context built for a different
+    root, the cache is not consulted (see _validate_tar_member); that turns a
+    misuse into a slow path rather than a wrong answer.
+    """
+
+    # Deliberately NOT here: a set of "directories already validated this
+    # batch", to skip the ancestor walk for the other 800 files in them. It is
+    # the largest saving on offer and it was measured, prototyped and rejected.
+    #
+    # The ancestor check is the ONLY thing that catches a parent directory
+    # swapped for a symlink out of the destination. tarfile's own filter is a
+    # second net for that on Python 3.12+, but this file supports 3.8+ and
+    # carries an `except TypeError` fallback that extracts with no filter at
+    # all; on those interpreters the check below is not defence in depth, it is
+    # the defence. And the leaf islink() test does not cover it: with the parent
+    # swapped, the leaf path resolves THROUGH the symlink to an ordinary file,
+    # so it passes. Caching would also change a microsecond race that must be
+    # re-won per file into a minutes-long window won once per directory.
+    #
+    # The safe way to buy the same saving is a directory fd — validate each
+    # directory once, keep the fd, write members with openat(dirfd, name,
+    # O_NOFOLLOW). An fd names an inode, so a later swap cannot redirect it.
+    # That means writing the bytes instead of calling tar.extract(), which is a
+    # rewrite of a security-critical path and belongs in its own change.
+    __slots__ = ("dst_root", "_real_dst")
+
+    def __init__(self, dst_root):
+        self.dst_root = dst_root
+        self._real_dst = None
+
+    def real_dst(self):
+        """os.path.realpath(dst_root), resolved once per batch.
+
+        The destination root does not change under a batch in any supported
+        flow, and resolving it per member cost one stat per path component,
+        per file. Caching is also marginally safer than recomputing: if the
+        root were swapped for a symlink mid-batch, a fresh realpath would
+        FOLLOW it and happily call the attacker's directory the destination,
+        while the cached value keeps writes pointed at the directory the batch
+        actually started against.
+        """
+        if self._real_dst is None:
+            self._real_dst = os.path.realpath(self.dst_root)
+        return self._real_dst
+
+
+def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
     """Validate a tar member for safety. Returns True or error string."""
     # Reject absolute paths
     if member.name.startswith('/') or os.path.isabs(member.name):
@@ -2089,7 +2813,8 @@ def _validate_tar_member(member, dst_root):
     # root on FAT32 / exFAT / removable volumes (drive-letter vs volume-GUID, or
     # 8.3 short-name resolution), which used to falsely block EVERY streamed file
     # on such a destination.
-    real_dst = os.path.realpath(dst_root)
+    real_dst = (ctx.real_dst() if ctx is not None and ctx.dst_root == dst_root
+                else os.path.realpath(dst_root))
     target = os.path.normpath(os.path.join(real_dst, member.name))
     nc_target = os.path.normcase(target)
     nc_real_dst = os.path.normcase(real_dst)
@@ -2104,12 +2829,20 @@ def _validate_tar_member(member, dst_root):
     # to the same canonical form), so this restores the protection the old
     # realpath(full-child) had WITHOUT re-triggering the FAT/removable
     # not-yet-created-child false-positive.
-    anc = os.path.dirname(target)
-    while len(anc) > len(real_dst) and not os.path.lexists(anc):
-        anc = os.path.dirname(anc)
-    nc_anc = os.path.normcase(os.path.realpath(anc))
-    if not (nc_anc == nc_real_dst or nc_anc.startswith(nc_real_dst + os.sep)):
-        return "blocked: resolves outside destination (symlinked parent)"
+    # For an UNTRUSTED tar this is unconditional and unchanged. For a local
+    # one it follows _dest_policy, so the tar-based small-file engine reaches
+    # the same verdict as the block engine on the same tree — they disagreed,
+    # and --small-files stream refused what the default engine copied.
+    if trusted_source and not _is_elevated():
+        pass
+    else:
+        anc = os.path.dirname(target)
+        while len(anc) > len(real_dst) and not os.path.lexists(anc):
+            anc = os.path.dirname(anc)
+        nc_anc = os.path.normcase(os.path.realpath(anc))
+        if not (nc_anc == nc_real_dst
+                or nc_anc.startswith(nc_real_dst + os.sep)):
+            return "blocked: resolves outside destination (symlinked parent)"
     # The ancestor check above covers PARENT components; a symlink AT the leaf
     # would still let extraction write THROUGH it, outside dst_root. Refuse it.
     if os.path.islink(target):
@@ -2117,7 +2850,12 @@ def _validate_tar_member(member, dst_root):
     return True
 
 
-def _safe_tar_extract(tar, member, dst_root, trusted_source=True):
+# One notice per run when the tarfile filter is unavailable; see the fallback
+# inside _safe_tar_extract.
+_TAR_FILTER_FALLBACK_WARNED = False
+
+
+def _safe_tar_extract(tar, member, dst_root, trusted_source=True, ctx=None):
     """Extract a single tar member safely. Returns True on success, error string on failure.
 
     trusted_source=False marks a tar whose CONTENTS came from an untrusted
@@ -2138,7 +2876,7 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True):
       • Non-root extraction silently fails to chown (tarfile swallows the
         EPERM) — we count those as owner_skip_unprivileged at the start
         of the R2L copy phase rather than per-member."""
-    check = _validate_tar_member(member, dst_root)
+    check = _validate_tar_member(member, dst_root, ctx, trusted_source)
     if check is not True:
         return check
     extract_path = _long_path(dst_root) if _system == "Windows" else dst_root
@@ -2163,9 +2901,29 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True):
         # DURING extract — no race window) and src_mode (so the re-apply below
         # can't restore it). Under sudo the file lands root-owned, so a restored
         # setuid bit = attacker-controlled root binary → local privesc.
-        _nosugid = ~(stat.S_ISUID | stat.S_ISGID)
-        member.mode &= _nosugid
-        src_mode &= _nosugid
+        #
+        # The write bits go the same way, and for the same reason. A remote
+        # shipping 0o777 used to get 0o777: the mode re-apply below puts the
+        # header's bits back verbatim, so Python's 'data' filter clamping to
+        # 0o755 was overwritten a few lines later and the clamp was absent on
+        # EVERY interpreter, in the DEFAULT configuration — not only on the
+        # ones missing the PEP 706 backport. Under --use-sudo those files land
+        # root-owned and world-writable inside the destination. Stripping
+        # setuid while leaving group/other write was not a coherent position.
+        #
+        # Sticky goes too: it is part of what 'data' removes, and on a file it
+        # carries no meaning worth preserving from a source we do not trust.
+        #
+        # Read and execute are untouched, so a pulled 0o444 stays 0o444 and a
+        # 0o755 script stays runnable. What changes for a legitimate pull is
+        # that a group-writable file arrives 0o644 instead of 0o664.
+        # setuid/setgid/sticky always. The write bits unless the user has
+        # explicitly said they trust this remote's modes.
+        _untrusted_mask = ~(stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)
+        if not _trust_remote_modes:
+            _untrusted_mask &= ~(stat.S_IWGRP | stat.S_IWOTH)
+        member.mode &= _untrusted_mask
+        src_mode &= _untrusted_mask
     _rel = member.name.replace("/", os.sep) if _system == "Windows" else member.name
     _target = os.path.join(extract_path, _rel)
     # Validation refuses a symlinked leaf, but close the residual TOCTOU window:
@@ -2176,13 +2934,55 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True):
             os.unlink(_target)
     except OSError:
         pass
+    # When the policy allows a path that resolves outside the root — a local
+    # copy, not elevated, into the user's own symlinked directory — tarfile's
+    # own containment check would still refuse it, and the tar-based engine
+    # would disagree with the block engine on the same tree. Extract into the
+    # resolved parent instead, with the member named relative to it, so
+    # tarfile's check is trivially satisfied and the file lands exactly where
+    # _dest_policy said it should. Nothing is relaxed for an untrusted tar:
+    # this branch is unreachable unless the policy already said yes.
+    if trusted_source and not _is_elevated():
+        _policy_path, _ = _dest_policy(dst_root, member.name)
+        if _policy_path is not None:
+            _resolved = os.path.realpath(os.path.dirname(_policy_path))
+            _root = _real_dst_root(dst_root)
+            if _resolved != _root and not _resolved.startswith(_root + os.sep):
+                os.makedirs(_resolved, exist_ok=True)
+                member.name = os.path.basename(member.name)
+                extract_path = _resolved
+                _target = os.path.join(_resolved, member.name)
     try:
         tar.extract(member, path=extract_path,
                     filter='tar' if preserve_owner else 'data')
     except TypeError:
-        # Python <3.12: filter kwarg not supported. Without it, tarfile
-        # honors uid/gid by default — so if owner preservation was NOT
-        # requested, we already sanitized the member above.
+        # An interpreter without PEP 706 — before 3.8.17 / 3.9.17 / 3.10.12 /
+        # 3.11.4. Every currently installable Python has the backport, so this
+        # branch is unreachable in practice; it exists for a hand-built one.
+        #
+        # It used to fall through in silence, which made the safety of the
+        # whole function rest on an assumption nothing announced. Two changes:
+        # it says so once, and it applies by hand the one thing the filter did
+        # that we otherwise do not.
+        #
+        # Measured on a real 3.8.20 to establish what that one thing is:
+        # containment, name mangling, special-file rejection and uid/gid are
+        # all already covered here (uid/gid are zeroed above, so the unfiltered
+        # chown is a no-op), and no member type passes _validate_tar_member and
+        # is refused by the filter. What is left is the filter's mode clamp,
+        # and it is only visible when the re-apply below is off — with
+        # --preserve mode, the default, the two paths are byte-identical.
+        global _TAR_FILTER_FALLBACK_WARNED
+        if not _TAR_FILTER_FALLBACK_WARNED:
+            _TAR_FILTER_FALLBACK_WARNED = True
+            print(f"\n  {C.YELLOW}Note: this Python ({sys.version.split()[0]}) "
+                  f"predates the tarfile extraction filter (PEP 706). blitcp's "
+                  f"own validation still runs on every member; the filter's "
+                  f"permission clamp is applied here instead.{C.RESET}")
+        if not _preserve_spec.mode:
+            # What 'data'/'tar' would have done, since nothing re-applies the
+            # source mode in this configuration.
+            member.mode &= 0o755
         tar.extract(member, path=extract_path)
     # Python 3.12's 'data' filter clamps permission bits (it strips group/other
     # write, so a 664 source file lands as 644). Re-apply the source mode through
@@ -2202,8 +3002,12 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True):
                 os.chmod(_long_path(_target), src_mode & 0o7777)
         except OSError:
             pass
-    if preserve_owner and _is_elevated_for_preserve():
-        _preserve_stats["owner_ok"] += 1
+    # Only the untrusted (pull) side accounts for ownership here. A LOCAL
+    # copy through this same function has _apply_extended_meta run afterwards,
+    # which does its own owner accounting — so counting in both places
+    # reported every elevated L2L file's owner twice.
+    if not trusted_source:
+        _record_remote_owner(_target, member.uid, member.gid)
     return True
 
 
@@ -3224,6 +4028,20 @@ class _InteractiveHostKeyPolicy:
         fingerprint_sha256 = base64.b64encode(
             hashlib.sha256(key.asbytes()).digest()
         ).decode().rstrip("=")
+        # No terminal → do not hold a conversation with nobody. The prompt
+        # used to be printed anyway, read EOF, and the run then reported
+        # "Host key rejected by user" — a person who did not exist rejecting a
+        # key nobody was shown. An administrator reading that in a cron log
+        # goes looking for them. An error message may state only what
+        # happened; the fingerprint stays, because that is what someone needs
+        # in order to add the key.
+        if not (sys.stdin and sys.stdin.isatty()):
+            raise paramiko.SSHException(
+                f"no terminal available to confirm the host key for {hostname} "
+                f"({key_type}, SHA256:{fingerprint_sha256}). Add it to "
+                f"{_user_known_hosts_path()} first (ssh-keyscan -H {hostname}"
+                f" >> …), or run once interactively to accept it. "
+                f"See also --ssh-strict-host-key-checking.")
         print(f"\n  {C.RED}WARNING: Unknown host key for {hostname}.{C.RESET}")
         print(f"  {C.YELLOW}Verify this fingerprint with the server administrator{C.RESET}")
         print(f"  {C.YELLOW}before accepting to prevent man-in-the-middle attacks.{C.RESET}")
@@ -3327,7 +4145,11 @@ class SSHConnection:
                     if "auth" not in str(e).lower() and "No authentication" not in str(e):
                         raise
                     if attempt == max_attempts:
-                        print(f"\n  {C.RED}Authentication failed after {max_attempts} attempts.{C.RESET}")
+                        print(f"\n  {C.RED}Authentication failed after "
+                              f"{max_attempts} attempts.{C.RESET}")
+                        print(f"  {C.RED}Error: "
+                              f"{_ssh_auth_diagnosis(self.spec, self.key_path, self.password)}"
+                              f"{C.RESET}")
                         self.client.close()
                         sys.exit(1)
                     print(f"  {C.YELLOW}Authentication failed. Attempt {attempt}/{max_attempts}.{C.RESET}")
@@ -3336,9 +4158,9 @@ class SSHConnection:
                     # getpass would hang forever on a stdin nobody can type into — the
                     # cause of the GUI "stuck at 0%" hang. Fail clearly instead.
                     if not (sys.stdin and sys.stdin.isatty()):
-                        print(f"  {C.RED}No terminal for a password prompt "
-                              f"(non-interactive) — supply a saved password "
-                              f"(--ssh-src/dst-password-env) or an SSH key.{C.RESET}")
+                        print(f"  {C.RED}Error: "
+                              f"{_ssh_auth_diagnosis(self.spec, self.key_path, self.password)}"
+                              f" (no terminal for a password prompt){C.RESET}")
                         self.client.close()
                         sys.exit(1)
                     pw = getpass.getpass(f"  Password for {self.spec.user}@{self.spec.host}: ")
@@ -4998,6 +5820,69 @@ FSCapabilities = namedtuple("FSCapabilities", [
     "case_sensitive",  # 'A.txt' and 'a.txt' are distinct files
 ])
 
+# ── Cloud-filter (sync folder) detection — Windows only ────────────────────
+#
+# OneDrive, Dropbox and Google Drive all place their sync roots behind the
+# Windows Cloud Files API, so every directory inside one is a reparse point
+# carrying a cloud tag. That is the only signal used here: no vendor names, no
+# path matching, no registry, no per-client config files. A provider nobody has
+# heard of is caught the same way, and a folder merely NAMED "Dropbox" is not.
+#
+# The tag family is IO_REPARSE_TAG_CLOUD, CLOUD_1 … CLOUD_F, which Microsoft
+# tests with IsReparseTagCloud(): mask off the four provider bits and compare.
+_IO_REPARSE_TAG_CLOUD = 0x9000001A
+_IO_REPARSE_TAG_CLOUD_MASK = 0x0000F000
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+_FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+
+
+def _is_cloud_reparse_tag(tag):
+    """Microsoft's IsReparseTagCloud() — CLOUD and CLOUD_1 … CLOUD_F."""
+    if not tag:
+        return False
+    return (tag & ~_IO_REPARSE_TAG_CLOUD_MASK) == _IO_REPARSE_TAG_CLOUD
+
+
+def _cloud_sync_root(path, _stat=None, _max_levels=64):
+    """The nearest ancestor of `path` (inclusive) that sits under a cloud
+    filter, or None.
+
+    Windows only — os.lstat() exposes st_file_attributes/st_reparse_tag there
+    and nowhere else, so this returns None everywhere else by construction
+    rather than by an OS check, and Linux/macOS keep their existing behaviour.
+
+    Walks upward because the destination is usually a plain directory the user
+    just made INSIDE a sync root: it is not a placeholder until the client
+    catches up, while its parents already are.
+
+    `_stat` is the injection point for tests, so the regression check does not
+    need OneDrive installed on a CI runner.
+    """
+    st_fn = _stat or os.lstat
+    seen = 0
+    cur = os.path.abspath(path) if path else None
+    while cur and seen < _max_levels:
+        seen += 1
+        try:
+            st = st_fn(cur)
+        except OSError:
+            st = None
+        if st is not None:
+            attrs = getattr(st, "st_file_attributes", 0) or 0
+            tag = getattr(st, "st_reparse_tag", 0) or 0
+            if attrs & (_FILE_ATTRIBUTE_RECALL_ON_OPEN
+                        | _FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS):
+                return cur
+            if (attrs & _FILE_ATTRIBUTE_REPARSE_POINT) and _is_cloud_reparse_tag(tag):
+                return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:          # reached the drive root
+            break
+        cur = parent
+    return None
+
+
 FSInfo = namedtuple("FSInfo", [
     "path",             # destination path that was probed
     "fs_type",          # filesystem name (e.g. "ext4", "btrfs", "NTFS")
@@ -5009,6 +5894,7 @@ FSInfo = namedtuple("FSInfo", [
     "probe_timings",    # dict: probe_name -> elapsed ms
     "method",           # which detection method was used
     "from_table",       # True if capabilities came from the lookup table
+    "strategy_note",    # why `strategy` is weaker than the FS allows, or None
 ])
 
 
@@ -5828,7 +6714,7 @@ _FS_CAPABILITY_TABLE = {
 
 # Main detection function --------------------------------------------------
 
-def detect_capabilities(dst_dir, force_probe=False):
+def detect_capabilities(dst_dir, force_probe=False, dedup_in_sync_folder=False):
     """Detect the filesystem and its capabilities at `dst_dir`.
 
     Returns an FSInfo namedtuple. Handles non-existent destinations (walks
@@ -5843,12 +6729,14 @@ def detect_capabilities(dst_dir, force_probe=False):
     if probe_parent is None:
         return _info_from_table_only(
             dst_dir, fs_type, method, detection_ms,
-            reason="no_existing_parent")
+            reason="no_existing_parent",
+            dedup_in_sync_folder=dedup_in_sync_folder)
 
     if not os.access(probe_parent, os.W_OK) and not force_probe:
         return _info_from_table_only(
             dst_dir, fs_type, method, detection_ms,
-            reason="no_writable_parent")
+            reason="no_writable_parent",
+            dedup_in_sync_folder=dedup_in_sync_folder)
 
     fs_lc = fs_type.lower() if fs_type else "unknown"
     table_entry = _FS_CAPABILITY_TABLE.get(fs_lc)
@@ -5894,9 +6782,11 @@ def detect_capabilities(dst_dir, force_probe=False):
                     from_table = True
                 caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
                                       case_sensitive=cs)
+                strat, note = resolve_dedup_strategy(
+                    caps, dst_dir, dedup_in_sync_folder)
                 return FSInfo(
                     path=dst_dir, fs_type=fs_type, capabilities=caps,
-                    strategy=select_dedup_strategy(caps),
+                    strategy=strat, strategy_note=note,
                     detection_ms=detection_ms, probe_ms=0.0,
                     probes_run=[], probe_timings=probe_timings,
                     method=method, from_table=from_table,
@@ -5927,16 +6817,18 @@ def detect_capabilities(dst_dir, force_probe=False):
         caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
                               case_sensitive=cs)
 
+    strat, note = resolve_dedup_strategy(caps, dst_dir, dedup_in_sync_folder)
     return FSInfo(
         path=dst_dir, fs_type=fs_type, capabilities=caps,
-        strategy=select_dedup_strategy(caps),
+        strategy=strat, strategy_note=note,
         detection_ms=detection_ms, probe_ms=probe_ms,
         probes_run=probes_run, probe_timings=probe_timings,
         method=method, from_table=from_table,
     )
 
 
-def _info_from_table_only(dst_dir, fs_type, method, detection_ms, reason):
+def _info_from_table_only(dst_dir, fs_type, method, detection_ms, reason,
+                          dedup_in_sync_folder=False):
     """Return FSInfo using only the FS-type table (no probing)."""
     fs_lc = fs_type.lower() if fs_type else "unknown"
     entry = _FS_CAPABILITY_TABLE.get(fs_lc)
@@ -5948,13 +6840,44 @@ def _info_from_table_only(dst_dir, fs_type, method, detection_ms, reason):
         cs = _default_case_sensitive(fs_type)
         caps = FSCapabilities(hardlink=hl, symlink=sl, reflink=rl,
                               case_sensitive=cs)
+    strat, note = resolve_dedup_strategy(caps, dst_dir, dedup_in_sync_folder)
     return FSInfo(
         path=dst_dir, fs_type=fs_type, capabilities=caps,
-        strategy=select_dedup_strategy(caps),
+        strategy=strat, strategy_note=note,
         detection_ms=detection_ms, probe_ms=0.0,
         probes_run=[], probe_timings={"_skipped_reason": reason},
         method=method, from_table=True,
     )
+
+
+def resolve_dedup_strategy(caps, dst_dir, dedup_in_sync_folder=False,
+                           _cloud_root=None):
+    """(strategy, note) — select_dedup_strategy, downgraded inside a sync folder.
+
+    Hard links inside a cloud-synced folder buy nothing and cost something. The
+    saving is local only: the sync client uploads every path regardless, so the
+    bytes cross the wire and occupy the account twice either way. What the user
+    does get is a shared inode, so editing one copy silently rewrites the other
+    — inside a folder whose whole promise is that files are independent.
+
+    Reflink is left alone: copy-on-write keeps the copies independent, which is
+    the property that was missing.
+
+    Returns the reason as a note rather than printing, so the caller decides
+    where it surfaces.
+    """
+    strategy = select_dedup_strategy(caps)
+    if strategy != "hardlink":
+        return strategy, None
+    finder = _cloud_root or _cloud_sync_root
+    root = finder(dst_dir)
+    if root is None:
+        return strategy, None
+    if dedup_in_sync_folder:
+        return strategy, ("hardlink kept in a cloud-synced folder by request "
+                          "— edits will propagate between linked copies")
+    return "none", ("cloud-synced folder — hard links save no remote space and "
+                    "share an inode between copies; --dedup-in-sync-folder overrides")
 
 
 def select_dedup_strategy(caps):
@@ -5966,37 +6889,6 @@ def select_dedup_strategy(caps):
     if caps.symlink:
         return "symlink"
     return "none"
-
-
-def format_fs_info(info):
-    """Human-readable summary of FSInfo for verbose output."""
-    caps = info.capabilities
-    lines = [
-        "Path:         {}".format(info.path),
-        "FS type:      {} (via {})".format(info.fs_type, info.method),
-        "Source:       {}".format("table" if info.from_table else "probes"),
-        "Detection:    {:.3f} ms".format(info.detection_ms),
-        "Probing:      {:.3f} ms ({} probe{})".format(
-            info.probe_ms, len(info.probes_run),
-            "" if len(info.probes_run) == 1 else "s"),
-    ]
-    skipped = info.probe_timings.get("_skipped_reason")
-    if skipped:
-        lines.append("  ⚠ probes skipped: {}".format(skipped))
-        lines.append("  ⚠ capabilities below are TABLE DEFAULTS, not verified")
-    if info.probes_run:
-        lines.append("  probes run: {}".format(", ".join(info.probes_run)))
-        for name, ms in info.probe_timings.items():
-            if name.startswith("_"):
-                continue
-            lines.append("    {:18s} {:>7.3f} ms".format(name, ms))
-    lines.append("Capabilities:")
-    lines.append("  hardlink:        {}".format("yes" if caps.hardlink else "no"))
-    lines.append("  symlink:         {}".format("yes" if caps.symlink else "no"))
-    lines.append("  reflink (CoW):   {}".format("yes" if caps.reflink else "no"))
-    lines.append("  case sensitive:  {}".format("yes" if caps.case_sensitive else "no"))
-    lines.append("Strategy:     {}".format(info.strategy))
-    return "\n".join(lines)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -7181,7 +8073,7 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     return unique_entries, link_map, saved_bytes
 
 
-def create_links(link_map, dst_root, fs_strategy=None):
+def create_links(link_map, dst_root, fs_strategy=None, trusted_source=False):
     """
     Create dedup links for duplicated files.
 
@@ -7207,16 +8099,53 @@ def create_links(link_map, dst_root, fs_strategy=None):
     _link_total = len(link_map)
     _link_done = 0
 
+    # In the remote-to-local flow these keys are names the REMOTE chose, and
+    # filter_unchanged_remote_to_local() builds the map before _safe_batch()
+    # runs, so nothing upstream has filtered them. The loop below unlinks
+    # whatever sits at the joined path before it links, which makes an
+    # unchecked key an arbitrary DELETE — as root under --use-sudo. Validated
+    # here rather than at the call sites so every caller is covered.
+    #
+    # An earlier version of this comment claimed the local caller pays "a check
+    # that always passes". That was a prediction, not a measurement, and it was
+    # wrong: _safe_local_dest resolves symlinks, so a destination the user
+    # deliberately laid out with a symlinked directory fails it. Removed rather
+    # than reworded, so nobody reasons from it.
+    _real_root = os.path.realpath(dst_root)
     for dup_rel, target in link_map.items():
         _link_done += 1
         if _link_done % 200 == 0:
             _phase_emit("Linking", _link_done, _link_total)
-        dst_dup = _long_path(os.path.join(dst_root, dup_rel))
+        _safe_dup, _ = _dest_policy(dst_root, dup_rel,
+                                    trusted_source=trusted_source)
+        if _safe_dup is None:
+            # A refusal, not a link error. It goes to the one refusal list the
+            # summary and the exit code read; the local `errors` counter is for
+            # links that were attempted and failed (EXDEV, EPERM), which is a
+            # different thing and used to be reported as if it were this one.
+            _note_refusal(dup_rel)
+            _log("refused", dup_rel, 0,
+                 error="refused: resolves outside the destination")
+            continue
+        dst_dup = _long_path(_safe_dup)
         # Target is either a rel path or ("__abs__", full_path) for cross-run dedup
         if isinstance(target, tuple) and target[0] == "__abs__":
+            # Cross-run dedup target from our own dedup DB, already absolute.
             dst_canonical = _long_path(target[1])
         else:
-            dst_canonical = _long_path(os.path.join(dst_root, target))
+            # Same provenance as dup_rel, so the same check.
+            _safe_canon, _ = _dest_policy(dst_root, target,
+                                          trusted_source=trusted_source)
+            if _safe_canon is None:
+                # Same refusal, named by the file the user does not get: the
+                # duplicate. Recording the canonical name here would count a
+                # file that was written as one that was not.
+                _note_refusal(dup_rel)
+                _log("refused", dup_rel, 0,
+                     error="refused: link target resolves outside the "
+                           "destination")
+                continue
+            dst_canonical = _long_path(_safe_canon)
 
         # GUARD against linking a file to ITSELF. On an incremental re-copy the
         # cross-run cache can match a destination file against its own existing
@@ -7910,21 +8839,39 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
 
     try:
         read_file = os.fdopen(read_fd, "rb")
+        _ctx = _ExtractCtx(dst_root)
         with tarfile.open(fileobj=read_file, mode="r|") as tar:
             for member in tar:
                 if member.isdir():
-                    check = _validate_tar_member(member, dst_root)
-                    if check is True:
-                        _safe_tar_extract(tar, member, dst_root)
+                    # No pre-validation here: _safe_tar_extract validates as its
+                    # first act and returns the same error string this used to
+                    # branch on. Validating here as well ran the whole check
+                    # twice per member — 13 stat syscalls of pure repetition.
+                    _safe_tar_extract(tar, member, dst_root, ctx=_ctx)
                     continue
                 try:
-                    result = _safe_tar_extract(tar, member, dst_root)
+                    _rel = member.name
+                    result = _safe_tar_extract(tar, member, dst_root, ctx=_ctx)
                     if result is True:
                         extracted += 1
                     else:
-                        extract_errors.append((member.name, result))
+                        # Recorded HERE, where the refusal happens. It used to
+                        # be recorded only by the extended-metadata pass below,
+                        # which runs solely when --preserve asks for owner /
+                        # xattr / acl — so `--small-files stream --preserve
+                        # mode,times` refused files, reported them as copied,
+                        # counted their bytes as written and exited 0. A
+                        # refusal must not depend on which metadata the user
+                        # asked to keep.
+                        extract_errors.append((_rel, result))
+                        _note_refusal(_rel)
+                        _log("refused", _rel, getattr(member, "size", 0),
+                             error="refused: %s" % result)
                 except (OSError, tarfile.TarError) as e:
-                    extract_errors.append((member.name, str(e)))
+                    # An exception is a genuine failure, not a policy refusal —
+                    # different bucket, on purpose.
+                    extract_errors.append((_rel, str(e)))
+                    _log("error", _rel, getattr(member, "size", 0), error=str(e))
     except (OSError, tarfile.TarError) as e:
         print(f"\n  {C.RED}Streaming extraction failed: {e}{C.RESET}")
     finally:
@@ -7964,7 +8911,18 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
     # fchown / setxattr / setfacl helpers.
     if _preserve_spec.any_extended():
         for entry in small_entries:
-            dst_path = os.path.join(dst_root, entry.rel)
+            # Single point of truth for the destination path; refuses a
+            # name that escapes, and follows the user's symlinked layout
+            # only when this is a local copy and we are not elevated.
+            dst_path, _why = _dest_policy(dst_root, entry.rel)
+            if dst_path is None:
+                _log("refused", entry.rel, entry.size,
+                     error="refused: resolves outside the destination")
+                _note_refusal(entry.rel)
+                # No progress.update here: this entry was already counted when
+                # the batch was bundled, and updating again pushes files_done
+                # and bytes_done past the totals.
+                continue
             try:
                 fd = _safe_open_write_fd(dst_path, truncate=False)
             except OSError:
@@ -8079,6 +9037,9 @@ def copy_small_uring(small_entries, dst_root, progress, cancel_check=None):
     pending = deque(small_entries)
     ok_count = [0]
     unsubmitted = [0]
+    # This engine's own share of the run's refusals — the list is global and
+    # per-run, so the delta across this call is what this engine refused.
+    refused_before = len(_REFUSED_PATHS)
 
     def _fail(entry, err, counted=0, benign_src=False, dst_path=None):
         _log("error", entry.rel, entry.size, error=str(err),
@@ -8094,7 +9055,23 @@ def copy_small_uring(small_entries, dst_root, progress, cancel_check=None):
         """Open fds for the next pending entry → slot id, or None."""
         while pending:
             entry = pending.popleft()
-            dst_path = os.path.join(dst_root, entry.rel)
+            # Single point of truth for the destination path; refuses a
+            # name that escapes, and follows the user's symlinked layout
+            # only when this is a local copy and we are not elevated.
+            dst_path, _why = _dest_policy(dst_root, entry.rel)
+            if dst_path is None:
+                _log("refused", entry.rel, entry.size,
+                     error="refused: resolves outside the destination")
+                _note_refusal(entry.rel)
+                # Counted like every other outcome in this loop. Progress is
+                # built once with the whole job's totals and set_current() adds
+                # nothing, so each entry must be update()d exactly once; the
+                # "already counted when the batch was bundled" this used to
+                # claim was not true of anything, and the bar simply stopped
+                # short — 3/5 files here against 5/5 from the parallel engine
+                # on the same input.
+                progress.update(entry.size, 1)
+                continue
             try:
                 src_fd = _safe_open_read_fd(entry.src)
             except OSError as e:
@@ -8235,12 +9212,18 @@ def copy_small_uring(small_entries, dst_root, progress, cancel_check=None):
     lib.io_uring_queue_exit(ring)
     progress.set_current(None)
 
-    failed = len(small_entries) - ok_count[0]
+    # A refusal is not an error: nothing failed, a policy said no. Counting
+    # them together made "1 errors" the only trace of five refused files.
+    refused = len(_REFUSED_PATHS) - refused_before
+    failed = len(small_entries) - ok_count[0] - refused
     if cancelled:
         return True
-    if failed:
+    if failed or refused:
+        _tail = ", ".join(
+            ([f"{failed} errors"] if failed else [])
+            + ([_tr("{n} refused").format(n=refused)] if refused else []))
         print(f"\r  {C.YELLOW}Copied {ok_count[0]} small files, "
-              f"{failed} errors{C.RESET}{C.CLR}")
+              f"{_tail}{C.RESET}{C.CLR}")
     else:
         print(f"\r  {C.GREEN}Copied {ok_count[0]} small files{C.RESET}{C.CLR}")
     return True
@@ -8261,6 +9244,8 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
     if not small_entries:
         return
 
+    # This engine's own share of the run's refusals (see copy_small_uring).
+    refused_before = len(_REFUSED_PATHS)
     small_size = sum(e.size for e in small_entries)
     # Scales with --threads (×4, since workers idle in per-file latency, not
     # CPU). Cap 128: past that, NTFS metadata contention and AV scan queues
@@ -8276,7 +9261,16 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
         if cancel_check and cancel_check():
             cancelled.set()
             return
-        dst_path = os.path.join(dst_root, entry.rel)
+        # Single point of truth for the destination path; refuses a
+        # name that escapes, and follows the user's symlinked layout
+        # only when this is a local copy and we are not elevated.
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None:
+            _log("refused", entry.rel, entry.size,
+                 error="refused: resolves outside the destination")
+            _note_refusal(entry.rel)
+            progress.update(entry.size, 1)
+            return
         counted = 0  # bytes already added to progress for THIS file
         try:
             os.makedirs(_long_path(os.path.dirname(dst_path)), exist_ok=True)
@@ -8364,10 +9358,15 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
 
     if cancelled.is_set():
         return
-    failed = len(small_entries) - ok
-    if failed:
+    # Same split as the io_uring engine: refusals are reported as refusals.
+    refused = len(_REFUSED_PATHS) - refused_before
+    failed = len(small_entries) - ok - refused
+    if failed or refused:
+        _tail = ", ".join(
+            ([f"{failed} errors"] if failed else [])
+            + ([_tr("{n} refused").format(n=refused)] if refused else []))
         print(f"\r  {C.YELLOW}Copied {ok} small files, "
-              f"{failed} errors{C.RESET}                    ")
+              f"{_tail}{C.RESET}                    ")
     else:
         print(f"\r  {C.GREEN}Copied {ok} small files{C.RESET}                    ")
 
@@ -8494,7 +9493,16 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             return
 
         progress.set_current(entry.rel, entry.size)
-        dst_path = os.path.join(dst_root, entry.rel)
+        # Single point of truth for the destination path; refuses a
+        # name that escapes, and follows the user's symlinked layout
+        # only when this is a local copy and we are not elevated.
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None:
+            _log("refused", entry.rel, entry.size,
+                 error="refused: resolves outside the destination")
+            _note_refusal(entry.rel)
+            progress.update(entry.size, 1)
+            continue
         dst_dir = os.path.dirname(dst_path)
         # Snapshot so the error path below can tell how many of THIS entry's
         # bytes were already counted mid-copy (byte loop or _copy_sparse).
@@ -8535,17 +9543,33 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                 # through userspace to hash. Content verification would mean a
                 # gratuitous full read of a copy that took milliseconds.
                 _SRC_DIGESTS.mark_fs_guaranteed(entry.rel)
-                # Preserve timestamps and permissions even on reflink.
-                # _try_reflink creates dst_path itself; verify it's not a symlink before chmod.
+                # Metadata goes through the one applier every other engine
+                # uses. The hand-rolled utime+chmod that used to stand here
+                # applied two of the five kinds: --preserve owner, xattr and
+                # acl were parsed, announced in the banner, counted as
+                # requested — and then dropped for EVERY file, because a
+                # reflink-capable destination (XFS reflink=1, btrfs,
+                # bcachefs, APFS) routes every file through this branch and
+                # nothing else ever ran. A clone is not a reason to carry
+                # less metadata than a byte copy.
+                # _try_reflink creates dst_path itself, so open it the way
+                # the other engines open a destination — O_NOFOLLOW, which
+                # also replaces the lstat symlink check this used to do.
                 try:
-                    dl = os.lstat(dst_path)
-                    if not stat.S_ISLNK(dl.st_mode):
-                        st = os.lstat(entry.src)
-                        if not stat.S_ISLNK(st.st_mode):
-                            os.utime(dst_path, (st.st_atime, st.st_mtime))
-                            os.chmod(dst_path, stat.S_IMODE(st.st_mode))
+                    st = os.lstat(entry.src)
                 except OSError:
-                    pass
+                    st = None
+                if st is not None and not stat.S_ISLNK(st.st_mode):
+                    try:
+                        fd = _safe_open_write_fd(dst_path, truncate=False)
+                    except OSError:
+                        fd = None        # symlink at the destination, or
+                    if fd is not None:   # a mode we cannot open for write
+                        try:
+                            _safe_apply_meta(fd, dst_path, st,
+                                             src_path=entry.src)
+                        finally:
+                            os.close(fd)
                 _log("copied", entry.rel, entry.size, method="reflink")
                 progress.update(entry.size, 1)
                 progress.display()
@@ -8984,7 +10008,15 @@ def copy_block_stream_remote(entries, ssh, remote_root, progress):
 
 
 def copy_hybrid_remote(entries, ssh, remote_root, progress, buf_size):
-    """Local-to-remote: tar stream for all files (much faster than SFTP)."""
+    """Local-to-remote: every file in one tar stream over a raw SSH channel.
+
+    One stream for the batch rather than a transfer per file, with no temp
+    file at either end. Whether that is quicker than SFTP depends on the link
+    and the destination filesystem, and is not claimed here — the one measured
+    head-to-head has blitcp and scp level on ext4 and scp ahead to a Windows
+    drive through WSL. What the path buys is remote hard-linking of duplicates
+    and a verifiable result, not time.
+    """
     total_size = sum(e.size for e in entries)
 
     # Create all directories first in one shot
@@ -9218,6 +10250,16 @@ def _exit_for_verify(status):
     audit / --log are written: 'corrupt' → 1 (data-integrity failure, incomplete or
     truncated), 'source_skipped' → 3 (only unreadable/locked SOURCE files were
     skipped, everything else copied fine), 'ok' → no exit."""
+    # A refused file is a file the user asked for and did not get. It has to
+    # fail the run on its own: verification does not run under --no-verify,
+    # and a refused file is not a corrupt one, so `status` never sees it.
+    if _REFUSED_PATHS:
+        sys.exit(1)
+    # A record whose buckets do not add up is a reporting failure, and the run
+    # that produced it cannot be called successful just because the bytes
+    # happened to land.
+    if _RECORD_INCONSISTENT:
+        sys.exit(1)
     if status == "corrupt":
         sys.exit(1)
     if status == "source_skipped":
@@ -9271,8 +10313,38 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     mismatches = []   # destination smaller than expected → real corruption
     grew = []         # destination larger than expected → likely active writer
     missing = []      # (display, reason, is_source_read_error)
+
+    def _present_via_copy_path(rel, exp_size):
+        """Second look for something the walk above could not see.
+
+        os.walk does not descend into a symlinked directory. A copy that
+        legitimately wrote THROUGH one — the user's own layout, unelevated,
+        the cp -r behaviour blitcp keeps — is therefore invisible here, and
+        every file under it reads as missing. That is not a missing file; it
+        is the verifier and the copier disagreeing about where the file went.
+
+        followlinks=True on the walk would be the wrong repair: it can loop on
+        a cycle, and it would pull things from outside the tree into the
+        verification by accident. Instead ask the SAME function the copy used
+        to choose the path, and stat exactly that. The two cannot disagree,
+        because there is only one of them — which is the entire reason
+        _dest_policy exists.
+        """
+        path, _why = _dest_policy(dst_root, rel)
+        if path is None:
+            return False
+        try:
+            st = os.stat(_long_path(path))
+        except OSError:
+            return False
+        return stat.S_ISREG(st.st_mode) and (exp_size is None
+                                             or st.st_size == exp_size)
+
     for rel, exp_size in expected.items():
         if rel not in found:
+            if _present_via_copy_path(rel, exp_size):
+                found[rel] = exp_size if exp_size is not None else 0
+                continue
             info = _COPY_ERRORS.get(rel)
             if info is None:
                 reason, src = "missing — incomplete/corrupted", False
@@ -9341,7 +10413,9 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
 
             def _check(item):
                 entry, expected_digest = item
-                dst_path = os.path.join(dst_root, entry.rel)
+                dst_path, _why = _dest_policy(dst_root, entry.rel)
+                if dst_path is None:
+                    return None
                 if expected_digest == _SourceDigests.SPARSE:
                     # No digest exists for a sparse copy; compare the allocated
                     # extents of both sides instead. Same verdict, but it reads
@@ -9494,9 +10568,12 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
 
     # ── Quick pass: size check ────────────────────────────────────────
     for entry in entries:
-        dst_path = os.path.join(dst_root, entry.rel)
-
-        if not os.path.exists(dst_path):
+        # A path the destination check refuses is not "already up to date".
+        # Dropping it here would remove the file from the run silently: no
+        # copy, no refusal, no exit code. It stays in the copy list so the
+        # engine refuses it where the user can see it.
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None or not os.path.exists(dst_path):
             need_copy.append(entry)
             continue
 
@@ -9523,8 +10600,10 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     new_link_map = {}
     skipped_links = 0
     for dup_rel, canonical_rel in link_map.items():
-        dst_path = os.path.join(dst_root, dup_rel)
-        if os.path.exists(dst_path):
+        # Same reasoning as above: a refused link path is kept so
+        # create_links() refuses it, rather than vanishing from the run.
+        dst_path, _why = _dest_policy(dst_root, dup_rel)
+        if dst_path is not None and os.path.exists(dst_path):
             _log("skipped", dup_rel, 0, reason="link_exists")
             skipped_links += 1
         else:
@@ -9543,7 +10622,9 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
 
     def hash_pair(idx):
         entry = need_hash[idx]
-        dst_path = os.path.join(dst_root, entry.rel)
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None:
+            return None
         src_hashes[idx] = hash_file(entry.src)
         dst_hashes[idx] = hash_file(dst_path)
 
@@ -9808,9 +10889,23 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
     """Download large files from remote to local via SFTP."""
     sftp = ssh.open_sftp()
 
+    real_root = os.path.realpath(dst_root)
     for entry in entries:
         remote_path = entry.src
-        dst_path = _long_path(os.path.join(dst_root, entry.rel))
+        # entry.rel comes from the REMOTE listing. The tar path filters these
+        # through _safe_batch(); this one is reached when the remote has no tar
+        # or --sftp-only is set, and used to join the name straight on. Joining
+        # '../x' put the file above the destination, and _safe_open_write_fd's
+        # O_NOFOLLOW does not help: it refuses a symlinked leaf and says
+        # nothing about '..'. The check lives here rather than only at the two
+        # call sites so a future caller cannot lose it by not knowing.
+        safe_dst = _safe_local_dest(real_root, entry.rel)
+        if safe_dst is None:
+            print(f"\n  {C.RED}Refusing unsafe remote path: {entry.rel}{C.RESET}")
+            _log("error", entry.rel, entry.size, error="unsafe path")
+            progress.update(entry.size, 1)
+            continue
+        dst_path = _long_path(safe_dst)
 
         try:
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
@@ -9830,6 +10925,7 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
                     # Symlink-safe (O_NOFOLLOW fd) + setuid/setgid stripped.
                     _apply_untrusted_remote_file_meta(
                         dst_path, rstat.st_mode, rstat.st_atime, rstat.st_mtime)
+                    _record_remote_owner(dst_path, rstat.st_uid, rstat.st_gid)
                 except (OSError, IOError):
                     pass
                 _log("copied", entry.rel, entry.size, method="sftp")
@@ -9861,6 +10957,7 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
                 # pull/SFTP fallback from an UNTRUSTED remote source.
                 _apply_untrusted_remote_file_meta(
                     dst_path, rstat.st_mode, rstat.st_atime, rstat.st_mtime)
+                _record_remote_owner(dst_path, rstat.st_uid, rstat.st_gid)
             except (OSError, IOError):
                 pass
 
@@ -9886,6 +10983,10 @@ class _ProgressTarExtractor:
         self._allowed = set(allowed_files) if allowed_files else None
         # Map of original_name -> new_name for case-conflict renames
         self._rename_map = rename_map or {}
+        # One context for this extractor's whole batch: the destination root is
+        # fixed for its lifetime, which is exactly the scope the cache is valid
+        # for.
+        self._ctx = _ExtractCtx(dst_root)
 
     # Maximum bytes to extract from a single tar member (50 GB safety limit)
     MAX_MEMBER_SIZE = 50 * 1024 * 1024 * 1024
@@ -9894,19 +10995,26 @@ class _ProgressTarExtractor:
         """Extract one member. Large files get mid-extraction progress updates."""
         # Directories: extract silently, don't count in progress
         if member.isdir():
-            # Validate even directories
-            check = _validate_tar_member(member, self._dst_root)
-            if check is not True:
-                return check
-            # Return the actual result so a failed directory extraction surfaces
-            # as an error instead of being silently reported as success.
+            # Directories are validated too — inside _safe_tar_extract, which
+            # runs _validate_tar_member as its first act and hands back the same
+            # error string. Returning it directly surfaces a failed directory
+            # extraction as an error instead of a silent success, exactly as the
+            # explicit pre-check did, without paying for the check twice.
             return _safe_tar_extract(self._tar, member, self._dst_root,
-                                     trusted_source=False)
+                                     trusted_source=False, ctx=self._ctx)
 
-        # Full validation (rejects symlinks, devices, hard links, etc.)
-        check = _validate_tar_member(member, self._dst_root)
-        if check is not True:
-            return check
+        # Full validation — symlinks, devices, hard links, traversal, escape —
+        # is not skipped, it has moved to the one place that cannot be bypassed:
+        # _safe_tar_extract runs _validate_tar_member before it touches the
+        # filesystem and returns the error string. Doing it here as well meant
+        # every member paid for the identical check twice.
+        #
+        # The large-file branch below does NOT go through _safe_tar_extract, so
+        # it keeps its own containment check inline; see there.
+        #
+        # One ordering consequence, and it favours safety: the rename map is
+        # applied before validation now, so what gets validated is the name that
+        # will actually be written rather than the name before the rename.
 
         # Reject files not in the expected allowlist (prevents injection)
         if self._allowed is not None and member.name not in self._allowed:
@@ -9920,22 +11028,36 @@ class _ProgressTarExtractor:
         # Empty or small file — extract normally, update after
         if member.size < 1 * 1024 * 1024:
             result = _safe_tar_extract(self._tar, member, self._dst_root,
-                                       trusted_source=False)
+                                       trusted_source=False, ctx=self._ctx)
             if result is True:
                 self.extracted += 1
                 _log("copied", member.name, member.size, method="tar_stream")
                 self._progress.update(member.size, 1)
                 self._progress.display()
-            else:
-                _log("error", member.name, member.size, error=str(result))
+            # A refusal is NOT logged here. Every branch of this method can
+            # refuse — directory, allowlist, small, large — and only this one
+            # used to record anything, as a generic "error". The caller records
+            # all four in one place; see there.
             return result
 
-        # Large file — extract with progress updates during write
+        # Large file — extract with progress updates during write.
+        #
+        # This branch writes the file itself instead of calling
+        # _safe_tar_extract, so it does NOT inherit that function's validation.
+        # It gets its own explicit call: the containment check below is a
+        # realpath comparison only, and on its own would not reject a symlink,
+        # device, FIFO, hard-link or absolute-path member, nor a '..' component.
+        # Small members are validated inside _safe_tar_extract; this is the one
+        # path that must ask for itself.
+        check = _validate_tar_member(member, self._dst_root, self._ctx)
+        if check is not True:
+            return check
+
         # Validate with plain paths, use _long_path only for I/O.
         # Use normcase for the comparison to handle case-insensitive
         # filesystems (Windows NTFS, macOS HFS+/APFS).
         resolved = os.path.realpath(os.path.join(self._dst_root, member.name))
-        real_dst = os.path.realpath(self._dst_root)
+        real_dst = self._ctx.real_dst()
         nc_resolved = os.path.normcase(resolved)
         nc_real_dst = os.path.normcase(real_dst)
         if not (nc_resolved == nc_real_dst or
@@ -9992,6 +11114,10 @@ class _ProgressTarExtractor:
         except OSError:
             pass
 
+        # This branch never goes through _safe_tar_extract, so it never
+        # inherited its ownership handling either: a pulled file of 1 MB or
+        # more kept whatever owner the write gave it, reported as nothing.
+        _record_remote_owner(io_path, member.uid, member.gid)
         self.extracted += 1
         _log("copied", member.name, member.size, method="tar_stream")
         self._progress.update(0, 1)  # file count only, bytes already reported
@@ -10163,6 +11289,29 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
                     result = extractor.extract_member(member)
                     if result is not True:
                         print(f"\n  {C.YELLOW}Skipped: {member.name}: {result}{C.RESET}")
+                        # ONE channel, the same one the local engines use.
+                        # Every string extract_member returns is a policy
+                        # refusal ("blocked: …"); a real I/O failure arrives as
+                        # the exception caught below. Before this, the small
+                        # branch logged them as generic errors and the large
+                        # branch logged nothing at all, so the record claimed
+                        # six files copied into a destination holding one while
+                        # the screen listed five refusals. The screen was right
+                        # and the machine-readable record — the thing a nightly
+                        # job reads — was not.
+                        #
+                        # Directories are printed but not recorded: the summary
+                        # matches refusals against the file entries it was asked
+                        # to copy, and a name that is not one of them would
+                        # inflate `refused` past the total and break the very
+                        # closure this fix exists to keep.
+                        if not member.isdir():
+                            _note_refusal(member.name)
+                            # The error string is stored verbatim: the
+                            # verification listing prints it, and prefixing it
+                            # would have changed a line that was already right.
+                            _log("refused", member.name,
+                                 getattr(member, "size", 0), error=str(result))
                 except (OSError, tarfile.TarError) as e:
                     print(f"\n  {C.YELLOW}Extract error: {member.name}: {e}{C.RESET}")
             extracted = extractor.extracted
@@ -10231,7 +11380,11 @@ def copy_block_stream_remote_to_local(entries, ssh, src_root, dst_root, progress
 
 def copy_hybrid_remote_to_local(entries, ssh, src_root, dst_root, progress, buf_size,
                                 case_renames=None):
-    """Remote-to-local: tar stream for all files (much faster than SFTP)."""
+    """Remote-to-local: every file in one tar stream over a raw SSH channel.
+
+    The pull direction of copy_hybrid_remote; see its docstring for what the
+    stream does and does not buy.
+    """
     total_size = sum(e.size for e in entries)
 
     if ssh.caps.get("tar"):
@@ -10498,7 +11651,11 @@ def copy_block_stream_r2r(entries, src_ssh, dst_ssh, src_root, dst_root, progres
 
 
 def copy_hybrid_r2r(entries, src_ssh, dst_ssh, src_root, dst_root, progress, buf_size):
-    """Remote-to-remote: tar pipe relay for all files (much faster than SFTP)."""
+    """Remote-to-remote: tar pipe relayed between two hosts through this one.
+
+    Neither remote needs to reach the other. See copy_hybrid_remote for what
+    the stream does and does not buy.
+    """
     total_size = sum(e.size for e in entries)
 
     # Create all directories on dest first
@@ -10533,9 +11690,12 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
     skipped_bytes = 0
 
     for entry in entries:
-        dst_path = os.path.join(dst_root, entry.rel)
-
-        if not os.path.exists(dst_path):
+        # A path the destination check refuses is not "already up to date".
+        # Dropping it here would remove the file from the run silently: no
+        # copy, no refusal, no exit code. It stays in the copy list so the
+        # engine refuses it where the user can see it.
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None or not os.path.exists(dst_path):
             need_copy.append(entry)
             continue
 
@@ -10564,7 +11724,9 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
 
     def hash_dst(idx):
         entry = need_hash[idx]
-        dst_path = os.path.join(dst_root, entry.rel)
+        dst_path, _why = _dest_policy(dst_root, entry.rel)
+        if dst_path is None:
+            return None
         dst_hashes[idx] = hash_file_sha256(dst_path)
 
     with ThreadPoolExecutor(max_workers=threads) as pool:
@@ -10589,8 +11751,10 @@ def filter_unchanged_remote_to_local(entries, link_map, src_ssh, src_root, dst_r
     new_link_map = {}
     skipped_links = 0
     for dup_rel, canonical_rel in link_map.items():
-        dst_path = os.path.join(dst_root, dup_rel)
-        if os.path.exists(dst_path):
+        # Same reasoning as above: a refused link path is kept so
+        # create_links() refuses it, rather than vanishing from the run.
+        dst_path, _why = _dest_policy(dst_root, dup_rel)
+        if dst_path is not None and os.path.exists(dst_path):
             _log("skipped", dup_rel, 0, reason="link_exists")
             skipped_links += 1
         else:
@@ -11558,7 +12722,12 @@ def is_cloud_path(path_str):
 SMBSpec = namedtuple("SMBSpec",
                      ["scheme", "container", "prefix", "connection",
                       "host", "port", "user"],
-                     defaults=[None, None, 445, None])
+                     # port defaults to None — "not specified here" — and 445
+                     # is applied once, at the end of SMBBackend's precedence
+                     # chain. A default of 445 in the spec answered the
+                     # question before the saved connection and --smb-port
+                     # were ever asked.
+                     defaults=[None, None, None, None])
 
 
 def parse_smb_url(path_str):
@@ -11575,7 +12744,13 @@ def parse_smb_url(path_str):
     if not path_str:
         return None
     user = None
-    port = 445
+    # None, not 445: "the URL did not say" and "the URL said 445" are
+    # different answers, and collapsing them is what made --smb-port
+    # unreachable. SMBBackend resolves the port as
+    # `spec.port or saved connection or --smb-port or 445`, so a spec that
+    # always names a port consumes the whole precedence chain at its first
+    # link — the flag was parsed, stored, and never read by anything.
+    port = None
     if path_str.startswith("smb://"):
         rest = path_str[len("smb://"):]
         authority, _, tail = rest.partition("/")
@@ -11611,10 +12786,6 @@ def parse_smb_url(path_str):
         raise SystemExit(f"Error: '..' is not allowed in an SMB path: {path_str!r}")
     return SMBSpec(scheme="smb", container=share, prefix=prefix, connection=None,
                    host=host, port=port, user=user)
-
-
-def is_smb_path(path_str):
-    return parse_smb_url(path_str) is not None
 
 
 def parse_object_url(path_str):
@@ -13029,7 +14200,12 @@ class S3Backend(CloudBackend):
         paginator = self.client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.container, Prefix=prefix or ""):
             for obj in page.get("Contents", []):
-                out[obj["Key"]] = {"size": obj["Size"]}
+                # The ETag is already in this response. For an object stored by
+                # a single PUT it is the MD5 of the bytes, which is the only
+                # content fingerprint a download can get without paying for a
+                # request per object — see _cloud_download_skip.
+                out[obj["Key"]] = {"size": obj["Size"],
+                                   "etag": (obj.get("ETag") or "").strip('"')}
         return out
 
     def head(self, key):
@@ -13255,6 +14431,27 @@ class _SMBLockedFile:
                 self._lock.release()
 
 
+class ObjectNameRefused(Exception):
+    """The store refused the NAME, not the bytes.
+
+    A share can legitimately be unable to hold a name: SMB reserves
+    " * : < > ? \\ / | in a filename, so quote'and"quote.txt cannot exist on
+    one whatever the underlying filesystem could store. That is not a
+    transfer error — nothing broke, a rule said no — and it is the same
+    distinction the local engines draw between "refused" and "error".
+
+    It was neither, before: the upload recorded no per-file entries at all,
+    so the file was absent from the destination, absent from the record, and
+    the run said nothing. Measured against a real Samba (2026-09-10): the
+    server answers the CREATE with NT_STATUS_OBJECT_NAME_INVALID and does not
+    even log the name, because it rejects it before resolving it.
+
+    Raised by a backend, turned into a refusal by the transfer driver, so the
+    protocol knowledge stays in the backend and the accounting stays in one
+    place.
+    """
+
+
 class SMBBackend(CloudBackend):
     """SMB/CIFS share as an object backend, via the pure-Python smbprotocol
     library. container=share, prefix=path within the share. Credentials resolve
@@ -13381,6 +14578,33 @@ class SMBBackend(CloudBackend):
                 return None
             return self._meta_for(key)
 
+    def _name_refused(self, exc):
+        """True when the server said no to the NAME rather than to the write.
+
+        Asked of the NT STATUS, not of the exception's class and not of its
+        message. smbclient does not let the typed exception through: its raw
+        IO layer catches SMBResponseException and re-raises SMBOSError(status,
+        path), and STATUS_OBJECT_NAME_INVALID has no errno mapping there, so
+        it arrives as errno 0 with the text "Unknown NtStatus error returned
+        'STATUS_OBJECT_NAME_INVALID'". An isinstance check against
+        ObjectNameInvalid looks right and never fires. Both spellings are
+        accepted here, and the status is the thing actually compared.
+
+        STATUS_OBJECT_NAME_INVALID / OBJECT_PATH_INVALID are what a server
+        answers a CREATE with when the name cannot exist on the share.
+        Everything else — no space, no permission, a dropped connection — is
+        a real failure and stays one.
+        """
+        ns = self._smbexc.NtStatus
+        status = getattr(exc, "ntstatus", None)
+        if status is None:
+            status = getattr(exc, "status", None)
+        if status in (ns.STATUS_OBJECT_NAME_INVALID,
+                      ns.STATUS_OBJECT_PATH_INVALID):
+            return True
+        return isinstance(exc, (self._smbexc.ObjectNameInvalid,
+                                self._smbexc.ObjectPathInvalid))
+
     def upload(self, local_path, key, metadata):
         unc = self._unc(key)
         with self._lock:
@@ -13388,10 +14612,17 @@ class SMBBackend(CloudBackend):
                 self._sc.makedirs(unc.rsplit("\\", 1)[0], exist_ok=True, **self._ck)
             except OSError:
                 pass
-            with open(local_path, "rb") as src, \
-                    self._sc.open_file(unc, mode="wb", **self._ck) as dst:
-                for chunk in iter(lambda: src.read(1024 * 1024), b""):
-                    dst.write(chunk)
+            try:
+                with open(local_path, "rb") as src, \
+                        self._sc.open_file(unc, mode="wb", **self._ck) as dst:
+                    for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                        dst.write(chunk)
+            except Exception as e:                             # noqa: BLE001
+                if self._name_refused(e):
+                    raise ObjectNameRefused(
+                        "the share cannot store this name (%s)"
+                        % type(e).__name__)
+                raise
             self._set_mtime(unc, metadata)
 
     def download(self, key, local_path):
@@ -13414,10 +14645,20 @@ class SMBBackend(CloudBackend):
                                   **self._ck)
             except OSError:
                 pass
-            with self._sc.open_file(self._unc(src_key), mode="rb", **self._ck) as s, \
-                    self._sc.open_file(dst_unc, mode="wb", **self._ck) as d:
-                for chunk in iter(lambda: s.read(1024 * 1024), b""):
-                    d.write(chunk)
+            try:
+                with self._sc.open_file(self._unc(src_key), mode="rb",
+                                        **self._ck) as s, \
+                        self._sc.open_file(dst_unc, mode="wb", **self._ck) as d:
+                    for chunk in iter(lambda: s.read(1024 * 1024), b""):
+                        d.write(chunk)
+            except Exception as e:                             # noqa: BLE001
+                # A duplicate whose NAME the share cannot hold is refused for
+                # exactly the reason a primary is; same answer, same word.
+                if self._name_refused(e):
+                    raise ObjectNameRefused(
+                        "the share cannot store this name (%s)"
+                        % type(e).__name__)
+                raise
             self._set_mtime(dst_unc, metadata)
 
     def _set_mtime(self, unc, metadata):
@@ -14352,17 +15593,6 @@ def run_cloud_transfer(args):
     return _download_from_cloud(args, src_spec)
 
 
-def _self_invoke_cmd():
-    """Command prefix to re-invoke this tool's CLI (frozen binary or script)."""
-    if _is_frozen():
-        base = [_get_self_path()]
-        if os.path.basename(_get_self_path()).lower().startswith(
-                ("blitcp_gui", "fast_copy_gui")):
-            base.append("--fc-core")        # GUI-as-core dispatch
-        return base
-    return [sys.executable, os.path.abspath(__file__)]
-
-
 def _relay_object_ssh(args, obj_spec, obj_is_src):
     """Relay between an object endpoint (cloud/SMB) and an SSH endpoint by
     STREAMING each file through this machine — 1 MB chunks straight onto the
@@ -15154,6 +16384,38 @@ def _http_pump(url, resp, total, fout, halgo, reopen_dst, start, headers=None):
     return written, resp, fout, (hasher.hexdigest() if hasher else None)
 
 
+def _http_dest_filename(url):
+    """The destination filename for an http(s):// source, as ONE path segment.
+
+    This used to be basename(urlsplit(url).path) followed by unquote(), in that
+    order — so percent-encoding survived the basename and reappeared after it.
+    'https://h/dir/%2e%2e%2fevil' has a single last segment when basename runs
+    and becomes '../evil' a line later, which was then posixpath.join()ed onto
+    the remote destination directory and escaped it.
+
+    Nobody but the user controls this URL (Content-Disposition is not honoured
+    and the redirect target is used only for a diagnostic), so it is a footgun
+    rather than an attack. It is still a name that leaves the directory the
+    user named. Unquote first, then take the basename, then refuse anything
+    that is not a plain segment. Returns None when there is no usable name.
+    """
+    import urllib.parse
+    raw = urllib.parse.unquote(urllib.parse.urlsplit(url).path)
+    # Both separators: a Windows destination path joins on backslash too.
+    raw = raw.replace("\\", "/")
+    # A path that ENDS in a separator names a directory, and a directory is not
+    # a file to download. The rstrip("/") that used to sit inside the basename
+    # call answered 'https://host/dir/' with 'dir' — a plausible-looking name
+    # that sent the run on to open the URL, so the user got whatever the
+    # network said (a DNS error, a 404) instead of the refusal this is for.
+    if not raw or raw.endswith("/"):
+        return None
+    name = posixpath.basename(raw)
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        return None
+    return name
+
+
 def _http_skip_up_to_date(dst_size, dst_mtime, total, http_mtime, args):
     """R2R's incremental rule: same size, and mtimes agree within 2s when
     both sides know one."""
@@ -15173,9 +16435,7 @@ def run_http_transfer(args):
               f"(got {len(args.extra_sources) + 1} sources).{C.RESET}")
         return 1
     url = args.source
-    import urllib.parse
-    fname = urllib.parse.unquote(
-        posixpath.basename(urllib.parse.urlsplit(url).path))
+    fname = _http_dest_filename(url)
     if not fname:
         print(f"{C.RED}Error: the URL names no file "
               f"(https://host/dir/file expected): {url}{C.RESET}")
@@ -15414,8 +16674,16 @@ def _http_to_smb(args, url, fname, dst_spec):
     resp = None
     try:
         key = dst_spec.prefix.rstrip("/")
+        # parse_smb_url strips the trailing slash off the prefix, so the SPEC
+        # can no longer answer "did the user write a directory?" — that check
+        # against dst_spec.prefix could never be true. Ask the raw destination
+        # the user typed. Without it, `smb://host/share/dir/` with no `dir` on
+        # the share yet wrote the download to the share as a FILE named `dir`:
+        # exit 0, verification passed (it read back the file it had just
+        # written), and nothing at `dir/<name>` for the next run to find.
+        dst_named_dir = str(args.destination or "").rstrip().endswith(("/", "\\"))
         st = backend.stat_key(key) if key else None
-        if not key or dst_spec.prefix.endswith("/") \
+        if not key or dst_named_dir \
                 or (st is not None and stat.S_ISDIR(st.st_mode)):
             key = (key + "/" + fname).lstrip("/")
 
@@ -15514,6 +16782,61 @@ def _preserve_set(args):
     return set(t.strip() for t in val.split(",") if t.strip())
 
 
+def _cloud_upload_skip(backend, key, dest_info, entry, local_hash, no_cache):
+    """Is this exact file already the object at `key`?
+
+    THE DESTINATION ANSWERS THIS, NOT A CACHE. The upload used to decide it
+    from the cross-run manifest alone — "we uploaded this hash last time" —
+    which is a fact about the SOURCE and about the past, and says nothing
+    about what is in the bucket now. Delete one object between two runs and
+    the second reported "Skipped: 3 unchanged (cross-run)" over a prefix
+    holding two, exited 0, and never brought the file back. The summary
+    counted a bucket it had not looked at.
+
+    So the object has to be there, and it has to be this file:
+
+      1. present in the destination listing at all — one LIST for the whole
+         prefix, which is why the caller passes a row from it rather than
+         asking per key;
+      2. the same size;
+      3. the same bytes, established against the OBJECT: the digest blitcp
+         recorded on it when it uploaded it (one HEAD, no re-read of the
+         local file), or failing that a plain-MD5 ETag compared with the
+         local bytes. A multipart ETag is an MD5 of part MD5s and is not
+         used — reconstructing it means guessing the uploader's part size.
+
+    Anything that cannot be shown identical is uploaded again. The cost is
+    bandwidth; the alternative is what this function exists to stop.
+
+    Two honest limits, stated rather than papered over. A store with no
+    per-object metadata and no usable ETag — SMB is the one here — can only
+    offer steps 1 and 2, so its content evidence still comes from the signed
+    sidecar; the existence and size checks are new and are what fix the
+    deleted-object case there. And --no-cache keeps its meaning: it turns the
+    cross-run skip off entirely rather than making it cleverer.
+    """
+    if no_cache or dest_info is None:
+        return False
+    if int(dest_info.get("size") or -1) != entry.size:
+        return False
+    meta = backend.head(key) or {}
+    want, algo = meta.get("fc_hash"), meta.get("fc_hash_algo")
+    if want and algo:
+        if algo == _hash_name and local_hash:
+            return want == local_hash
+        try:
+            return _hash_local_file(entry.src, algo) == want
+        except (OSError, ValueError):
+            return False
+    etag = str(dest_info.get("etag") or "").strip('"').lower()
+    if len(etag) == 32 and "-" not in etag:
+        try:
+            return _md5_file(entry.src) == etag
+        except OSError:
+            return False
+    return False
+
+
 def _upload_to_cloud(args, dst_spec):
     backend = make_backend(dst_spec, args)
     pretty = CLOUD_SCHEME_NAMES[dst_spec.scheme]
@@ -15561,13 +16884,24 @@ def _upload_to_cloud(args, dst_spec):
     # (Phase B). first_key_for_hash is built here, single-threaded, so the
     # primary/duplicate decision is deterministic and lock-free.
     first_key_for_hash = {}
-    uploaded = copied = skipped = errors = 0
-    bytes_uploaded = bytes_deduped = 0
+    uploaded = copied = skipped = errors = refused = 0
+    bytes_uploaded = bytes_deduped = bytes_refused = 0
 
-    # Cross-run dedup: read fc-hash from a manifest if present.
-    manifest = {}
-    if not args.no_cache:
-        manifest = _load_cloud_manifest(backend, dst_spec.prefix)
+    # What is ACTUALLY in the destination, in one call. The cross-run skip
+    # used to be decided from the manifest alone and never looked here, so an
+    # object deleted between two runs stayed deleted and was reported as
+    # "unchanged". --overwrite replaces everything by definition, so the
+    # listing is not fetched for it.
+    dest_index = {}
+    if not args.overwrite and not args.no_cache:
+        try:
+            dest_index = backend.list_objects(dst_spec.prefix) or {}
+        except Exception as ex:                                # noqa: BLE001
+            # No listing is not the same as "nothing is there". Upload
+            # everything rather than skip on an answer we did not get.
+            print(f"  {C.YELLOW}Could not list the destination ({ex}) — "
+                  f"nothing will be skipped this run{C.RESET}")
+            dest_index = {}
 
     new_manifest = {}
     primaries = []          # (entry, key, meta) — upload the bytes
@@ -15578,11 +16912,14 @@ def _upload_to_cloud(args, dst_spec):
         h = hashes.get(e.rel)
         new_manifest[e.rel] = {"size": e.size, "hash": h}
 
-        # Cross-run skip: same relpath + same hash already in the bucket.
-        prev = manifest.get(e.rel)
-        if (not args.overwrite and prev and h and prev.get("hash") == h):
+        # Cross-run skip: the OBJECT is this file. Asked of the destination
+        # listing and the object itself — see _cloud_upload_skip.
+        if (not args.overwrite
+                and _cloud_upload_skip(backend, key, dest_index.get(key), e,
+                                       h, args.no_cache)):
             skipped += 1
             skip_bytes += e.size
+            _log("skipped", e.rel, e.size, reason="unchanged")
             continue
 
         meta = build_object_meta(e, h, preserve)
@@ -15601,7 +16938,7 @@ def _upload_to_cloud(args, dst_spec):
     lock = threading.Lock()
 
     def _do_upload(item):
-        nonlocal uploaded, bytes_uploaded, errors
+        nonlocal uploaded, bytes_uploaded, errors, refused, bytes_refused
         e, key, meta = item
         try:
             if not args.dry_run:
@@ -15609,17 +16946,32 @@ def _upload_to_cloud(args, dst_spec):
             with lock:
                 uploaded += 1
                 bytes_uploaded += e.size
+                # The record names files here, like every other engine. It
+                # named none at all: the upload wrote no per-file entries, so
+                # a file the store refused was absent from the destination AND
+                # absent from the record, and nothing said so.
+                _log("copied", e.rel, e.size, method="object")
+                prog.update(e.size, 1)
+                prog.display()
+        except ObjectNameRefused as ex:
+            with lock:
+                refused += 1
+                bytes_refused += e.size
+                _note_refusal(e.rel)
+                _log("refused", e.rel, e.size, error="refused: %s" % ex)
+                print(f"\n  {C.RED}Refused: {e.rel}: {ex}{C.RESET}")
                 prog.update(e.size, 1)
                 prog.display()
         except Exception as ex:
             with lock:
                 errors += 1
+                _log("error", e.rel, e.size, error=str(ex))
                 print(f"\n  {C.RED}Error uploading {e.rel}: {ex}{C.RESET}")
                 prog.update(e.size, 1)
                 prog.display()
 
     def _do_copy(item):
-        nonlocal copied, bytes_deduped, errors
+        nonlocal copied, bytes_deduped, errors, refused, bytes_refused
         e, src_key, key, meta = item
         try:
             if not args.dry_run:
@@ -15627,11 +16979,22 @@ def _upload_to_cloud(args, dst_spec):
             with lock:
                 copied += 1
                 bytes_deduped += e.size
+                _log("linked", e.rel, e.size, method="server_side_copy")
+                prog.update(e.size, 1)
+                prog.display()
+        except ObjectNameRefused as ex:
+            with lock:
+                refused += 1
+                bytes_refused += e.size
+                _note_refusal(e.rel)
+                _log("refused", e.rel, e.size, error="refused: %s" % ex)
+                print(f"\n  {C.RED}Refused: {e.rel}: {ex}{C.RESET}")
                 prog.update(e.size, 1)
                 prog.display()
         except Exception as ex:
             with lock:
                 errors += 1
+                _log("error", e.rel, e.size, error=str(ex))
                 print("\n  " + C.RED + _tr("Error copying {name}: {err}").format(name=e.rel, err=ex) + C.RESET)
                 prog.update(e.size, 1)
                 prog.display()
@@ -15648,11 +17011,27 @@ def _upload_to_cloud(args, dst_spec):
     prog.finish()
 
     if not args.dry_run and not args.no_cache:
-        _save_cloud_manifest(backend, dst_spec.prefix, new_manifest)
+        # A refused name never became an object, so it must not appear in the
+        # manifest as one. It did: new_manifest is filled from the scan, before
+        # anything is uploaded, so the next run matched the recorded hash and
+        # SKIPPED the file — reporting "unchanged" about something that was
+        # never there. That is the silent loss again, one run later and harder
+        # to see.
+        _refused_now = set(_REFUSED_PATHS)
+        _save_cloud_manifest(backend, dst_spec.prefix,
+                             {k: v for k, v in new_manifest.items()
+                              if k not in _refused_now})
 
     # Verify: HEAD a sample and confirm fc-hash matches what we computed.
     if not args.dry_run and not args.no_verify and uploaded:
-        _verify_uploads(backend, dst_spec.prefix, entries, hashes)
+        # Not over the refused ones. A refusal is already reported on its own
+        # line; sampling it here as well produced "VERIFY MISMATCH" for a file
+        # nobody tried to upload — a check firing on a correct run, which is
+        # how people learn to ignore checks.
+        _refused_now = set(_REFUSED_PATHS)
+        _verify_uploads(backend, dst_spec.prefix,
+                        [e for e in entries if e.rel not in _refused_now],
+                        hashes)
 
     banner("DONE")
     print(f"  Uploaded: {C.BOLD}{uploaded}{C.RESET} new  "
@@ -15662,21 +17041,122 @@ def _upload_to_cloud(args, dst_spec):
               f"({C.GREEN}{fmt_size(bytes_deduped)} bandwidth saved{C.RESET})")
     if skipped:
         print(f"  Skipped:  {C.BOLD}{skipped}{C.RESET} unchanged (cross-run)")
+    if refused:
+        print("  " + C.RED
+              + _tr("{n} file(s) were refused and not written:").format(n=refused)
+              + C.RESET)
+        for _rel in sorted(_REFUSED_PATHS)[:10]:
+            print(f"    {C.DIM}{_rel}{C.RESET}")
+        if refused > 10:
+            print("    " + C.DIM
+                  + _tr("... and {m} more").format(m=refused - 10) + C.RESET)
     if errors:
         print(f"  {C.RED}Errors:   {errors}{C.RESET}")
+    _closed = uploaded + copied + skipped + refused + errors
+    if _closed != len(entries):
+        print(f"  {C.YELLOW}Note:    these numbers do not add up: "
+              f"{uploaded} uploaded + {copied} deduped + {skipped} skipped + "
+              f"{refused} refused + {errors} errors = {_closed}, not "
+              f"{len(entries)}. One of them is wrong — treat the run as "
+              f"unreported, not as done.{C.RESET}")
     if args.dry_run:
         print(f"  {C.YELLOW}(dry run — nothing uploaded){C.RESET}")
     if args.log_file:
         write_log_file(args.log_file, {
             "source": args.source, "destination": args.destination,
             "mode": f"upload_{dst_spec.scheme}", "total_files": len(entries),
-            "copied": uploaded, "linked": copied, "skipped": skipped,
+            "copied": uploaded, "linked": copied, "refused": refused,
+            "refused_paths": sorted(_REFUSED_PATHS)[:100],
+            "skipped": skipped,
             "errors": errors, "total_bytes": total_bytes,
-            "bytes_written": bytes_uploaded, "dedup_saved": bytes_deduped,
+            "bytes_written": bytes_uploaded, "bytes_refused": bytes_refused,
+            "dedup_saved": bytes_deduped,
             "hash_algo": _hash_name,
         })
+    # Deliberately NOT `or refused`, and this is the one place in the codebase
+    # where a refusal does not set the exit code.
+    #
+    # Every other refusal blitcp raises is actionable: a destination path that
+    # leads outside itself is fixed by naming the real path, so failing the
+    # run tells the operator to go and fix it. A name the share cannot
+    # represent is not that. " is illegal in an SMB filename; no re-run, no
+    # flag and no permission changes it, and there is nothing for the operator
+    # to do except know. Failing every future run of an otherwise perfect
+    # backup over a permanent property of the destination is how an exit code
+    # stops being read.
+    #
+    # It is not silent: the name is printed under "were refused and not
+    # written" and carried in the record as a refused entry with its path, and
+    # the buckets close over it. Reported, not fatal.
     if errors:
         sys.exit(1)
+
+
+def _md5_file(path, buf=4 * 1024 * 1024):
+    """MD5 of a local file, for comparison against an object's ETag.
+
+    MD5 is not a security choice here and is not used as one: it is the
+    algorithm S3 defines for the ETag of a single-PUT object, so it is the
+    only way to compare local bytes against a fingerprint the store already
+    computed. Nothing is authorised on the strength of it — a match means
+    "do not download this again", and a mismatch means download.
+    """
+    h = hashlib.new("md5")
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(buf)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def _cloud_download_skip(backend, key, info, local_path):
+    """Is the local file already this object, byte for byte?
+
+    The download direction had no incremental check at all: `skipped` was
+    initialised to 0 and never incremented anywhere, so a second run over a
+    destination that already held every file downloaded the whole prefix again
+    and reported all of it as copied.
+
+    An object store does not offer the download the two facts the local and
+    SSH incremental checks lean on. mtime is assigned by the SERVER, not
+    carried from the source, so "same size and mtime" says nothing about the
+    bytes — it is exactly the state the overwrite scenario stages as DIFFERENT
+    content. So size is the cheap gate and CONTENT is the decision:
+
+      1. the ETag, when the store gives a plain MD5 — free, it arrives with
+         the listing. A multipart upload's ETag is an MD5 of part MD5s with a
+         '-N' suffix and is deliberately NOT used: reconstructing it means
+         guessing the part size the uploader chose, and a guess is how this
+         check would start being wrong.
+      2. otherwise the hash blitcp itself recorded on the object, one HEAD,
+         and only when the object names the algorithm it used.
+
+    No answer means download. A file that cannot be shown identical is
+    fetched; that costs bandwidth, and the alternative is keeping a stale
+    file because nothing could prove it stale.
+    """
+    try:
+        st = os.lstat(local_path)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode) or st.st_size != int(info.get("size") or -1):
+        return False
+    etag = str(info.get("etag") or "").strip('"').lower()
+    if len(etag) == 32 and "-" not in etag:
+        try:
+            return _md5_file(local_path) == etag
+        except OSError:
+            return False
+    meta = backend.head(key) or {}
+    want, algo = meta.get("fc_hash"), meta.get("fc_hash_algo")
+    if want and algo:
+        try:
+            return _hash_local_file(local_path, algo) == want
+        except (OSError, ValueError):
+            return False
+    return False
 
 
 def _download_from_cloud(args, src_spec):
@@ -15700,27 +17180,77 @@ def _download_from_cloud(args, src_spec):
     total_bytes = sum(v["size"] for v in objects.values())
     print(f"  Objects: {C.BOLD}{len(objects)}{C.RESET}  ({fmt_size(total_bytes)})")
 
-    downloaded = skipped = errors = verified_fail = 0
+    downloaded = skipped = errors = refused = verified_fail = 0
+    bytes_written = 0
     real_root = os.path.realpath(dst_root)
+    # Same report as the local flow, same reason: an object store with a
+    # thousand keys under a symlinked destination directory would print a
+    # thousand "Skipping unsafe key" lines and no explanation. The
+    # per-key check below stays — this only announces it once.
+    # The rels, computed ONCE, and the same list given to the preflight and to
+    # the download loop. Handing the preflight raw object KEYS meant it
+    # reported the prefix directory — "backups" — instead of the destination
+    # directory the files actually land in.
+    def _key_to_rel(key):
+        rel = (key[len(prefix):].lstrip("/")
+               if prefix and key.startswith(prefix) else key)
+        rel = rel.lstrip("/")
+        return rel or key.rsplit("/", 1)[-1]
+
+    _rels = [_key_to_rel(k) for k in sorted(objects)]
+    # A bucket is untrusted, and the per-key check below is
+    # _safe_local_dest(..., trusted_source=False). The preflight has to ask
+    # that same question or it reports nothing and the flood it replaces
+    # happens anyway.
+    warn_symlinked_dest_dirs(dst_root, _rels, trusted_source=False)
+
+    # ── Incremental check ──
+    # Decided here, before the pool starts, so it is single-threaded and the
+    # numbers below cannot race. --overwrite means "replace what is there",
+    # which is the one thing this must not second-guess.
+    skip_keys = set()
+    skip_bytes = 0
+    if not args.overwrite and not args.dry_run and os.path.isdir(dst_root):
+        for key, info in sorted(objects.items()):
+            rel = _key_to_rel(key)
+            local_path = _safe_local_dest(real_root, rel)
+            if local_path is None:
+                continue                       # the download loop refuses it
+            if _cloud_download_skip(backend, key, info, local_path):
+                skip_keys.add(key)
+                skipped += 1
+                skip_bytes += int(info.get("size") or 0)
+                _log("skipped", rel, int(info.get("size") or 0),
+                     reason="unchanged")
+        if skipped:
+            print(f"  Unchanged: {C.BOLD}{skipped}{C.RESET} already present "
+                  f"({C.GREEN}{fmt_size(skip_bytes)}{C.RESET})")
+
     prog = Progress(total_bytes, len(objects))
+    if skipped:
+        prog.update(skip_bytes, skipped)
+        prog.display()
     lock = threading.Lock()
 
     # No dedup ordering on the way down, so every object is independent — one
     # flat parallel pool. os.makedirs(exist_ok=True) is safe under concurrency.
     def _do_download(item):
-        nonlocal downloaded, errors, verified_fail
+        nonlocal downloaded, bytes_written, errors, refused, verified_fail
         key, info = item
         # Map key → local relative path. Prefer fc-relpath metadata when present.
-        rel = key[len(prefix):].lstrip("/") if prefix and key.startswith(prefix) else key
-        rel = rel.lstrip("/")
-        if not rel:
-            rel = key.rsplit("/", 1)[-1]
+        rel = _key_to_rel(key)
         # A remote bucket is untrusted: its keys/metadata can attempt traversal.
         # _safe_local_dest returns None for '..'/absolute/symlink-escape paths.
         local_path = _safe_local_dest(real_root, rel)
         if local_path is None:
             with lock:
-                errors += 1
+                # A policy refusal, on the one list every other engine writes
+                # to. It used to be counted as an error, which is the bucket
+                # for something that broke.
+                refused += 1
+                _note_refusal(rel)
+                _log("refused", rel, int(info.get("size") or 0),
+                     error="refused: resolves outside the destination")
                 print(f"\n  {C.RED}Skipping unsafe key: {key}{C.RESET}")
                 prog.update(info["size"], 1); prog.display()
             return
@@ -15754,6 +17284,8 @@ def _download_from_cloud(args, src_spec):
                     verified_fail += 1
                     print(f"\n  {C.RED}VERIFY FAILED: {rel}{C.RESET}")
                 downloaded += 1
+                bytes_written += int(info.get("size") or 0)
+                _log("copied", rel, int(info.get("size") or 0), method="cloud")
                 prog.update(info["size"], 1); prog.display()
         except Exception as ex:
             with lock:
@@ -15764,11 +17296,19 @@ def _download_from_cloud(args, src_spec):
     workers = max(1, args.cloud_concurrency)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(as_completed([pool.submit(_do_download, it)
-                           for it in sorted(objects.items())]))
+                           for it in sorted(objects.items())
+                           if it[0] not in skip_keys]))
     prog.finish()
 
     banner("DONE")
-    print(f"  Downloaded: {C.BOLD}{downloaded}{C.RESET} ({fmt_size(total_bytes)})")
+    print(f"  Downloaded: {C.BOLD}{downloaded}{C.RESET} ({fmt_size(bytes_written)})")
+    if skipped:
+        print(f"  Skipped:  {C.BOLD}{skipped}{C.RESET} unchanged "
+              f"({C.GREEN}{fmt_size(skip_bytes)}{C.RESET})")
+    if refused:
+        print("  " + C.RED
+              + _tr("{n} file(s) were refused and not written:").format(n=refused)
+              + C.RESET)
     if verified_fail:
         print("  " + C.RED + _tr("Verification failures: {n}").format(n=verified_fail) + C.RESET)
     if errors:
@@ -15779,12 +17319,17 @@ def _download_from_cloud(args, src_spec):
         write_log_file(args.log_file, {
             "source": args.source, "destination": args.destination,
             "mode": f"download_{src_spec.scheme}", "total_files": len(objects),
-            "copied": downloaded, "linked": 0, "skipped": skipped,
+            "copied": downloaded, "linked": 0, "refused": refused,
+            "refused_paths": sorted(_REFUSED_PATHS)[:100],
+            "skipped": skipped,
             "errors": errors + verified_fail, "total_bytes": total_bytes,
-            "bytes_written": total_bytes, "dedup_saved": 0,
-            "hash_algo": _hash_name,
+            # What this run actually moved. It reported the size of the whole
+            # prefix whatever it did, so a run that downloaded nothing still
+            # claimed every byte.
+            "bytes_written": bytes_written, "bytes_refused": 0,
+            "dedup_saved": 0, "hash_algo": _hash_name,
         })
-    if errors or verified_fail:
+    if errors or refused or verified_fail:
         sys.exit(1)
 
 
@@ -16469,6 +18014,53 @@ def cloud_ls(argv):
 # like Synology). This is a plain recursive copy — no dedup / incremental /
 # verify — but it works wherever a shell + tar exist on the remote.
 
+def _ssh_auth_diagnosis(spec, key_path=None, password=None):
+    """What this process actually offered the server, and how to give it more.
+
+    "No authentication methods available" is the symptom; it names neither the
+    key files that were looked for, nor whether an agent was running, nor
+    which credentials file was consulted, nor that --ssh-*-key and
+    --ssh-*-password exist. Everything here is read from the state the
+    connection really used — nothing is assumed, and the credentials file is
+    NOT opened (an encrypted one would prompt, from an error path)."""
+    tried = []
+    if key_path:
+        kp = os.path.expanduser(key_path)
+        tried.append("%s (%s)" % (kp, "found" if os.path.isfile(kp) else "missing"))
+    else:
+        # The same files paramiko's look_for_keys walks, under this process's
+        # own HOME — which is what makes an isolated HOME fail here.
+        ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+        names = ["id_rsa", "id_ecdsa", "id_ed25519", "id_dsa"]
+        present = [n for n in names if os.path.isfile(os.path.join(ssh_dir, n))]
+        tried.append("default keys in %s (%s)"
+                     % (ssh_dir, ", ".join(present) if present else "none found"))
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    tried.append("ssh-agent (%s)" % ("SSH_AUTH_SOCK=" + sock if sock
+                                     else "not running"))
+    if password:
+        tried.append("a supplied password")
+    else:
+        try:
+            cred = default_credentials_path()
+        except Exception:                                       # noqa: BLE001
+            cred = "the credentials file"
+        tried.append("saved connection for host %s (searched %s%s)"
+                     % (spec.host, cred,
+                        "" if os.path.isfile(cred) else " — no such file"))
+    return ("no usable credentials for %s@%s:%s. Tried: %s. Provide one with "
+            "--ssh-dst-key / --ssh-src-key, --ssh-dst-password / "
+            "--ssh-src-password, or a saved connection (blitcp creds add; set "
+            "BLITCP_CREDS_PASSPHRASE for an encrypted file)."
+            % (spec.user, spec.host, spec.port, "; ".join(tried)))
+
+
+def _is_auth_failure(exc):
+    txt = str(exc).lower()
+    return ("authentication" in txt or "no authentication methods" in txt
+            or type(exc).__name__ == "AuthenticationException")
+
+
 def _tar_ssh_connect(spec, key_path, password, compress):
     cli = paramiko.SSHClient()
     try:
@@ -16489,7 +18081,15 @@ def _tar_ssh_connect(spec, key_path, password, compress):
         kw["key_filename"] = os.path.expanduser(key_path)
     if password:
         kw["password"] = password
-    cli.connect(**kw)
+    try:
+        cli.connect(**kw)
+    except Exception as e:                                      # noqa: BLE001
+        # Enriched HERE, at the one place that knows what was offered, so all
+        # three reporting sites print the same full sentence without each
+        # having to rebuild it.
+        if _is_auth_failure(e):
+            raise type(e)(_ssh_auth_diagnosis(spec, key_path, password)) from None
+        raise
     tr = cli.get_transport()
     if tr:
         tr.set_keepalive(15)
@@ -16622,48 +18222,6 @@ def _phase_emit(phase, done, total, bytes_done=None, bytes_total=None):
         sys.stdout.flush()
 
 
-def _remote_count_size(cli, rpath):
-    files, size = 0, 0
-    try:
-        _i, o, _e = cli.exec_command(
-            "find " + shlex.quote(rpath) + " -type f 2>/dev/null | wc -l")
-        files = int((o.read().decode("utf-8", "replace").strip() or "0"))
-    except Exception:
-        pass
-    try:
-        _i, o, _e = cli.exec_command("du -sb " + shlex.quote(rpath) + " 2>/dev/null")
-        if o.channel.recv_exit_status() == 0:
-            size = int(o.read().split()[0])
-        else:
-            _i, o, _e = cli.exec_command("du -sk " + shlex.quote(rpath))
-            size = int(o.read().split()[0]) * 1024
-    except Exception:
-        pass
-    return files, size
-
-
-def _local_tree_size(p):
-    if os.path.isfile(p):
-        try:
-            return os.path.getsize(p)
-        except OSError:
-            return 0
-    t = 0
-    for r, _d, fs in os.walk(p):
-        for f in fs:
-            try:
-                t += os.path.getsize(os.path.join(r, f))
-            except OSError:
-                pass
-    return t
-
-
-def _local_tree_files(p):
-    if os.path.isfile(p):
-        return 1
-    return sum(len(fs) for _r, _d, fs in os.walk(p))
-
-
 class _TarReadCounter:
     """Wraps a paramiko stdout stream, counting bytes + emitting progress."""
 
@@ -16703,19 +18261,57 @@ class _TarWriteCounter:
 
 
 def _tar_extract_stream(reader, dst):
+    """Extract a pulled tar stream. The stream comes from an UNTRUSTED remote.
+
+    This used to call tf.extract() directly, so nothing in this file checked
+    the member names: no traversal check, no symlink/device/hard-link refusal,
+    no symlinked-ancestor check, and no setuid/setgid strip on content the far
+    side chose. The only thing standing behind it was tarfile's own filter,
+    which is a backstop and not ours — and the `except TypeError` fallback
+    below it extracted with no filter at all, which on every interpreter up to
+    3.13 means fully_trusted (measured: a member named '../x' lands above the
+    destination).
+
+    It goes through _safe_tar_extract now, like the other two pull paths, with
+    trusted_source=False so remote-supplied setuid bits are stripped rather
+    than honoured — under --use-sudo the extracted file is root-owned.
+
+    Returns (delivered, rejected). The rejected count is not decoration: the
+    first version of this printed each refusal and returned only the delivered
+    count, so the caller could not tell a clean transfer from one where every
+    member was refused. That is the same defect as reporting "verified" for a
+    check that did not run, rebuilt inside the fix for it.
+    """
     done = 0
+    errors = 0
+    ctx = _ExtractCtx(dst)
     with tarfile.open(fileobj=reader, mode="r|") as tf:
         for m in tf:
-            try:
-                tf.extract(m, dst, filter="data")
-            except TypeError:
-                tf.extract(m, dst)
+            result = _safe_tar_extract(tf, m, dst, trusted_source=False, ctx=ctx)
+            if result is not True:
+                errors += 1
+                print(f"\n  {C.YELLOW}Skipped: {m.name}: {result}{C.RESET}")
+                # Every string _safe_tar_extract returns is a policy refusal
+                # ("blocked: …"); a real I/O failure comes out as an exception.
+                # So this goes to the ONE refusal list the summary and the exit
+                # code read, exactly like the local engines. Keeping a private
+                # count here and nowhere else is why the pull's summary said
+                # "0 refused" and then accused its own arithmetic.
+                _note_refusal(m.name)
+                _log("refused", m.name, getattr(m, "size", 0),
+                     error="refused: %s" % result)
+                continue
             if not m.isdir():
                 done += 1
+                # The record gets a line per file here, like every other
+                # engine: a record whose only entries are the refusals cannot
+                # answer "which files did this run actually write".
+                _log("copied", m.name, getattr(m, "size", 0),
+                     method="tar_stream")
                 # let the byte-progress emitter report the running file count
                 if hasattr(reader, "files_done"):
                     reader.files_done = done
-    return done
+    return done, errors
 
 
 def _ssh_run(cli, cmd, timeout=1800):
@@ -16990,10 +18586,156 @@ def _ssh_tar_send(cli, cwd, rels):
     return out, err
 
 
+_SummaryTotals = namedtuple(
+    "_SummaryTotals",
+    "copied linked refused bytes_written bytes_refused bytes_deduped")
+
+
+def _refused_rel_size(rel, size_by_rel, link_map):
+    """Logical size of a refused file, or None when it cannot be known.
+
+    A refused COPY is in size_by_rel. A refused LINK is not — its size is its
+    canonical's, which is either another entry in this run or, for a cross-run
+    dedup match, a file already on disk. None means "do not guess": the byte
+    arithmetic below is skipped rather than reported wrong, because a summary
+    that invents a number is the thing this whole change exists to stop.
+    """
+    if rel in size_by_rel:
+        return size_by_rel[rel]
+    target = (link_map or {}).get(rel)
+    if isinstance(target, str):
+        return size_by_rel.get(target)
+    if isinstance(target, tuple) and target[0] == "__abs__":
+        try:
+            return os.path.getsize(target[1])
+        except OSError:
+            return None
+    return None
+
+
+def _print_files_summary(total_files, copy_entries, link_map,
+                         skipped_count=0, forecast=None, byte_totals=None):
+    """Print the DONE summary's Files line, and make it check itself.
+
+    ONE READER. The counts come from _REFUSED_PATHS and from nothing else: a
+    rel on that list is neither copied nor linked, whichever engine refused
+    it. Subtracting a total from a total — what this used to do — cannot work
+    when the refusals came from the link loop and the subtraction was applied
+    to the copy list, which is how a run that refused five files reported
+    "1 copied + 4 linked, 1 refused".
+
+    Returns the numbers it printed, so the Data line, the sudo audit file and
+    the --log JSON report the same run this line describes instead of each
+    recomputing it from len().
+
+    THREE SELF-CHECKS, because numbers printed on the same screen are not
+    compared by anyone:
+
+      copied + linked + refused + skipped == total
+          Every file in the run is in exactly one of those buckets. If the
+          arithmetic does not close, the summary says so instead of printing
+          a total it cannot justify.
+
+      written + refused + skipped + deduped == total bytes
+          The same closure over bytes, for the same reason: "Data: 17 B
+          written" for a run that wrote 4 B is the file-count bug in another
+          unit. Pass byte_totals=(total, saved, skipped) to enable it;
+          it is skipped, not guessed, when a refused file's size is unknown.
+
+      forecast == refused
+          Phase 3 predicts how many files the destination policy will refuse;
+          this is what it actually refused. The prediction and the result are
+          produced by different code from the same policy, so a disagreement
+          means one of them is wrong — and nothing else in the run would
+          notice. Pass forecast=None where no prediction was made.
+    """
+    refused = set(_REFUSED_PATHS)
+    size_by_rel = {e.rel: e.size for e in copy_entries}
+    copied = linked = 0
+    bytes_written = bytes_refused_copies = 0
+    for e in copy_entries:
+        if e.rel in refused:
+            bytes_refused_copies += e.size
+        else:
+            copied += 1
+            bytes_written += e.size
+    bytes_refused_links = 0
+    unknown_size = False
+    for rel in (link_map or {}):
+        if rel not in refused:
+            linked += 1
+            continue
+        sz = _refused_rel_size(rel, size_by_rel, link_map)
+        if sz is None:
+            unknown_size = True
+        else:
+            bytes_refused_links += sz
+    n_refused = len(refused)
+
+    bits = []
+    if link_map or n_refused:
+        bits.append(f"{copied} copied + {linked} linked")
+    if n_refused:
+        bits.append(_tr("{n} refused").format(n=n_refused))
+    print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
+          + (f" ({', '.join(bits)})" if bits else ""))
+
+    if copied + linked + n_refused + skipped_count != total_files:
+        print(f"  {C.YELLOW}Note:    these numbers do not add up: "
+              f"{copied} copied + {linked} linked + {n_refused} refused + "
+              f"{skipped_count} skipped = "
+              f"{copied + linked + n_refused + skipped_count}, "
+              f"not {total_files}. One of them is wrong — treat the run as "
+              f"unreported, not as done.{C.RESET}")
+
+    bytes_refused = bytes_refused_copies + bytes_refused_links
+    bytes_deduped = 0
+    if byte_totals is not None:
+        total_bytes, saved_bytes, skipped_bytes = byte_totals
+        bytes_deduped = saved_bytes - bytes_refused_links
+        if not unknown_size:
+            closed = (bytes_written + bytes_refused + bytes_deduped
+                      + skipped_bytes)
+            if closed != total_bytes:
+                print(f"  {C.YELLOW}Note:    the bytes do not add up: "
+                      f"{fmt_size(bytes_written)} written + "
+                      f"{fmt_size(bytes_refused)} refused + "
+                      f"{fmt_size(bytes_deduped)} deduped + "
+                      f"{fmt_size(skipped_bytes)} skipped = "
+                      f"{fmt_size(closed)}, not {fmt_size(total_bytes)}. "
+                      f"One of them is wrong — treat the run as unreported, "
+                      f"not as done.{C.RESET}")
+
+    if forecast is not None and forecast != n_refused:
+        print(f"  {C.YELLOW}Note:    the space-check phase predicted "
+              f"{forecast} refused file(s), the copy refused {n_refused}. "
+              f"The prediction and the result disagree; one of them is "
+              f"wrong.{C.RESET}")
+    return _SummaryTotals(copied, linked, n_refused,
+                          bytes_written, bytes_refused, bytes_deduped)
+
+
 def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
-                      copied=None, linked=0, skipped=0, saved=0, verified=None):
+                      copied=None, linked=0, skipped=0, saved=0, verified=None,
+                      failed=0):
     """Standardized completion block (matches the SFTP/local modes), printed on
-    every SSH-only transfer so the GUI and CLI show a consistent summary."""
+    every SSH-only transfer so the GUI and CLI show a consistent summary.
+
+    `failed` is the fifth bucket, and it exists because the closure check
+    without it was worse than no check at all: a pull whose extractor refused
+    five members, or whose link hit EXDEV, or where the remote simply did not
+    send a file, closes short — and the summary answered that by telling the
+    user "one of them is wrong — treat the run as unreported", on a run that
+    had just reported the failure correctly two lines above. A check that
+    fires on correct runs teaches people to ignore it, which costs more than
+    the check is worth. Every file is now in exactly one of five buckets:
+    copied, linked, skipped, refused (policy said no) or failed (it was
+    attempted and broke), and the note fires only when they genuinely do not
+    account for the total.
+
+    Refusals come from _REFUSED_PATHS and nowhere else — the same list the
+    local engines write to and the same one the exit code reads — so the pull
+    can no longer report a number the rest of the run disagrees with."""
     speed = nbytes / elapsed if elapsed > 0 else 0
     print()
     print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{source}{C.RESET}")
@@ -17005,8 +18747,25 @@ def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
         parts.append(_tr("{n} linked").format(n=linked))
     if skipped:
         parts.append(_tr("{n} skipped").format(n=skipped))
+    # A refused file was never written, and it is not subtracted from the
+    # total either: the total is what the user asked for, and the breakdown
+    # has to account for all of it. Shrinking the total was how the refused
+    # files disappeared from the one number people read.
+    _refused = len(_REFUSED_PATHS)
+    if _refused:
+        parts.append(_tr("{n} refused").format(n=_refused))
+    if failed:
+        parts.append(_tr("{n} failed").format(n=failed))
     detail = f"  ({', '.join(parts)})" if parts else ""
     print(f"  {_pad(_tr('Files:'), 11)}{C.BOLD}{total_files}{C.RESET} {_tr('total')}{detail}")
+    if copied is not None:
+        _closed = copied + linked + skipped + _refused + failed
+        if _closed != total_files:
+            print(f"  {C.YELLOW}Note:    these numbers do not add up: "
+                  f"{copied} copied + {linked} linked + {_refused} refused + "
+                  f"{failed} failed + {skipped} skipped = {_closed}, not "
+                  f"{total_files}. One of them is wrong — treat the run as "
+                  f"unreported, not as done.{C.RESET}")
     sv = "  (" + _tr("{size} saved by dedup").format(size=fmt_size(saved)) + ")" if saved else ""
     print(f"  {_pad(_tr('Data:'), 11)}{C.BOLD}{fmt_size(nbytes)}{C.RESET} {verb}{sv}")
     print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
@@ -17019,6 +18778,97 @@ def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
         # say so, or "Done" reads as "checked and correct".
         print(f"  {_pad(_tr('Verify:'), 11)}{C.YELLOW}"
               f"{_tr('not run')}{C.RESET}")
+
+
+def _ssh_record(args, source, dest, mode, total_files, total_bytes, copied,
+                linked, skipped, errors, bytes_written, bytes_refused,
+                dedup_saved, elapsed, algo):
+    """Write the --log-file record for a tar-over-SSH transfer.
+
+    This transport accepted --log-file and wrote nothing. Not a wrong number —
+    no file at all, and exit 0 over it, so anything reading the record instead
+    of the screen (which is every unattended run) had no way to tell a clean
+    transfer from one that refused every file. The flag was parsed and then
+    dropped on the floor by the one path a server with SFTP switched off
+    selects automatically.
+
+    The shape is the shape every other flow writes, so a consumer never has to
+    know which transport carried the bytes. `refused` is read from
+    _REFUSED_PATHS — the same list _ssh_done_summary just printed from — so the
+    record and the screen cannot tell two different stories about one run.
+    """
+    speed = bytes_written / elapsed if elapsed > 0 else 0
+    summary = {
+        "mode": mode,
+        "total_files": total_files, "copied": copied, "linked": linked,
+        "refused": len(_REFUSED_PATHS),
+        "refused_paths": sorted(_REFUSED_PATHS)[:100],
+        "skipped": skipped, "errors": errors,
+        "total_bytes": total_bytes, "bytes_written": bytes_written,
+        "bytes_refused": bytes_refused, "dedup_saved": dedup_saved,
+        "elapsed_sec": round(elapsed, 2), "avg_speed_bps": round(speed),
+        # The algorithm the two ends actually agreed on, or none: a transfer
+        # with no hash tool in common did not dedup and did not verify, and
+        # naming an algorithm it never ran would say the opposite.
+        "hash_algo": algo or None,
+    }
+    # BEFORE write_log_file, which clears _log_entries — and unconditionally,
+    # because write_sudo_audit decides for itself whether this run is
+    # elevated. An elevated transfer over this transport left no audit trail
+    # at all, which is the one kind of run that most needs one.
+    write_sudo_audit(source, dest, summary)
+    if getattr(args, "log_file", None):
+        write_log_file(args.log_file,
+                       dict(summary, source=source, destination=dest))
+
+
+def _plan_record(args, source, destination, mode, total_files, copy_entries,
+                 link_map, skipped_count, total_bytes, saved_bytes,
+                 skipped_bytes, refused=()):
+    """The --log-file record for a plan.
+
+    --dry-run accepted --log-file and wrote nothing — the same shape of defect
+    as the transports that wrote no record at all, one flag over. The plan was
+    printed for a person to read and left unreadable to the thing that has to
+    decide whether to run it for real, so nothing could compare what was
+    forecast against what then happened.
+
+    Same buckets as a real run's record, plus `dry_run: true` so a consumer
+    can tell a forecast from a result. Refusals are not estimated: the caller
+    passes the rels the destination policy already said no to, so a plan
+    cannot promise to copy a file the run is going to refuse.
+    """
+    if not getattr(args, "log_file", None):
+        return
+    refused = set(refused)
+    size_by_rel = {e.rel: e.size for e in copy_entries}
+    copied = [e for e in copy_entries if e.rel not in refused]
+    linked = [k for k in (link_map or {}) if k not in refused]
+    refused_link_bytes = sum(
+        _refused_rel_size(k, size_by_rel, link_map) or 0
+        for k in (link_map or {}) if k in refused)
+    write_log_file(args.log_file, {
+        "source": source, "destination": destination, "mode": mode,
+        "dry_run": True,
+        "total_files": total_files,
+        "copied": len(copied), "linked": len(linked),
+        "refused": len(refused), "refused_paths": sorted(refused)[:100],
+        "skipped": skipped_count, "errors": 0,
+        "total_bytes": total_bytes,
+        "bytes_written": sum(e.size for e in copied),
+        "bytes_refused": sum(
+            _refused_rel_size(r, size_by_rel, link_map) or 0 for r in refused),
+        "dedup_saved": saved_bytes - refused_link_bytes,
+        "elapsed_sec": 0, "avg_speed_bps": 0, "hash_algo": _hash_name,
+    })
+
+
+def _planned_local_refusals(dst_root, copy_entries, link_map, trusted_source):
+    """Which rels the LOCAL destination policy will refuse — asked of
+    _dest_policy itself, so the plan and the run answer with one function."""
+    return {rel for rel in ([e.rel for e in copy_entries] + list(link_map or {}))
+            if _dest_policy(dst_root, rel,
+                            trusted_source=trusted_source)[0] is None}
 
 
 def _local_dedup_db_path(dst):
@@ -17083,30 +18933,6 @@ def _local_link_caps(dest):
             except OSError:
                 pass
     return caps
-
-
-def _dedup_groups(rels, size_of, hash_of):
-    """Group by content. Only hashes files whose size collides (cheap).
-    Returns (keep_rels, links) where links=[(dup_rel, target_rel)]."""
-    bysize = {}
-    for rel in rels:
-        bysize.setdefault(size_of(rel), []).append(rel)
-    keep, links, byhash = [], [], {}
-    for rel in rels:
-        sz = size_of(rel)
-        if len(bysize[sz]) == 1 or sz == 0:
-            keep.append(rel)
-            continue
-        h = hash_of(rel)
-        if not h:
-            keep.append(rel)
-            continue
-        if h in byhash:
-            links.append((rel, byhash[h]))
-        else:
-            byhash[h] = rel
-            keep.append(rel)
-    return keep, links
 
 
 SMALL_FILE_THRESHOLD = 1024 * 1024     # < 1 MB → bundled together
@@ -17285,7 +19111,19 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
     incl. files already on the destination via a cached hash DB), and post-copy
     verify — all over plain SSH (no SFTP)."""
     dcli = _tar_ssh_connect(dst_remote, args.ssh_key, _resolved_dst_pw(args), args.compress)
-    caps = _ssh_exec_caps(dcli, dst)
+
+    def _run_dst(cmd):
+        _o, _e, _rc = _ssh_run(dcli, cmd)
+        return _o, _rc
+
+    # Before _ssh_exec_caps, which runs `mkdir -p <dst> && cd <dst> && : >
+    # .fc_a` to probe link support — a write through the symlink under
+    # question, made before anyone asked the question.
+    _dst_escape = _remote_dest_path_escape(
+        _shell_abs_probe(_run_dst), dst, _shell_remote_cwd(_run_dst, dst))
+    caps = _ssh_exec_caps(dcli, dst) if not _dst_escape else {
+        "hash": None, "halgo": None, "hashes": {}, "hardlink": False,
+        "symlink": False, "find_printf": False}
     algo = caps["halgo"] or "sha256"
     link_kind = "hardlink" if caps["hardlink"] else ("symlink" if caps["symlink"] else "none")
     banner("SSH (no SFTP) — local → remote  [dedup · incremental · verify]")
@@ -17350,6 +19188,10 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
             else:
                 keep.append(rel)
         rels = keep
+    # Same reason as the pull: the record's byte closure is checked against
+    # per-file entries, so an unchanged file has to name its own bytes.
+    for _rel in skipped:
+        _log("skipped", _rel, size_by_rel[_rel], reason="unchanged")
 
     # ── Phase 2 — Deduplication (within transfer + against files on the dest) ──
     banner("Phase 2 — Deduplication")
@@ -17377,29 +19219,59 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
         dcli.close()
         return 0
 
-    total = sum(size_by_rel[r] for r in rels) or 1
+    # ── Destination-path policy on the far side ──
+    # The same question the SFTP push asks, over the only channel this
+    # transport has, and with the same answer: a remote destination is strict.
+    # The destination path itself leading elsewhere was already decided above,
+    # before anything could be created.
+    _all_rels = list(rels) + [d for d, _t in links]
+    if _dst_escape:
+        _dst_refused = set(_all_rels)
+        _dst_found = [{"rel": "", "target": _dst_escape[1],
+                       "count": len(_dst_refused)}]
+    else:
+        _dst_refused, _dst_found = _remote_dest_refusals(
+            dst, _all_rels,
+            *_shell_dest_probe(_run_dst, dst, _dest_dir_ladder(_all_rels)))
+    _record_remote_refusals(dst, _dst_refused, _dst_found,
+                            lambda rel: size_by_rel.get(rel, 0))
+    send_rels = [r for r in rels if r not in _dst_refused]
+    send_links = [(d, t) for d, t in links if d not in _dst_refused]
+
+    total = sum(size_by_rel[r] for r in send_rels) or 1
 
     # ── Phase 3 — Space check (default; override with --force) ──
     banner("Phase 3 — Space check")
-    if rels and not _check_space_remote(dcli, dst, sum(size_by_rel[r] for r in rels), args.force):
+    if send_rels and not _check_space_remote(dcli, dst, sum(size_by_rel[r] for r in send_rels), args.force):
         if cache:
             cache.close()
         dcli.close()
         return 1
 
     # ── Phase 4 — Local-to-remote copy ──
+    # Initialised before the branch, so an empty transfer cannot reach the
+    # summary with it unbound.
+    _failed_adds = []
     banner("Phase 4 — Local-to-remote copy")
-    print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)})\n")
-    if rels:
+    print(f"  Strategy: tar stream for {len(send_rels)} files ({fmt_size(total)})\n")
+    if send_rels:
         q = shlex.quote(dst)
         di, do, de = dcli.exec_command("mkdir -p %s && cd %s && tar xpf -" % (q, q))
-        writer = _TarWriteCounter(di, total, len(rels), start)
+        writer = _TarWriteCounter(di, total, len(send_rels), start)
         with tarfile.open(fileobj=writer, mode="w|") as tf:
-            for i, rel in enumerate(rels):
+            for i, rel in enumerate(send_rels):
                 try:
                     tf.add(ap_by_rel[rel], arcname=rel, recursive=False)
-                except OSError:
-                    pass
+                    _log("copied", rel, size_by_rel[rel], method="tar_stream")
+                except OSError as e:
+                    # It used to be `pass`: the file was left out of the
+                    # archive, counted as copied, and the run exited 0. A
+                    # source this process could not read is a file the user
+                    # asked for and did not get, and it has to reach the
+                    # summary, the record and the exit code like any other.
+                    _failed_adds.append(rel)
+                    _log("error", rel, size_by_rel[rel], error=str(e),
+                         source_read=_benign_source_error(e, ap_by_rel[rel]))
                 writer.files_done = i + 1
         di.channel.shutdown_write()
         rc = do.channel.recv_exit_status()
@@ -17410,9 +19282,9 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
             return 1
 
     # 5) create dedup links on the remote, honoring its FS capability
-    if links:
+    if send_links:
         cmds = []
-        for dup, target in links:
+        for dup, target in send_links:
             dd = posixpath.dirname(dup)
             if dd:
                 cmds.append("mkdir -p " + shlex.quote(dd))
@@ -17429,7 +19301,7 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
     verified = True
     vhashes = {}
     if not args.no_verify and caps["hash"]:
-        check = list(rels) + [d for d, _t in links]
+        check = list(send_rels) + [d for d, _t in send_links]
         banner("Verifying")
         rh = _ssh_remote_hashes(dcli, dst, check, caps)
         bad = 0
@@ -17453,23 +19325,44 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
     if cache is not None:
         all_h = dict(copy_hashes or {})
         all_h.update(vhashes)
-        for rel in rels:
+        for rel in send_rels:
             h = all_h.get(rel) or (_hash_local_file(ap_by_rel[rel], algo)
                                    if rel in ap_by_rel else None)
             if h:
                 cache.record(rel, size_by_rel[rel], mt_by_rel[rel], h)
         cache.close()
 
-    _tar_emit(total, total, len(rels) + len(links), len(files), start, final=True)
+    _tar_emit(total, total, len(send_rels) + len(send_links), len(files),
+              start, final=True)
     src_disp = (os.path.abspath(local_srcs[0]) if local_srcs and len(local_srcs) == 1
                 else f"{len(local_srcs or [])} sources")
+    _elapsed = time.time() - start
+    _refused_now = set(_REFUSED_PATHS)
+    _failed = set(_failed_adds)
+    _sent = [r for r in send_rels if r not in _failed]
     _ssh_done_summary(
         src_disp, f"{dst_remote.user}@{dst_remote.host}:{dst}", len(files),
-        sum(size_by_rel[r] for r in rels), time.time() - start, "uploaded",
-        copied=len(rels), linked=len(links), skipped=len(skipped), saved=saved,
-        verified=(verified if (not args.no_verify and caps["hash"]) else None))
+        sum(size_by_rel[r] for r in _sent), _elapsed, "uploaded",
+        copied=len(_sent), linked=len(send_links), skipped=len(skipped),
+        saved=saved,
+        verified=(verified if (not args.no_verify and caps["hash"]) else None),
+        failed=len(_failed))
+    _ssh_record(
+        args, src_disp, f"{dst_remote.user}@{dst_remote.host}:{dst}",
+        "local_to_remote", total_files=len(files),
+        total_bytes=sum(size_by_rel.values()),
+        copied=len(_sent), linked=len(send_links), skipped=len(skipped),
+        errors=len(_failed),
+        bytes_written=sum(size_by_rel[r] for r in rels
+                          if r not in _refused_now),
+        bytes_refused=sum(size_by_rel.get(r, 0) for r in _refused_now),
+        dedup_saved=saved - sum(size_by_rel.get(d, 0) for d, _t in links
+                                if d in _refused_now),
+        elapsed=_elapsed, algo=(algo if caps["hash"] else None))
     dcli.close()
-    return 0 if verified else 1
+    # A refused file is one the user asked for and did not get, so it fails
+    # the run on its own — the same rule the pull already applies.
+    return 0 if (verified and not _failed and not _REFUSED_PATHS) else 1
 
 
 def _ssh_pull_smart(src_remote, dst, args, start):
@@ -17520,6 +19413,12 @@ def _ssh_pull_smart(src_remote, dst, args, start):
                         skipped.add(rel)
                 except OSError:
                     pass
+    # An unchanged file is a bucket in the record like any other, and its
+    # bytes have to be nameable: the record's byte closure is checked against
+    # the per-file entries, not against a count. Every other transport logs
+    # these; this one counted them and said nothing.
+    for _rel in skipped:
+        _log("skipped", _rel, src_files[_rel][0], reason="unchanged")
     rels = [r for r in src_files if r not in skipped]
 
     # ── Phase 2 — Deduplication (within transfer + against existing LOCAL dest,
@@ -17565,8 +19464,20 @@ def _ssh_pull_smart(src_remote, dst, args, start):
                 if abs_t:
                     links.append((r, abs_t)); drop.add(r); saved += src_files[r][0]
                 elif h in seen:
-                    links.append((r, os.path.join(dst, seen[h].replace("/", os.sep))))
-                    drop.add(r); saved += src_files[r][0]
+                    # seen[h] is a name the REMOTE chose. The other branch's
+                    # target comes from ddb.safe_link_target(), which resolves
+                    # through safe_full_path(), lstats, requires a regular
+                    # file of the right size and re-hashes the contents — so
+                    # that one arrives already checked. This one does not, and
+                    # it becomes the source argument of os.link().
+                    _lt = _safe_pull_link_dest(dst, seen[h])
+                    if _lt is None:
+                        print(f"\n  {C.RED}Refusing unsafe link target: "
+                              f"{seen[h]}{C.RESET}")
+                        _log("error", r, 0, error="unsafe link target")
+                    else:
+                        links.append((r, _lt))
+                        drop.add(r); saved += src_files[r][0]
                 else:
                     seen[h] = r; copy_hashes[r] = h
             rels = [r for r in rels if r not in drop]
@@ -17602,12 +19513,23 @@ def _ssh_pull_smart(src_remote, dst, args, start):
         return 1
 
     # ── Phase 4 — Remote-to-local copy ──
+    # Initialised here, not inside `if rels:`, so an empty transfer cannot
+    # reach the exit test with these unbound.
+    delivered, rejected, link_errors, linked_ok = 0, 0, 0, 0
     banner("Phase 4 — Remote-to-local copy")
+    # Said once, before anything is written. Discovering a symlinked
+    # destination directory one refused file at a time is a flood, not a
+    # diagnosis, and the fix — point the destination at the real path — is
+    # something the user can only act on before the run, not after it.
+    # Remote-chosen names: the extractor below runs _safe_tar_extract with
+    # trusted_source=False, so the preflight asks the untrusted question too.
+    warn_symlinked_dest_dirs(dst, list(rels) + [d for d, _t in links],
+                             trusted_source=False)
     print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)})\n")
     if rels:
         so, se = _ssh_tar_send(scli, parent, rels)
         reader = _TarReadCounter(so, total, len(rels), start)
-        _tar_extract_stream(reader, dst)
+        delivered, rejected = _tar_extract_stream(reader, dst)
         rc = so.channel.recv_exit_status()
         if rc:
             print(f"{C.RED}Error: "
@@ -17615,19 +19537,77 @@ def _ssh_pull_smart(src_remote, dst, args, start):
             scli.close()
             return 1
 
+    # A member the extractor refused is a file the user asked for and did not
+    # get. It has to survive to the exit code and the summary on its own,
+    # because verification — the only other thing that can fail this run — does
+    # not run at all under --no-verify or against a remote with no hash tool.
+    if rejected:
+        print(f"\n  {C.RED}"
+              + _tr("{n} file(s) were refused and not written").format(n=rejected)
+              + f"{C.RESET}")
+    if delivered + rejected and delivered < len(rels):
+        _log("error", "(batch)", 0,
+             error="%d of %d requested files were not delivered"
+                   % (len(rels) - delivered, len(rels)))
+
     # local dedup links honoring the local FS (target is an ABSOLUTE path)
+    _abs_dst = os.path.abspath(dst)          # loop-invariant; resolved once
     for dup, tp in links:
-        dp = os.path.join(dst, dup.replace("/", os.sep))
+        # BOTH sides are checked. dup is a REMOTE-supplied name and the loop
+        # removes whatever is at the joined path before linking, so unchecked
+        # it is a delete at an attacker-chosen location. tp has the same
+        # provenance in the same-run case — it is built from seen[h], another
+        # name the remote chose — and os.link() would then hardlink an
+        # attacker-named path into the destination, or os.symlink() point at
+        # it. create_links() validates both for exactly this reason; this loop
+        # validated only the destination and was missed.
+        dp = _safe_pull_link_dest(dst, dup)
+        if dp is None:
+            # A refusal, not a link error — same split as create_links():
+            # link_errors is for links that were ATTEMPTED and failed (EXDEV,
+            # EPERM). Reporting a refusal as an error is how the summary lost
+            # track of which files were policy-refused and which broke.
+            print(f"\n  {C.RED}Refusing unsafe link path: {dup}{C.RESET}")
+            _note_refusal(dup)
+            _log("refused", dup, 0,
+                 error="refused: link path resolves outside the destination")
+            continue
+        # Both provenances are already checked by the time they get here — the
+        # remote-named one above, the cross-run one by safe_link_target(). This
+        # is the second line, and it needs no knowledge of which is which: a
+        # target inside the destination must still pass the path check, and one
+        # outside it must be a real, non-symlink regular file, which is exactly
+        # what safe_link_target() guarantees and nothing else can produce.
+        if os.path.abspath(tp).startswith(_abs_dst + os.sep):
+            safe_tp = _safe_pull_link_dest(dst, os.path.relpath(tp, dst))
+        else:
+            try:
+                _st = os.lstat(tp)
+                safe_tp = tp if stat.S_ISREG(_st.st_mode) else None
+            except OSError:
+                safe_tp = None
+        if safe_tp is None:
+            # Named by the file the user does not get — the duplicate — for the
+            # same reason create_links() does: recording the canonical name
+            # would count a file that WAS written as one that was not.
+            print(f"\n  {C.RED}Refusing unsafe link target: {tp}{C.RESET}")
+            _note_refusal(dup)
+            _log("refused", dup, 0,
+                 error="refused: link target resolves outside the destination")
+            continue
         try:
             os.makedirs(os.path.dirname(dp), exist_ok=True)
             if os.path.lexists(dp):
                 os.remove(dp)
             if lcaps["hardlink"]:
-                os.link(tp, dp)
+                os.link(safe_tp, dp)
             else:
-                os.symlink(os.path.relpath(tp, os.path.dirname(dp)), dp)
-        except OSError:
-            pass
+                os.symlink(os.path.relpath(safe_tp, os.path.dirname(dp)), dp)
+            linked_ok += 1
+        except OSError as e:
+            # A link that could not be made is a file the user did not get.
+            link_errors += 1
+            _log("error", dup, 0, error="link failed: %s" % e)
 
     # verify: hash local copies against remote hashes
     verified = True
@@ -17689,13 +19669,46 @@ def _ssh_pull_smart(src_remote, dst, args, start):
             cache.close()
 
     _tar_emit(total, total, len(rels) + len(links), len(src_files), start, final=True)
+    # Report what landed, not what was asked for. The fifth bucket: files that
+    # were attempted and did not arrive. `rejected` members and refused link
+    # names are NOT in here — they are in _REFUSED_PATHS, which the summary
+    # reads directly — so the two cannot double-count the same file.
+    _undelivered = max(0, len(rels) - delivered - rejected)
+    _elapsed = time.time() - start
     _ssh_done_summary(
         f"{src_remote.user}@{src_remote.host}:{rpath}", os.path.abspath(dst),
-        len(src_files), sum(src_files[r][0] for r in rels), time.time() - start,
-        "downloaded", copied=len(rels), linked=len(links), skipped=len(skipped),
-        saved=saved, verified=(verified if (not args.no_verify and caps["hash"]) else None))
+        len(src_files), sum(src_files[r][0] for r in rels), _elapsed,
+        "downloaded", copied=delivered, linked=linked_ok, skipped=len(skipped),
+        saved=saved, verified=(verified if (not args.no_verify and caps["hash"]) else None),
+        failed=link_errors + _undelivered)
+    # The same five buckets over BYTES, and they close for the same reason the
+    # file counts do: a refused link's bytes move out of "saved by dedup" and
+    # into "refused" instead of being counted in both, which is the convention
+    # _print_files_summary settled on for the local flow.
+    _refused_now = set(_REFUSED_PATHS)
+    _sz = lambda r: src_files.get(r, (0, 0))[0]
+    _refused_link_bytes = sum(_sz(d) for d, _t in links if d in _refused_now)
+    _ssh_record(
+        args, f"{src_remote.user}@{src_remote.host}:{rpath}",
+        os.path.abspath(dst), "remote_to_local",
+        total_files=len(src_files),
+        total_bytes=sum(v[0] for v in src_files.values()),
+        copied=delivered, linked=linked_ok, skipped=len(skipped),
+        errors=link_errors + _undelivered,
+        bytes_written=sum(_sz(r) for r in rels if r not in _refused_now),
+        bytes_refused=sum(_sz(r) for r in _refused_now),
+        dedup_saved=saved - _refused_link_bytes,
+        elapsed=_elapsed, algo=(algo if caps["hash"] else None))
     scli.close()
-    return 0 if verified else 1
+    # Three independent ways this run can have failed, and only one of them is
+    # verification. A refused member and a link that could not be made are
+    # both "the user did not get what they asked for", and both used to exit 0.
+    # Refusals are read from the shared list rather than from `rejected`: the
+    # link loop's refusals never reached that counter, so a run whose only
+    # refusal was an unsafe link name exited 0.
+    if _REFUSED_PATHS or link_errors or _undelivered or not verified:
+        return 1
+    return 0
 
 
 def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
@@ -17706,8 +19719,19 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
     rpath = src_remote.path.rstrip("/") or "/"
     parent = posixpath.dirname(rpath) or "/"
     base = posixpath.basename(rpath) or rpath
+    def _run_dst(cmd):
+        _o, _e, _rc = _ssh_run(dcli, cmd)
+        return _o, _rc
+
+    # Before _ssh_exec_caps touches the destination: its link probe creates
+    # the directory and writes into it, which is a write through the symlink
+    # under question.
+    _dst_escape = _remote_dest_path_escape(
+        _shell_abs_probe(_run_dst), dst, _shell_remote_cwd(_run_dst, dst))
     scaps = _ssh_exec_caps(scli, "/tmp")        # source: hash/find
-    dcaps = _ssh_exec_caps(dcli, dst)            # dest: link support (+hash/find)
+    dcaps = (_ssh_exec_caps(dcli, dst) if not _dst_escape else
+             {"hash": None, "halgo": None, "hashes": {}, "hardlink": False,
+              "symlink": False, "find_printf": False})
     # a hash algorithm both ends share (needed for dedup + verify)
     algo = _common_hash_algo(scaps, dcaps)
     if algo:
@@ -17753,6 +19777,10 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
             d = dmap.get(rel)
             if d and d[0] == sz and (mt == 0.0 or d[1] == 0.0 or abs(d[1] - mt) <= 2):
                 skipped.add(rel)
+    # Same reason as the other two SSH-only directions: the record's bytes are
+    # closed against the per-file entries, so an unchanged file names its own.
+    for _rel in skipped:
+        _log("skipped", _rel, src_files[_rel][0], reason="unchanged")
     rels = [r for r in src_files if r not in skipped]
 
     # ── Phase 2 — Deduplication (hash on source; link on dest per its FS) ──
@@ -17782,9 +19810,28 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
         dcli.close()
         return 0
 
+    # ── Destination-path policy on the far side ──
+    # The names come from a remote SOURCE, so they are untrusted whatever this
+    # process's privilege is — the same answer a pull gets. The destination
+    # path itself was decided above, before anything could be created.
+    _all_rels = list(rels) + [d for d, _t in links]
+    if _dst_escape:
+        _dst_refused = set(_all_rels)
+        _dst_found = [{"rel": "", "target": _dst_escape[1],
+                       "count": len(_dst_refused)}]
+    else:
+        _dst_refused, _dst_found = _remote_dest_refusals(
+            dst, _all_rels,
+            *_shell_dest_probe(_run_dst, dst, _dest_dir_ladder(_all_rels)))
+    _record_remote_refusals(dst, _dst_refused, _dst_found,
+                            lambda rel: src_files.get(rel, (0, 0))[0])
+    send_rels = [r for r in rels if r not in _dst_refused]
+    send_links = [(d, t) for d, t in links if d not in _dst_refused]
+
     # ── Phase 3 — Space check (default; override with --force) ──
     banner("Phase 3 — Space check")
-    if rels and not _check_space_remote(dcli, dst, sum(src_files[r][0] for r in rels), args.force):
+    if send_rels and not _check_space_remote(
+            dcli, dst, sum(src_files[r][0] for r in send_rels), args.force):
         if cache:
             cache.close()
         scli.close()
@@ -17793,12 +19840,13 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
 
     # ── Phase 4 — Remote-to-remote copy (in tar chunks) ──
     banner("Phase 4 — Remote-to-remote copy")
-    total = sum(src_files[r][0] for r in rels) or 1
+    total = sum(src_files[r][0] for r in send_rels) or 1
     done_bytes = done_files = last = 0
     chunk_mb = max(1, getattr(args, "chunk_size", 100))
     chunk_bytes = chunk_mb * 1024 * 1024
-    batches = _batch_rels(rels, lambda r: src_files[r][0], max_bytes=chunk_bytes)
-    print(f"  Strategy: tar stream for {len(rels)} files ({fmt_size(total)}) "
+    batches = _batch_rels(send_rels, lambda r: src_files[r][0],
+                          max_bytes=chunk_bytes)
+    print(f"  Strategy: tar stream for {len(send_rels)} files ({fmt_size(total)}) "
           f"in {len(batches)} chunk(s) of ~{chunk_mb} MB\n")
     for bi, batch in enumerate(batches):
         so, se = _ssh_tar_send(scli, parent, batch)
@@ -17812,7 +19860,7 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
             done_bytes += len(b)
             if done_bytes - last >= 2 * 1024 * 1024:
                 last = done_bytes
-                _tar_emit(done_bytes, total, done_files, len(rels), start)
+                _tar_emit(done_bytes, total, done_files, len(send_rels), start)
         di.channel.shutdown_write()
         rcs, rcd = so.channel.recv_exit_status(), do.channel.recv_exit_status()
         if rcs or rcd:
@@ -17822,14 +19870,14 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
             dcli.close()
             return 1
         done_files += len(batch)
-        _tar_emit(done_bytes, total, done_files, len(rels), start)
+        _tar_emit(done_bytes, total, done_files, len(send_rels), start)
         print(f"  chunk {bi + 1}/{len(batches)} done "
               f"({done_files}/{len(rels)} files, {fmt_size(done_bytes)})")
 
     # dedup links on the destination remote, honoring its FS
-    if links:
+    if send_links:
         cmds = []
-        for dup, target in links:
+        for dup, target in send_links:
             dd = posixpath.dirname(dup)
             if dd:
                 cmds.append("mkdir -p " + shlex.quote(dd))
@@ -17846,7 +19894,7 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
     verified = True
     vhashes = {}
     if not args.no_verify and algo:
-        check = list(rels) + [d for d, _t in links]
+        check = list(send_rels) + [d for d, _t in send_links]
         banner("Verifying")
         sh = _ssh_remote_hashes(scli, parent, check, scaps)
         dh = _ssh_remote_hashes(dcli, dst, check, dcaps)
@@ -17868,22 +19916,39 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
     if cache is not None:
         all_h = dict(copy_hashes or {})
         all_h.update(vhashes)
-        for rel in rels:
+        for rel in send_rels:
             h = all_h.get(rel)
             if h:
                 cache.record(rel, src_files[rel][0], src_files[rel][1], h)
         cache.close()
 
-    _tar_emit(total, total, len(rels) + len(links), len(src_files), start, final=True)
+    _tar_emit(total, total, len(send_rels) + len(send_links), len(src_files),
+              start, final=True)
+    _elapsed = time.time() - start
+    _refused_now = set(_REFUSED_PATHS)
+    _sz = lambda r: src_files.get(r, (0, 0))[0]
     _ssh_done_summary(
         f"{src_remote.user}@{src_remote.host}:{rpath}",
         f"{dst_remote.user}@{dst_remote.host}:{dst}", len(src_files),
-        sum(src_files[r][0] for r in rels), time.time() - start, "transferred",
-        copied=len(rels), linked=len(links), skipped=len(skipped), saved=saved,
+        sum(_sz(r) for r in send_rels), _elapsed, "transferred",
+        copied=len(send_rels), linked=len(send_links), skipped=len(skipped),
+        saved=saved,
         verified=(verified if (not args.no_verify and algo) else None))
+    _ssh_record(
+        args, f"{src_remote.user}@{src_remote.host}:{rpath}",
+        f"{dst_remote.user}@{dst_remote.host}:{dst}", "remote_to_remote",
+        total_files=len(src_files),
+        total_bytes=sum(v[0] for v in src_files.values()),
+        copied=len(send_rels), linked=len(send_links), skipped=len(skipped),
+        errors=0,
+        bytes_written=sum(_sz(r) for r in rels if r not in _refused_now),
+        bytes_refused=sum(_sz(r) for r in _refused_now),
+        dedup_saved=saved - sum(_sz(d) for d, _t in links
+                                if d in _refused_now),
+        elapsed=_elapsed, algo=algo)
     scli.close()
     dcli.close()
-    return 0 if verified else 1
+    return 0 if (verified and not _REFUSED_PATHS) else 1
 
 
 def copy_via_tar_ssh(src_remote, dst_remote, dst, local_srcs, args):
@@ -17924,6 +19989,15 @@ def main():
     # copy failure (exit 2). Start each run with a clean slate.
     _COPY_ERRORS.clear()
     _QUIET_STATS.clear()
+    # Same reason, same place: the refusal list decides the exit code and the
+    # summary's breakdown, so a second run in the same interpreter inheriting
+    # the first one's refusals reports files it copied fine as refused and
+    # exits 1. Every flow — local, pull, push, relay, cloud, http — is entered
+    # through here, so one reset covers all of them and none can drift.
+    # The resolved-root cache goes with it: it is keyed by the destination
+    # string, and a second run against a recreated path must resolve it again.
+    _reset_refused_paths()
+    _REAL_ROOT_CACHE.clear()
     parser = argparse.ArgumentParser(
         prog="blitcp",
         description=_tr("Block-order fast copy with dedup — reads files in physical "
@@ -18000,10 +20074,26 @@ def main():
                                  "line are all you get."))
     copy_grp.add_argument("--no-verify", action="store_true",
                         help=_tr("Skip post-copy verification"))
+    copy_grp.add_argument("--trust-remote-modes", action="store_true",
+                        dest="trust_remote_modes",
+                        help=_tr("Keep the group/world write bits a remote "
+                                 "source sends. Off by default: a pulled file "
+                                 "that was 0664 lands 0644, so a machine you "
+                                 "do not control cannot decide that what it "
+                                 "sends is group-writable on yours. setuid and "
+                                 "setgid are stripped either way."))
     copy_grp.add_argument("--log-file", default=None,
                         help=_tr("Write structured JSON log to file"))
     copy_grp.add_argument("--no-dedup", action="store_true",
                         help=_tr("Disable deduplication"))
+    copy_grp.add_argument("--dedup-in-sync-folder", action="store_true",
+                        dest="dedup_in_sync_folder",
+                        help=_tr("Keep hard-link deduplication even when the destination "
+                                 "is inside a cloud-synced folder (OneDrive, Dropbox, "
+                                 "Google Drive). Off by default: the sync client uploads "
+                                 "every path anyway, so links save no remote space, and "
+                                 "the shared inode means editing one copy rewrites the "
+                                 "other. Windows only; no other platform is affected."))
     copy_grp.add_argument("--hash", choices=["auto", "xxh128", "sha256"],
                         default="auto",
                         help=_tr("Hash algorithm for dedup/verify. auto (default): xxh128 if installed, else sha256. xxh128: force xxh128 (10x faster, non-cryptographic). sha256: force sha256 (cryptographic; collision-resistant)."))
@@ -18189,6 +20279,19 @@ def main():
     apply_named_endpoints(args)
 
     # ── Plain HTTP(S) source routing ──────────────────────────────────
+    # Per-file recording is switched on HERE, above the routing below, and not
+    # after it: the cloud, SMB and HTTP transfers return from inside that
+    # routing, so they ran with logging still off and every record they wrote
+    # carried an empty `files` list. The counts were there; which file was
+    # copied and which was skipped could not be read back from any of them.
+    global _log_enabled
+    if args.log_file:
+        _log_enabled = True
+    # When running under sudo, always capture per-file entries so we can
+    # write the hidden audit file at the end of the copy.
+    if _is_under_sudo():
+        _log_enabled = True
+
     # A bare https://host/dir/file URL as the SOURCE streams that one file to
     # an SSH or SMB destination through this machine — the same relay shape as
     # R2R (in-memory chunks, nothing lands on the local disk). Intercepted
@@ -18225,14 +20328,7 @@ def main():
     except ValueError as e:
         parser.error(str(e))
     _set_preserve_spec(spec)
-
-    global _log_enabled
-    if args.log_file:
-        _log_enabled = True
-    # When running under sudo, always capture per-file entries so we can
-    # write the hidden audit file at the end of the copy.
-    if _is_under_sudo():
-        _log_enabled = True
+    _set_trust_remote_modes(getattr(args, "trust_remote_modes", False))
 
     src_arg = args.source
     buf_size = args.buffer * 1024 * 1024
@@ -18365,7 +20461,9 @@ def main():
     fs_error = None
     if not dst_remote:
         try:
-            fs_info = detect_capabilities(dst)
+            fs_info = detect_capabilities(
+                dst,
+                dedup_in_sync_folder=getattr(args, "dedup_in_sync_folder", False))
         except Exception as e:
             fs_error = str(e)
         # Probe destination for extended-metadata support upfront if the
@@ -18407,11 +20505,21 @@ def main():
     elif dst_remote:
         print(f"  Mode:        {C.CYAN}local → remote{C.RESET}")
     print(f"  Buffer:      {args.buffer} MB")
+    # Said out loud, like --no-verify is: a run where the remote decides the
+    # permission bits should not look like a run where it does not.
+    if getattr(args, "trust_remote_modes", False):
+        print(f"  Modes:       {C.YELLOW}"
+              + _tr("permission bits taken from the remote "
+                    "(--trust-remote-modes)") + f"{C.RESET}")
     # Dedup line: fold FS strategy in parens when detected
     if args.no_dedup:
         print(f"  Dedup:       disabled")
     elif fs_info is not None:
         print(f"  Dedup:       enabled ({C.CYAN}{fs_info.strategy}{C.RESET})")
+        # A strategy weaker than the filesystem allows is a decision the user
+        # did not make, so it is said out loud rather than left to --verbose.
+        if fs_info.strategy_note:
+            print(f"               {C.YELLOW}{fs_info.strategy_note}{C.RESET}")
     else:
         print(f"  Dedup:       enabled")
     # Hash algorithm + source (auto vs forced). Non-cryptographic xxh128
@@ -18844,10 +20952,16 @@ def main():
             caps = [k for k, v in dst_ssh.caps.items() if v]
             print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
 
+            # Asked before ensure_remote_root for the same reason as the push
+            # path: that call creates the destination and writes a probe into
+            # it, which is a write through the symlink under question.
+            _dst_escape = _remote_dest_path_escape(
+                _sftp_abs_probe(dst_ssh), dst, _sftp_remote_cwd(dst_ssh))
+
             # Same pre-flight as the push path: relaying gigabytes between two
             # servers only to find the far end unwritable is the worst place
             # to learn it.
-            if not args.dry_run:
+            if not args.dry_run and not _dst_escape:
                 _dst_problem = ensure_remote_root(dst_ssh, dst)
                 if _dst_problem:
                     print(f"\n  {C.RED}Error: cannot use destination "
@@ -18897,6 +21011,24 @@ def main():
 
             # ── Phase 3: Space check on dest ─────────────────────────
             banner("Phase 3 — Space check (remote destination)")
+            # Destination-path policy on the far side. The names come from a
+            # remote SOURCE here, so they are untrusted whatever the local
+            # process's privilege is — the same answer _dest_policy gives a
+            # pull.
+            _report_entries, _report_links = copy_entries, link_map
+            if _dst_escape:
+                _dst_refused = set([e.rel for e in copy_entries]
+                                   + list(link_map or {}))
+                _dst_found = [{"rel": "", "target": _dst_escape[1],
+                               "count": len(_dst_refused)}]
+            else:
+                _is_link, _realpath = _sftp_dest_probe(dst_ssh, dst)
+                _dst_refused, _dst_found = _remote_dest_refusals(
+                    dst, [e.rel for e in copy_entries] + list(link_map or {}),
+                    _is_link, _realpath)
+            copy_entries, link_map = _refuse_remote_dest(
+                dst, copy_entries, link_map, _dst_refused, _dst_found)
+            unique_size = sum(e.size for e in copy_entries)
             required = unique_size
             print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
                   + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
@@ -18918,6 +21050,12 @@ def main():
                 if link_map:
                     print(f"\n  Plus {len(link_map)} duplicate files to be linked on remote")
                 print(f"\n  Unique data: {fmt_size(unique_size)}")
+                _plan_record(
+                    args, f"{src_remote.user}@{src_remote.host}:{src}",
+                    f"{dst_remote.user}@{dst_remote.host}:{dst}",
+                    "remote_to_remote", total_files, _report_entries,
+                    _report_links, skipped_count, total_size, saved_bytes,
+                    skipped_bytes, refused=_dst_refused)
                 src_ssh.close()
                 dst_ssh.close()
                 sys.exit(0)
@@ -18998,17 +21136,26 @@ def main():
                         dst_ssh.close()
                         sys.exit(1)
 
-            dst_ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
-
-            progress = Progress(unique_size, len(copy_entries))
             t0 = time.time()
-            copy_hybrid_r2r(copy_entries, src_ssh, dst_ssh, src, dst, progress, buf_size)
-            progress.finish()
+            # A refused destination is not created, not written into, and gets
+            # no manifest: the mkdir, the sidecar and the verify pass would
+            # each go through the symlink that was just refused.
+            if _dst_escape:
+                print(f"  {C.RED}"
+                      + _tr("Nothing was written: the destination path leads "
+                            "outside itself.") + f"{C.RESET}")
+            else:
+                dst_ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
+
+                progress = Progress(unique_size, len(copy_entries))
+                copy_hybrid_r2r(copy_entries, src_ssh, dst_ssh, src, dst,
+                                progress, buf_size)
+                progress.finish()
 
             # R2R extended-metadata: collect xattr/ACL/owner from src remote
             # via the existing collector, then apply to dst remote via the
             # same script L2R uses. Both endpoints need python3.
-            if _preserve_spec.any_extended():
+            if _preserve_spec.any_extended() and not _dst_escape:
                 want_o = _preserve_spec.owner
                 want_x = _preserve_spec.xattr
                 want_a = _preserve_spec.acl
@@ -19051,43 +21198,67 @@ def main():
                 create_links_remote(dst_ssh, link_map, dst)
 
             elapsed = time.time() - t0
-            speed = unique_size / elapsed if elapsed > 0 else 0
+            speed = (unique_size / elapsed
+                     if (elapsed > 0 and not _dst_escape) else 0)
 
-            # Save manifest on dest
-            save_remote_manifest(dst_ssh, dst, copy_entries, link_map)
-
-            # Verify on dest (defer the exit until after summary + --log write)
             _verify_status = "ok"
-            if not args.no_verify:
-                _verify_status = verify_copy_remote(dst_ssh, copy_entries,
-                                                    link_map, dst)
+            if not _dst_escape:
+                # Save manifest on dest
+                save_remote_manifest(dst_ssh, dst, copy_entries, link_map)
+
+                # Verify on dest (exit deferred to after summary + --log write)
+                if not args.no_verify:
+                    _verify_status = verify_copy_remote(dst_ssh, copy_entries,
+                                                        link_map, dst)
 
             # Summary
             banner("DONE")
             print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{src_remote.user}@{src_remote.host}:{src}{C.RESET}")
             print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{dst_remote.user}@{dst_remote.host}:{dst}{C.RESET}")
-            print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
-                  + (f" ({len(copy_entries)} copied + {len(link_map)} linked)" if link_map else ""))
+            # Before the destination policy filtered them: the refused files
+            # are part of what this run was asked to move.
+            _totals = _print_files_summary(
+                total_files, _report_entries, _report_links,
+                skipped_count=skipped_count,
+                forecast=sum(e["count"] for e in _dst_found),
+                byte_totals=(total_size, saved_bytes, skipped_bytes))
+            if _REFUSED_PATHS:
+                _n = len(_REFUSED_PATHS)
+                print("  " + C.RED
+                      + _tr("{n} file(s) were refused and not written:").format(n=_n)
+                      + C.RESET)
+                for _rel in sorted(_REFUSED_PATHS)[:10]:
+                    print(f"    {C.DIM}{_rel}{C.RESET}")
+                if _n > 10:
+                    print("    " + C.DIM
+                          + _tr("... and {m} more").format(m=_n - 10) + C.RESET)
             if skipped_count:
                 print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
                       f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
-            print(f"  Data:    {C.BOLD}{fmt_size(unique_size)}{C.RESET} relayed"
+            print(f"  Data:    {C.BOLD}{fmt_size(_totals.bytes_written)}{C.RESET} relayed"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
             _print_preserve_summary()
+            _record = {
+                "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                "destination": f"{dst_remote.user}@{dst_remote.host}:{dst}",
+                "mode": "remote_to_remote",
+                "total_files": total_files, "copied": _totals.copied,
+                "linked": _totals.linked, "refused": _totals.refused,
+                "refused_paths": sorted(_REFUSED_PATHS)[:100],
+                "skipped": skipped_count,
+                "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                "total_bytes": total_size,
+                "bytes_written": _totals.bytes_written,
+                "bytes_refused": _totals.bytes_refused,
+                "dedup_saved": _totals.bytes_deduped,
+                "elapsed_sec": round(elapsed, 2),
+                "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+            }
+            write_sudo_audit(_record["source"], _record["destination"], _record)
             if args.log_file:
-                write_log_file(args.log_file, {
-                    "source": f"{src_remote.user}@{src_remote.host}:{src}",
-                    "destination": f"{dst_remote.user}@{dst_remote.host}:{dst}",
-                    "mode": "remote_to_remote",
-                    "total_files": total_files, "copied": len(copy_entries),
-                    "linked": len(link_map), "skipped": skipped_count,
-                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
-                    "total_bytes": total_size, "bytes_written": unique_size,
-                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
-                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
-                })
+                write_log_file(args.log_file, _record)
             print()
             _exit_for_verify(_verify_status)   # exit AFTER summary/log were written
 
@@ -19188,6 +21359,14 @@ def main():
                 if link_map:
                     print(f"\n  Plus {len(link_map)} duplicate files to be linked")
                 print(f"\n  Unique data: {fmt_size(unique_size)}")
+                # The names are the remote's, so the plan asks the untrusted
+                # question — the same one the extractor will ask.
+                _plan_record(
+                    args, f"{src_remote.user}@{src_remote.host}:{src}", dst,
+                    "remote_to_local", total_files, copy_entries, link_map,
+                    skipped_count, total_size, saved_bytes, skipped_bytes,
+                    refused=_planned_local_refusals(dst, copy_entries,
+                                                    link_map, False))
                 src_ssh.close()
                 sys.exit(0)
 
@@ -19232,6 +21411,8 @@ def main():
 
             # Create links locally (reflink-aware when supported)
             if link_map:
+                # Remote-to-local: the link_map keys are names the far side
+                # chose, so the strict resolution check stays on.
                 create_links(link_map, dst, fs_strategy=fs_strategy)
 
             # Restore directory metadata (mode/times/owner). The remote tar
@@ -19269,27 +21450,56 @@ def main():
             banner("DONE")
             print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{src_remote.user}@{src_remote.host}:{src}{C.RESET}")
             print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{dst}{C.RESET}")
-            print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
-                  + (f" ({len(copy_entries)} copied + {len(link_map)} linked)" if link_map else ""))
+            # A pull writes to a LOCAL destination through the same engines
+            # and the same policy, so it refuses files the same way. It read
+            # none of that: a pull that refused every file printed
+            # "N copied" and a clean summary.
+            _totals = _print_files_summary(
+                total_files, copy_entries, link_map,
+                skipped_count=skipped_count,
+                byte_totals=(total_size, saved_bytes, skipped_bytes))
+            if _REFUSED_PATHS:
+                _n = len(_REFUSED_PATHS)
+                print("  " + C.RED
+                      + _tr("{n} file(s) were refused and not written:").format(n=_n)
+                      + C.RESET)
+                for _rel in sorted(_REFUSED_PATHS)[:10]:
+                    print(f"    {C.DIM}{_rel}{C.RESET}")
+                if _n > 10:
+                    print("    " + C.DIM
+                          + _tr("... and {m} more").format(m=_n - 10) + C.RESET)
             if skipped_count:
                 print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
                       f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
-            print(f"  Data:    {C.BOLD}{fmt_size(unique_size)}{C.RESET} downloaded"
+            print(f"  Data:    {C.BOLD}{fmt_size(_totals.bytes_written)}{C.RESET} downloaded"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
             _print_preserve_summary()
+            _record = {
+                "source": f"{src_remote.user}@{src_remote.host}:{src}",
+                "destination": dst, "mode": "remote_to_local",
+                "total_files": total_files, "copied": _totals.copied,
+                "linked": _totals.linked, "refused": _totals.refused,
+                "refused_paths": sorted(_REFUSED_PATHS)[:100],
+                "skipped": skipped_count,
+                "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                "total_bytes": total_size,
+                "bytes_written": _totals.bytes_written,
+                "bytes_refused": _totals.bytes_refused,
+                "dedup_saved": _totals.bytes_deduped,
+                "elapsed_sec": round(elapsed, 2),
+                "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+            }
+            # An elevated PULL is root writing files whose names an untrusted
+            # remote chose — the run with the strongest claim on an audit
+            # trail, and the one that left none: write_sudo_audit had a single
+            # call site, in the local flow. It gates on elevation itself, so
+            # the call is unconditional here. BEFORE write_log_file, which
+            # clears the per-file entries the record carries.
+            write_sudo_audit(_record["source"], dst, _record)
             if args.log_file:
-                write_log_file(args.log_file, {
-                    "source": f"{src_remote.user}@{src_remote.host}:{src}",
-                    "destination": dst, "mode": "remote_to_local",
-                    "total_files": total_files, "copied": len(copy_entries),
-                    "linked": len(link_map), "skipped": skipped_count,
-                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
-                    "total_bytes": total_size, "bytes_written": unique_size,
-                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
-                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
-                })
+                write_log_file(args.log_file, _record)
             print()
             _exit_for_verify(_verify_status)   # exit AFTER summary/log were written
 
@@ -19342,9 +21552,16 @@ def main():
                 caps = [k for k, v in ssh.caps.items() if v]
                 print(f"  {C.DIM}Remote tools: {', '.join(caps) or 'none detected'}{C.RESET}")
 
+            # Before ensure_remote_root, and that ordering is the point: it
+            # runs `mkdir -p` and a write probe, so asking afterwards would
+            # already have created — and briefly written — through the very
+            # symlink being asked about.
+            _dst_escape = _remote_dest_path_escape(
+                _sftp_abs_probe(ssh), dst, _sftp_remote_cwd(ssh))
+
             # Fail here, one second after connecting, rather than after
             # streaming into a destination that cannot exist.
-            if not args.dry_run:
+            if not args.dry_run and not _dst_escape:
                 _dst_problem = ensure_remote_root(ssh, dst)
                 if _dst_problem:
                     print(f"\n  {C.RED}Error: cannot use destination "
@@ -19381,6 +21598,27 @@ def main():
 
             # ── Phase 3: Remote space check ──────────────────────────
             banner("Phase 3 — Space check (remote)")
+            # The destination-path policy, asked of the REMOTE destination —
+            # before the space check, so the space required is the space the
+            # run will actually use. The lists the engines get lose the
+            # refused rels; _report_entries keeps them, because the summary
+            # has to account for every file the run was asked to move.
+            _report_entries, _report_links = copy_entries, link_map
+            if _dst_escape:
+                # The destination itself is the redirect, so every file in the
+                # run is refused — there is no subset of this that is safe.
+                _dst_refused = set([e.rel for e in copy_entries]
+                                   + list(link_map or {}))
+                _dst_found = [{"rel": "", "target": _dst_escape[1],
+                               "count": len(_dst_refused)}]
+            else:
+                _is_link, _realpath = _sftp_dest_probe(ssh, dst)
+                _dst_refused, _dst_found = _remote_dest_refusals(
+                    dst, [e.rel for e in copy_entries] + list(link_map or {}),
+                    _is_link, _realpath)
+            copy_entries, link_map = _refuse_remote_dest(
+                dst, copy_entries, link_map, _dst_refused, _dst_found)
+            unique_size = sum(e.size for e in copy_entries)
             required = unique_size
             print(f"  Data to write: {C.BOLD}{fmt_size(required)}{C.RESET}"
                   + (f" (after dedup saved {fmt_size(saved_bytes)})" if saved_bytes > 0 else ""))
@@ -19409,68 +21647,110 @@ def main():
                 if link_map:
                     print(f"\n  Plus {len(link_map)} duplicate files to be linked on remote")
                 print(f"\n  Unique data: {fmt_size(unique_size)}")
+                _plan_record(
+                    args, src_display,
+                    f"{remote.user}@{remote.host}:{dst}", "local_to_remote",
+                    total_files, _report_entries, _report_links, skipped_count,
+                    total_size, saved_bytes, skipped_bytes,
+                    refused=_dst_refused)
                 ssh.close()
                 sys.exit(0)
 
             # ── Phase 5: Remote copy ─────────────────────────────────
             banner("Phase 5 — Remote copy")
-            if ssh.sftp_only:
-                _sftp_mkdir_p(ssh.open_sftp(), dst)
-            else:
-                ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
-
-            progress = Progress(unique_size, len(copy_entries))
             t0 = time.time()
-            copy_hybrid_remote(copy_entries, ssh, dst, progress, buf_size)
-            progress.finish()
+            # A refused destination is not copied into and is not CREATED
+            # either: the mkdir, the manifest sidecar and the verify pass all
+            # write, and every one of them would write through the symlink
+            # that was just refused. Refusing the files and then leaving a
+            # manifest next to them is not a refusal.
+            if _dst_escape:
+                print(f"  {C.RED}"
+                      + _tr("Nothing was written: the destination path leads "
+                            "outside itself.") + f"{C.RESET}")
+                elapsed = time.time() - t0
+                speed = 0
+            else:
+                if ssh.sftp_only:
+                    _sftp_mkdir_p(ssh.open_sftp(), dst)
+                else:
+                    ssh.exec_cmd(f"mkdir -p {shlex.quote(dst)}")
+
+                progress = Progress(unique_size, len(copy_entries))
+                copy_hybrid_remote(copy_entries, ssh, dst, progress, buf_size)
+                progress.finish()
 
             # L2R extended-metadata preservation (owner/xattr/ACL). Mode and
             # mtime ride through tar headers already; owner/xattr/ACL need
             # a separate push step because the tar producer strips them or
             # the tar format doesn't carry them. We collect locally and
             # ship a serialized payload to a python3 helper on the remote.
-            if _preserve_spec.owner or _preserve_spec.xattr or _preserve_spec.acl:
-                want_o = _preserve_spec.owner
-                want_x = _preserve_spec.xattr
-                want_a = _preserve_spec.acl
-                if not ssh.caps.get("python3"):
-                    print(f"  {C.YELLOW}Skipping remote owner/xattr/ACL "
-                          f"apply — remote lacks python3.{C.RESET}")
-                else:
-                    print(f"  {C.DIM}Applying remote metadata for "
-                          f"{len(copy_entries)} files...{C.RESET}",
-                          end="", flush=True)
-                    _push_metadata_to_remote(ssh, dst, copy_entries, src,
-                                             want_o, want_x, want_a)
-                    print(f"\r  {C.GREEN}Applied remote metadata for "
-                          f"{len(copy_entries)} files                    "
-                          f"{C.RESET}")
-
-            # Create links on remote
-            if link_map:
-                create_links_remote(ssh, link_map, dst)
-
-            elapsed = time.time() - t0
-            speed = unique_size / elapsed if elapsed > 0 else 0
-
-            # ── Save manifest on remote ──────────────────────────────
-            save_remote_manifest(ssh, dst, copy_entries, link_map)
-
-            # ── Verify on remote (defer exit until after summary/log) ─
             _verify_status = "ok"
-            if not args.no_verify:
-                _verify_status = verify_copy_remote(ssh, copy_entries,
-                                                    link_map, dst)
+            if not _dst_escape:
+                if (_preserve_spec.owner or _preserve_spec.xattr
+                        or _preserve_spec.acl):
+                    want_o = _preserve_spec.owner
+                    want_x = _preserve_spec.xattr
+                    want_a = _preserve_spec.acl
+                    if not ssh.caps.get("python3"):
+                        print(f"  {C.YELLOW}Skipping remote owner/xattr/ACL "
+                              f"apply — remote lacks python3.{C.RESET}")
+                    else:
+                        print(f"  {C.DIM}Applying remote metadata for "
+                              f"{len(copy_entries)} files...{C.RESET}",
+                              end="", flush=True)
+                        _push_metadata_to_remote(ssh, dst, copy_entries, src,
+                                                 want_o, want_x, want_a)
+                        print(f"\r  {C.GREEN}Applied remote metadata for "
+                              f"{len(copy_entries)} files                    "
+                              f"{C.RESET}")
+
+                # Create links on remote
+                if link_map:
+                    create_links_remote(ssh, link_map, dst)
+
+                elapsed = time.time() - t0
+                speed = unique_size / elapsed if elapsed > 0 else 0
+
+                # ── Save manifest on remote ──────────────────────────
+                save_remote_manifest(ssh, dst, copy_entries, link_map)
+
+                # ── Verify on remote (exit deferred to after summary/log) ─
+                if not args.no_verify:
+                    _verify_status = verify_copy_remote(ssh, copy_entries,
+                                                        link_map, dst)
 
             # ── Summary ──────────────────────────────────────────────
             banner("DONE")
             print(f"  Remote:  {C.BOLD}{remote.user}@{remote.host}:{dst}{C.RESET}")
-            print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
-                  + (f" ({len(copy_entries)} copied + {len(link_map)} linked)" if link_map else ""))
+            # The lists BEFORE the destination policy dropped what it refused:
+            # a refused file is one the run was asked to move, so the buckets
+            # cannot close without it.
+            _totals = _print_files_summary(
+                total_files, _report_entries, _report_links,
+                skipped_count=skipped_count,
+                forecast=sum(e["count"] for e in _dst_found),
+                byte_totals=(total_size, saved_bytes, skipped_bytes))
+            if _REFUSED_PATHS:
+                _n = len(_REFUSED_PATHS)
+                print("  " + C.RED
+                      + _tr("{n} file(s) were refused and not written:").format(n=_n)
+                      + C.RESET)
+                for _rel in sorted(_REFUSED_PATHS)[:10]:
+                    print(f"    {C.DIM}{_rel}{C.RESET}")
+                if _n > 10:
+                    print("    " + C.DIM
+                          + _tr("... and {m} more").format(m=_n - 10) + C.RESET)
             if skipped_count:
                 print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
                       f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
-            _failed_files = len(_COPY_ERRORS)
+            # A refusal is not a failure: nothing broke, a policy said no,
+            # and it is already reported on its own line above. _COPY_ERRORS
+            # holds both (verification reads it to explain a missing file), so
+            # the refused ones come out here or every refusal is counted twice
+            # under two different words.
+            _failed_files = len([r for r in _COPY_ERRORS
+                                 if r not in set(_REFUSED_PATHS)])
             if _failed_files:
                 print(f"  {C.RED}Failed:  {C.BOLD}{_failed_files}{C.RESET}"
                       f"{C.RED} file{'' if _failed_files == 1 else 's'} did not "
@@ -19480,17 +21760,28 @@ def main():
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
             print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
             _print_preserve_summary()
+            _record = {
+                "source": src_display,
+                "destination": f"{remote.user}@{remote.host}:{dst}",
+                "mode": "local_to_remote",
+                "total_files": total_files, "copied": _totals.copied,
+                "linked": _totals.linked, "refused": _totals.refused,
+                "refused_paths": sorted(_REFUSED_PATHS)[:100],
+                "skipped": skipped_count,
+                "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+                "total_bytes": total_size,
+                "bytes_written": _totals.bytes_written,
+                "bytes_refused": _totals.bytes_refused,
+                "dedup_saved": _totals.bytes_deduped,
+                "elapsed_sec": round(elapsed, 2),
+                "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+            }
+            # Elevation governs the LOCAL endpoint, which here is the SOURCE:
+            # an elevated push is root reading files the invoking user cannot
+            # and sending them off the machine. Same trail, same reason.
+            write_sudo_audit(src_display, _record["destination"], _record)
             if args.log_file:
-                write_log_file(args.log_file, {
-                    "source": src_display, "destination": f"{remote.user}@{remote.host}:{dst}",
-                    "mode": "local_to_remote",
-                    "total_files": total_files, "copied": len(copy_entries),
-                    "linked": len(link_map), "skipped": skipped_count,
-                    "errors": sum(1 for e in _log_entries if e["action"] == "error"),
-                    "total_bytes": total_size, "bytes_written": unique_size,
-                    "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
-                    "avg_speed_bps": round(speed), "hash_algo": _hash_name,
-                })
+                write_log_file(args.log_file, _record)
             print()
             _exit_for_verify(_verify_status)   # exit AFTER summary/log were written
 
@@ -19567,6 +21858,18 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # Same reason the hash cache is skipped above: a preview creates nothing.
     # The check itself keeps its teeth — the destination's filesystem is the
     # one its nearest existing parent is on, so the numbers are the real ones.
+    # Before the dry-run check, not after it: a dry run is exactly when someone
+    # is verifying that the destination is set up the way they think, and it is
+    # the cheapest moment to learn that a directory there is a symlink leading
+    # out. It is a REPORT — the per-file check in _dest_policy is the
+    # security boundary and runs regardless of what this printed.
+    # Kept, not discarded: the number it reports is a prediction, and the DONE
+    # summary compares it against what the run actually refused. Two numbers
+    # from the same policy that disagree mean one of them is a lie, and until
+    # now nothing looked.
+    _refusal_forecast = sum(e["count"] for e in warn_symlinked_dest_dirs(
+        dst, [e.rel for e in copy_entries] + list(link_map.keys())))
+
     if not args.dry_run:
         _makedirs_or_die(dst)
     block = _dest_block_size(_existing_ancestor(dst))
@@ -19656,6 +21959,11 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
               + (f"  {C.DIM}(logical {fmt_size(unique_size)}, "
                  f"sparse holes skipped {fmt_size(unique_size - alloc_total)})"
                  f"{C.RESET}" if alloc_total < unique_size else ""))
+        _plan_record(args, args.source, dst, "local_to_local", total_files,
+                     copy_entries, link_map, skipped_count, total_bytes,
+                     saved_bytes, skipped_bytes,
+                     refused=_planned_local_refusals(dst, copy_entries,
+                                                     link_map, True))
         return
 
     # ── Phase 5: Block copy ─────────────────────────────────────────
@@ -19684,7 +21992,8 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     # Create links for duplicates
     if link_map:
-        create_links(link_map, dst, fs_strategy=fs_strategy)
+        create_links(link_map, dst, fs_strategy=fs_strategy,
+                     trusted_source=True)          # names from our own scan
 
     # Directory metadata (mode/times/owner/xattr/ACL) — must run after all
     # file writes, which clobber dir mtimes and land dirs at default modes.
@@ -19726,6 +22035,24 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         if dst_rows:
             dedup_db.store_dest_batch(dst_rows)
 
+    # ── Refusals ──────────────────────────────────────────────────────
+    # The consumer for _REFUSED_PATHS. Every engine appends to it; before this
+    # nothing read it, so a run where the destination policy refused every
+    # file printed a success summary and exited 0. Verification cannot cover
+    # this: it does not run under --no-verify, and a refused file is not a
+    # corrupt one. Same shape as the pull path, which reports `rejected`
+    # separately from `verified` for the same reason.
+    if _REFUSED_PATHS:
+        n = len(_REFUSED_PATHS)
+        print("\n  " + C.RED
+              + _tr("{n} file(s) were refused and not written:").format(n=n)
+              + C.RESET)
+        for rel in _REFUSED_PATHS[:10]:
+            print(f"    {C.DIM}{rel}{C.RESET}")
+        if n > 10:
+            print("    " + C.DIM
+                  + _tr("... and {m} more").format(m=n - 10) + C.RESET)
+
     # ── Verify ────────────────────────────────────────────────────────
     # Defer the exit until AFTER the summary + audit + --log file are written —
     # verification failure is exactly when the user wants that record. The exit
@@ -19738,25 +22065,37 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     # ── Summary ───────────────────────────────────────────────────────
     banner("DONE")
-    print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
-          + (f" ({len(copy_entries)} copied + {len(link_map)} linked)" if link_map else ""))
+    # A refused file was never written; counting it as copied — or as linked —
+    # makes the summary claim work that did not happen. One reader for the
+    # refusal list, and it checks its own arithmetic against the total and
+    # against Phase 3's prediction.
+    _totals = _print_files_summary(
+        total_files, copy_entries, link_map, skipped_count=skipped_count,
+        forecast=_refusal_forecast,
+        byte_totals=(total_bytes, saved_bytes, skipped_bytes))
     if skipped_count:
         print(f"  Skipped: {C.BOLD}{skipped_count}{C.RESET} unchanged files "
               f"({C.GREEN}{fmt_size(skipped_bytes)}{C.RESET})")
     # Match Phase 3's "Data to write" — when sparse-aware copy elided holes,
     # report the actual on-disk byte count and keep the logical total in
     # parens so the savings are visible.
+    # Refused files were never opened, so their bytes are not written bytes —
+    # the same lie as counting them copied, in another unit.
+    _refused_rels = set(_REFUSED_PATHS)
     if _HAS_SEEK_HOLE and fs_strategy != "none":
-        alloc_total = sum(_effective_alloc(e) for e in copy_entries)
+        alloc_total = sum(_effective_alloc(e) for e in copy_entries
+                          if e.rel not in _refused_rels)
     else:
-        alloc_total = unique_size
+        alloc_total = _totals.bytes_written
     data_line = f"  Data:    {C.BOLD}{fmt_size(alloc_total)}{C.RESET} written"
     notes = []
-    if saved_bytes > 0:
-        notes.append(f"{fmt_size(saved_bytes)} saved by dedup")
-    if alloc_total < unique_size:
-        notes.append(f"logical {fmt_size(unique_size)}, sparse holes "
-                     f"skipped {fmt_size(unique_size - alloc_total)}")
+    if _totals.bytes_refused:
+        notes.append(f"{fmt_size(_totals.bytes_refused)} refused, not written")
+    if _totals.bytes_deduped > 0:
+        notes.append(f"{fmt_size(_totals.bytes_deduped)} saved by dedup")
+    if alloc_total < _totals.bytes_written:
+        notes.append(f"logical {fmt_size(_totals.bytes_written)}, sparse holes "
+                     f"skipped {fmt_size(_totals.bytes_written - alloc_total)}")
     if notes:
         data_line += f"  {C.DIM}(" + ", ".join(notes) + f"){C.RESET}"
     print(data_line)
@@ -19766,25 +22105,35 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     _print_preserve_summary()
     # Hidden audit file when running under sudo — written BEFORE write_log_file
     # since the latter clears _log_entries.
+    # The record of a privileged copy, so it reports the run that happened:
+    # the same (copied, linked, refused, bytes) the summary just printed, not
+    # len() of the lists the run was asked to work from.
     write_sudo_audit(args.source, dst, {
         "mode": "local_to_local",
-        "total_files": total_files, "copied": len(copy_entries),
-        "linked": len(link_map), "skipped": skipped_count,
+        "total_files": total_files, "copied": _totals.copied,
+        "linked": _totals.linked, "refused": _totals.refused,
+        "refused_paths": sorted(_REFUSED_PATHS)[:100],
+        "skipped": skipped_count,
         "errors": sum(1 for e in _log_entries if e["action"] == "error"),
-        "total_bytes": total_bytes, "bytes_written": unique_size,
-        "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+        "total_bytes": total_bytes, "bytes_written": _totals.bytes_written,
+        "bytes_refused": _totals.bytes_refused,
+        "dedup_saved": _totals.bytes_deduped, "elapsed_sec": round(elapsed, 2),
         "avg_speed_bps": round(speed), "hash_algo": _hash_name,
     })
     if args.log_file:
         write_log_file(args.log_file, {
             "source": args.source, "destination": dst,
             "mode": "local_to_local",
-            "total_files": total_files, "copied": len(copy_entries),
-            "linked": len(link_map), "skipped": skipped_count,
+            "total_files": total_files, "copied": _totals.copied,
+            "linked": _totals.linked, "refused": _totals.refused,
+            "refused_paths": sorted(_REFUSED_PATHS)[:100],
+            "skipped": skipped_count,
             "errors": sum(1 for e in _log_entries if e["action"] == "error"),
             "total_bytes": total_bytes,
-            "bytes_written": unique_size,
-            "dedup_saved": saved_bytes, "elapsed_sec": round(elapsed, 2),
+            "bytes_written": _totals.bytes_written,
+            "bytes_refused": _totals.bytes_refused,
+            "dedup_saved": _totals.bytes_deduped,
+            "elapsed_sec": round(elapsed, 2),
             "avg_speed_bps": round(speed), "hash_algo": _hash_name,
         })
     print()
@@ -19890,6 +22239,18 @@ def _reexec_under_sudo():
     script_real = _check_safe_for_sudo(_get_self_path(), "script")
     _check_safe_for_sudo(os.path.dirname(script_real), "script directory")
     _check_safe_for_sudo(sys.executable, "Python interpreter")
+    # $BLITCP_CREDENTIALS / $FAST_COPY_CREDENTIALS — the explicit override, and
+    # the first entry in default_credentials_path()'s resolution order. It
+    # points the vault ANYWHERE the caller likes, and after this re-exec ROOT is
+    # the one who opens it: a vault someone else can rewrite hands the elevated
+    # run a different SSH host, a different key path, a different bucket. Same
+    # ownership/write test as the script itself, for whichever of the two names
+    # is set. Only when the file is already there — naming a path that does not
+    # exist yet is how a first run creates one, and the writer creates it 0600.
+    for _cred_var in ("BLITCP_CREDENTIALS", "FAST_COPY_CREDENTIALS"):
+        _cred_path = os.environ.get(_cred_var)
+        if _cred_path and os.path.exists(_cred_path):
+            _check_safe_for_sudo(_cred_path, f"credentials file (${_cred_var})")
     new_argv = [a for a in sys.argv if a != "--use-sudo"]
     # Without a terminal sudo cannot ask for a password at all ("a terminal is
     # required…"), which is why an elevated run launched from the GUI either
@@ -19905,10 +22266,18 @@ def _reexec_under_sudo():
     # silent: the elevated run simply proceeded unauthenticated and failed
     # later with a 401 or a login page. Only vars actually present are listed,
     # so a plain terminal run still calls sudo with no extra flags.
+    # Both eras of every name, exactly as the passphrase pair already does.
+    # The credentials PATH is not a secret, but losing it is the same class of
+    # silent failure: sudo wipes the override, root falls back to
+    # default_credentials_path() — a different file, possibly the legacy one
+    # beside the script — and the elevated run quietly uses connections the
+    # caller never chose.
     carried = [v for v in ("FC_HTTP_PW", "FC_HTTP_HDR",
                            "FC_SSH_SRC_PW", "FC_SSH_DST_PW",
                            "BLITCP_CREDS_PASSPHRASE",
-                           "FAST_COPY_CREDS_PASSPHRASE")
+                           "FAST_COPY_CREDS_PASSPHRASE",
+                           "BLITCP_CREDENTIALS",
+                           "FAST_COPY_CREDENTIALS")
                if os.environ.get(v)]
     if carried:
         sudo_cmd.append("--preserve-env=" + ",".join(carried))

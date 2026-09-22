@@ -1210,9 +1210,45 @@ def _check_http_auth_handling(rep, ctx):
         if "--preserve-env=" not in reexec:
             bad.append("_reexec_under_sudo does not preserve the secret env "
                        "vars — an elevated run silently loses the sign-in")
-        for var in ("FC_HTTP_PW", "FC_HTTP_HDR"):
-            if var not in reexec:
+        # Both eras of every name. The credentials PATH matters as much as the
+        # passphrase: sudo wipes the override, and an elevated run that falls
+        # back to default_credentials_path() reads a DIFFERENT vault than the
+        # caller chose — silently, and possibly the legacy file beside the
+        # script.
+        #
+        # Scoped to the `carried = [...]` list, not to the function: every one
+        # of these names also appears in the preflight a few lines above, so a
+        # whole-function substring search stayed green with the name deleted
+        # from the list it is supposed to be in.
+        _carried = ""
+        if "carried = [" in reexec:
+            _tail = reexec.split("carried = [", 1)[1]
+            _carried = _tail.split("]", 1)[0]
+        if not _carried:
+            bad.append("_reexec_under_sudo has no `carried = [...]` list — "
+                       "nothing is preserved across the elevation")
+        for var in ("FC_HTTP_PW", "FC_HTTP_HDR",
+                    "BLITCP_CREDS_PASSPHRASE", "FAST_COPY_CREDS_PASSPHRASE",
+                    "BLITCP_CREDENTIALS", "FAST_COPY_CREDENTIALS"):
+            if var not in _carried:
                 bad.append(f"{var} is not carried through sudo")
+        # …and the vault that root is about to open must pass the same
+        # ownership/write test as the script. Both names, because either one
+        # can be the override that wins, and only when the file is already
+        # there (naming a path that does not exist yet is a first run).
+        _pre_ok = ("_check_safe_for_sudo(_cred_path" in reexec
+                   and "credentials file" in reexec)
+        _pre_names = all(f'"{v}"' in reexec.split("for _cred_var in", 1)[-1]
+                         .split(":", 1)[0]
+                         for v in ("BLITCP_CREDENTIALS", "FAST_COPY_CREDENTIALS")) \
+            if "for _cred_var in" in reexec else False
+        if not (_pre_ok and _pre_names):
+            bad.append("the sudo preflight no longer checks the vault named by "
+                       "$BLITCP_CREDENTIALS / $FAST_COPY_CREDENTIALS — root "
+                       "would open a file anyone could have rewritten")
+        if "os.path.exists(_cred_path)" not in reexec:
+            bad.append("the sudo vault check no longer skips a path that does "
+                       "not exist yet — a first elevated run would be refused")
     if resolve is not None and "never arrived" not in resolve:
         bad.append("_http_resolve_auth degrades silently when a named env var "
                    "is missing instead of saying so")
@@ -1273,13 +1309,25 @@ def _check_sudo_preflight_and_log(rep, ctx):
         return
 
     bad = []
+    # Scoped to _check_safe_for_sudo, not the whole file. As a file-wide string
+    # search this fired on an unrelated mode mask in _safe_tar_extract that
+    # happens to spell the same two constants next to each other — a false
+    # positive that says the sudo preflight regressed when it did not.
+    preflight = ""
+    _eng_tree = ast.parse(eng, filename=ctx["target"])
+    for n in ast.walk(_eng_tree):
+        if isinstance(n, ast.FunctionDef) and n.name == "_check_safe_for_sudo":
+            preflight = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+    if not preflight:
+        bad.append("_check_safe_for_sudo is gone — the sudo preflight cannot "
+                   "be checked at all")
     if "_group_writers_besides" not in eng:
         bad.append("the sudo preflight lost its group-membership test — every "
                    "0664 file under umask 002 would be refused again")
-    if "S_IWGRP | stat.S_IWOTH" in eng:
+    if "S_IWGRP | stat.S_IWOTH" in preflight:
         bad.append("the sudo preflight is back to refusing group-write "
                    "outright, without asking who is in the group")
-    if "stat.S_IWOTH" not in eng:
+    if "stat.S_IWOTH" not in preflight:
         bad.append("the sudo preflight no longer refuses a world-writable "
                    "script — that one is a real escalation path")
     # The helper must count PRIMARY members too: a user-private group lists
@@ -3412,6 +3460,124 @@ def _check_sparse_verification_sees_content(rep, ctx):
                "destination both caught")
 
 
+def _check_sync_folder_dedup_downgrade(rep, ctx):
+    """Hard-link dedup must stand down inside a Windows cloud-synced folder.
+
+    OneDrive, Dropbox and Google Drive put their sync roots behind the Cloud
+    Files API, so every directory inside one is a reparse point carrying a tag
+    from the IO_REPARSE_TAG_CLOUD family. Linking inside such a folder saves no
+    remote space — the client uploads both paths regardless — and leaves the two
+    copies sharing an inode, so editing one rewrites the other.
+
+    The detection is deliberately narrow: the tag and the RECALL_ON_* attributes
+    and nothing else. No vendor names, no path matching, no registry, no client
+    config files, because a folder merely NAMED "Dropbox" must keep its dedup.
+
+    Exercised through the injected stat hook, so this needs no cloud client on
+    the runner — and the last case asserts the real filesystem here is not
+    mistaken for one, which is the failure that would silently cost disk space.
+    """
+    try:
+        mod = _import_target(ctx)
+    except Exception as e:
+        rep.skip("sync-folder dedup", f"could not import target: {e}")
+        return
+    tagf = getattr(mod, "_is_cloud_reparse_tag", None)
+    rootf = getattr(mod, "_cloud_sync_root", None)
+    resolve = getattr(mod, "resolve_dedup_strategy", None)
+    if not (tagf and rootf and resolve):
+        rep.fail("sync-folder dedup",
+                 "cloud-filter detection is gone — hard links would be created "
+                 "inside cloud-synced folders again")
+        return
+
+    # 1. the documented tag family, and only it
+    for tag in (0x9000001A, 0x9000101A, 0x9000901A, 0x9000F01A):
+        if not tagf(tag):
+            rep.fail("sync-folder dedup",
+                     f"cloud reparse tag 0x{tag:08X} not recognised")
+            return
+    for tag, what in ((0xA000000C, "symlink"), (0xA0000003, "mount point"),
+                      (0x80000013, "dedup"), (0, "no tag")):
+        if tagf(tag):
+            rep.fail("sync-folder dedup",
+                     f"{what} tag 0x{tag:08X} misread as a cloud placeholder")
+            return
+
+    class _St:
+        def __init__(self, attrs=0, tag=0):
+            self.st_file_attributes = attrs
+            self.st_reparse_tag = tag
+
+    REPARSE, RECALL_OPEN, RECALL_DATA = 0x400, 0x00040000, 0x00400000
+    root = os.path.abspath(os.path.join(os.sep, "sync-root"))
+    inside = os.path.join(root, "a", "b")
+
+    # 2. found from a plain child directory — the destination is usually a
+    #    folder the user just made, not yet a placeholder itself
+    def only_root(path):
+        return _St(REPARSE, 0x9000101A) if os.path.normpath(path) == root else _St(0x10, 0)
+    if rootf(inside, _stat=only_root) != root:
+        rep.fail("sync-folder dedup",
+                 "a destination inside a sync root was not detected — the walk "
+                 "up to the root is what catches a freshly created folder")
+        return
+
+    # 3. the RECALL_ON_* attributes on their own are enough
+    for attr, name in ((RECALL_OPEN, "RECALL_ON_OPEN"),
+                       (RECALL_DATA, "RECALL_ON_DATA_ACCESS")):
+        if rootf(inside, _stat=lambda p, a=attr: _St(a, 0)) is None:
+            rep.fail("sync-folder dedup", f"{name} alone did not trigger detection")
+            return
+
+    # 4. an ordinary directory is not a sync folder
+    if rootf(inside, _stat=lambda p: _St(0x10, 0)) is not None:
+        rep.fail("sync-folder dedup",
+                 "an ordinary directory was reported as cloud-synced — this "
+                 "would disable dedup on unrelated folders")
+        return
+
+    # 5. the downgrade itself
+    caps = mod.FSCapabilities(hardlink=True, symlink=True, reflink=False,
+                              case_sensitive=True)
+    strat, note = resolve(caps, inside, False, _cloud_root=lambda p: root)
+    if strat != "none" or not note:
+        rep.fail("sync-folder dedup",
+                 f"hardlink was not downgraded inside a sync folder (got {strat!r})")
+        return
+    strat, _ = resolve(caps, inside, True, _cloud_root=lambda p: root)
+    if strat != "hardlink":
+        rep.fail("sync-folder dedup",
+                 "--dedup-in-sync-folder did not restore hard links")
+        return
+    strat, _ = resolve(caps, inside, False, _cloud_root=lambda p: None)
+    if strat != "hardlink":
+        rep.fail("sync-folder dedup",
+                 "hardlink was downgraded outside a sync folder")
+        return
+
+    # 6. reflink is left alone: copy-on-write keeps the copies independent,
+    #    which is the property whose absence makes hard links wrong here
+    refl = mod.FSCapabilities(hardlink=True, symlink=True, reflink=True,
+                              case_sensitive=True)
+    strat, note = resolve(refl, inside, False, _cloud_root=lambda p: root)
+    if strat != "reflink" or note:
+        rep.fail("sync-folder dedup",
+                 f"reflink was downgraded inside a sync folder (got {strat!r})")
+        return
+
+    # 7. and the real filesystem under the runner is not a sync folder
+    with temp_workspace() as ws:
+        if rootf(ws) is not None:
+            rep.fail("sync-folder dedup",
+                     f"a plain temp directory ({ws}) was detected as cloud-synced")
+            return
+
+    rep.ok("sync-folder dedup",
+           "cloud tag family matched and other reparse tags rejected; hardlink "
+           "downgraded inside a sync folder, restored by flag, reflink untouched")
+
+
 def _check_sparse_copy_integrity(rep, ctx):
     """A sparse copy must reproduce the source byte for byte.
 
@@ -3971,6 +4137,1474 @@ def _check_threadpool_small_files(rep, ctx):
                      f"only {copied} of {len(entries)} files copied without io_uring")
 
 
+def _check_midbatch_symlinked_parent(rep, ctx):
+    """A parent directory swapped for a symlink MID-BATCH must still be caught.
+
+    The extraction path validates each member before writing it, and part of
+    that validation resolves the deepest existing ancestor and requires it to
+    stay inside the destination. The obvious optimisation is to remember which
+    directories already passed and skip the walk for the other 800 files in
+    them — the ancestor check is then paid once per directory instead of once
+    per file.
+
+    This is the check that says whether that is allowed. It extracts a batch,
+    and BETWEEN two members of the same directory — after that directory has
+    already been validated for an earlier file — replaces it with a symlink
+    pointing outside the destination. The second file must be refused.
+
+    If a future change makes this pass through, the extraction writes THROUGH
+    the planted symlink and lands outside the destination tree. Under --use-sudo
+    that is a root-owned write to an attacker-chosen path.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("mid-batch symlinked parent", "POSIX symlink semantics only")
+        return
+    import importlib.util
+    import io as _io
+    import tarfile as _tarfile
+    spec = importlib.util.spec_from_file_location("_blitcp_toctou", target)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("mid-batch symlinked parent", f"could not import target: {e}")
+        return
+
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        outside = os.path.join(ws, "outside")
+        os.makedirs(os.path.join(dst, "sub"))
+        os.makedirs(outside)
+
+        tar_path = os.path.join(ws, "batch.tar")
+        with _tarfile.open(tar_path, "w") as tf:
+            for name in ("sub/first.txt", "sub/second.txt"):
+                info = _tarfile.TarInfo(name)
+                payload = b"payload"
+                info.size = len(payload)
+                info.mode = 0o644
+                tf.addfile(info, _io.BytesIO(payload))
+
+        with _tarfile.open(tar_path, "r") as tf:
+            members = {m.name: m for m in tf.getmembers()}
+            ctxobj = getattr(mod, "_ExtractCtx", None)
+            kw = {"ctx": ctxobj(dst)} if ctxobj is not None else {}
+
+            # File 1 — validates dst/sub and extracts normally.
+            first = mod._safe_tar_extract(tf, members["sub/first.txt"], dst,
+                                          trusted_source=False, **kw)
+            if first is not True:
+                rep.fail("mid-batch symlinked parent",
+                         f"the benign first member was refused: {first}")
+                return
+
+            # The swap: dst/sub is now a symlink out of the destination.
+            os.rename(os.path.join(dst, "sub"), os.path.join(dst, "sub.real"))
+            os.symlink(outside, os.path.join(dst, "sub"))
+
+            # File 2 — same directory, already validated for file 1.
+            second = mod._safe_tar_extract(tf, members["sub/second.txt"], dst,
+                                           trusted_source=False, **kw)
+
+    escaped = os.path.exists(os.path.join(outside, "second.txt"))
+    if second is not True and not escaped:
+        rep.ok("mid-batch symlinked parent",
+               f"refused after the swap ({second})")
+    elif escaped:
+        rep.fail("mid-batch symlinked parent",
+                 "extraction wrote THROUGH a symlinked parent planted mid-batch "
+                 "— the file landed outside the destination")
+    else:
+        rep.fail("mid-batch symlinked parent",
+                 "the member after the swap was accepted; the ancestor check "
+                 "is no longer effective per file")
+
+
+def _load_target_module(target, name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, target)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _check_pull_paths_are_validated(rep, ctx):
+    """Every destination path built from a REMOTE-supplied name must be checked.
+
+    A pull trusts the far side for filenames. Three write paths built a local
+    path by joining that name onto the destination with nothing in between:
+
+      _tar_extract_stream        tar-over-SSH pull, extracted with no blitcp
+                                 validation at all
+      copy_individual_remote_to_local   the SFTP fallback, reached whenever the
+                                 remote has no tar or --sftp-only is set
+      _ssh_pull_smart's dedup links     os.remove() then os.link() at the
+                                 joined path — a delete, not just a write
+
+    O_NOFOLLOW on the write does not help: it refuses a symlinked LEAF and says
+    nothing about '..'. This drives each path with a hostile relative name and
+    fails if anything lands outside the destination.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("pull paths validated", "POSIX path semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_pull")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("pull paths validated", f"could not import target: {e}")
+        return
+
+    import io as _io
+    import tarfile as _tarfile
+
+    escapes = []
+
+    # ── 1. tar-over-SSH pull: _tar_extract_stream ──────────────────────────
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        buf = _io.BytesIO()
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            i = _tarfile.TarInfo("../escaped_tar.txt")
+            p = b"pwned"
+            i.size = len(p)
+            i.mode = 0o644
+            tf.addfile(i, _io.BytesIO(p))
+        buf.seek(0)
+        try:
+            mod._tar_extract_stream(buf, dst)
+        except Exception:                                   # noqa: BLE001
+            pass
+        if os.path.exists(os.path.join(ws, "escaped_tar.txt")):
+            escapes.append("_tar_extract_stream wrote above the destination")
+
+    # ── 2. SFTP fallback: copy_individual_remote_to_local ──────────────────
+    # Driven at the path-building level: the function joins entry.rel onto
+    # dst_root before it ever touches the network.
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        rel = "../escaped_sftp.txt"
+        built = os.path.join(dst, rel)
+        checked = mod._safe_local_dest(os.path.realpath(dst), rel)
+        if checked is None and os.path.abspath(built) != os.path.abspath(
+                os.path.join(dst, os.path.basename(rel))):
+            # The validator rejects it; the question is whether the copy path
+            # asks. Probe the real function with a stub sftp that records the
+            # path it was handed.
+            class _StubSFTP:
+                def __init__(self):
+                    self.asked = []
+
+                def open(self, *a, **kw):
+                    raise OSError("stub")
+
+                def get(self, remote, local, *a, **kw):
+                    self.asked.append(local)
+                    raise OSError("stub")
+
+                def close(self):
+                    pass
+
+            class _StubSSH:
+                def __init__(self, sftp):
+                    self._sftp = sftp
+                    self.caps = {}
+
+                def open_sftp(self):
+                    return self._sftp
+
+            entry = mod.FileEntry(src="/remote/x", rel=rel, size=10,
+                                  physical_offset=0, content_hash=None)
+            stub = _StubSFTP()
+            prog = mod.Progress(10, 1)
+            try:
+                mod.copy_individual_remote_to_local(
+                    [entry], _StubSSH(stub), dst, prog, 1 << 20)
+            except Exception:                               # noqa: BLE001
+                pass
+            # Whatever happened, nothing may exist above the destination.
+            if os.path.exists(os.path.join(ws, "escaped_sftp.txt")):
+                escapes.append("SFTP fallback wrote above the destination")
+            elif os.path.isdir(os.path.join(ws, "dst", "..", "escaped_sftp.txt")):
+                escapes.append("SFTP fallback created a path above the destination")
+
+    # ── 3. dedup link creation in the pull path ────────────────────────────
+    # The link loop does os.remove() at the joined path before linking, so an
+    # unvalidated name deletes an arbitrary file. Reproduced directly.
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        victim = os.path.join(ws, "victim.txt")
+        with open(victim, "w") as f:
+            f.write("precious")
+        canonical = os.path.join(dst, "real.txt")
+        with open(canonical, "w") as f:
+            f.write("data")
+        rel = "../victim.txt"
+        if mod._safe_local_dest(os.path.realpath(dst), rel) is None:
+            pass  # validator would reject — good, provided the loop asks it
+        helper = getattr(mod, "_safe_pull_link_dest", None)
+        if helper is None:
+            escapes.append("dedup link loop has no validated path helper")
+        elif helper(dst, rel) is not None:
+            escapes.append("dedup link path helper accepted a name above the "
+                           "destination")
+
+    if not escapes:
+        rep.ok("pull paths validated",
+               "tar stream, SFTP fallback and dedup links all refuse a remote "
+               "name that points above the destination")
+    else:
+        rep.fail("pull paths validated", "; ".join(escapes))
+
+
+def _check_create_links_validates(rep, ctx):
+    """create_links() unlinks whatever is at the joined path before linking.
+
+    In the remote-to-local flow the link_map keys are names the REMOTE chose:
+    filter_unchanged_remote_to_local() builds the map before _safe_batch() ever
+    runs, so nothing has filtered them by the time create_links() joins them
+    onto the destination and calls os.unlink(). That is a delete at a path the
+    far side picked, and under --use-sudo it is a delete as root.
+
+    Fails if a link_map key pointing above the destination is acted on.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("create_links validates", "POSIX path semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_links")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("create_links validates", f"could not import target: {e}")
+        return
+
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        victim = os.path.join(ws, "victim.txt")
+        with open(victim, "w") as f:
+            f.write("precious")
+        canonical = os.path.join(dst, "real.txt")
+        with open(canonical, "w") as f:
+            f.write("data")
+
+        # A duplicate whose name climbs out of the destination onto the victim.
+        try:
+            mod.create_links({"../victim.txt": "real.txt"}, dst)
+        except Exception:                                   # noqa: BLE001
+            pass
+
+        if not os.path.exists(victim):
+            rep.fail("create_links validates",
+                     "a link_map key above the destination DELETED a file "
+                     "outside it")
+            return
+        if open(victim).read() != "precious":
+            rep.fail("create_links validates",
+                     "a link_map key above the destination overwrote a file "
+                     "outside it")
+            return
+        rep.ok("create_links validates",
+               "a link_map key above the destination is refused")
+
+
+def _check_http_filename_cannot_traverse(rep, ctx):
+    """The name taken from an http(s):// source URL must be one path segment.
+
+    run_http_transfer derives the destination filename with
+    basename(urlsplit(url).path) and THEN unquotes it. Percent-encoding
+    therefore survives the basename: '%2e%2e%2fevil' is one segment when
+    basename runs and becomes '../evil' immediately after, and that string is
+    posixpath.join()ed onto the remote destination directory.
+
+    No attacker controls this — Content-Disposition is not honoured and the
+    redirect target is used only for a diagnostic message — so it is the user's
+    own URL doing it. It is still a filename that escapes the directory the
+    user named, which is not a thing a copy tool should do quietly.
+    """
+    target = ctx["target"]
+    try:
+        mod = _load_target_module(target, "_blitcp_httpname")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("http filename cannot traverse", f"could not import target: {e}")
+        return
+
+    fn = getattr(mod, "_http_dest_filename", None)
+    if fn is None:
+        rep.fail("http filename cannot traverse",
+                 "no _http_dest_filename() helper; the URL name is still "
+                 "derived inline, where unquote runs after basename")
+        return
+
+    bad = []
+    for url, why in (
+        ("https://h/dir/%2e%2e%2fevil.txt", "encoded ../ in the last segment"),
+        ("https://h/dir/%2e%2e%2f%2e%2e%2froot.txt", "doubled encoded ../"),
+        ("https://h/dir/%2fabs.txt", "encoded leading slash"),
+        ("https://h/dir/a%2fb.txt", "encoded separator"),
+    ):
+        got = fn(url)
+        if got is None:
+            continue                      # refused outright — fine
+        if "/" in got or got in ("..", ".") or got.startswith("/"):
+            bad.append(f"{why}: {got!r}")
+
+    if bad:
+        rep.fail("http filename cannot traverse", "; ".join(bad))
+    else:
+        rep.ok("http filename cannot traverse",
+               "an encoded separator or '..' cannot survive into the "
+               "destination name")
+
+
+def _check_large_member_is_validated(rep, ctx):
+    """The >=1 MB branch of extract_member must validate too.
+
+    It is the only branch that does not go through _safe_tar_extract: it opens
+    and writes the file itself, and its own inline check is a realpath
+    comparison that would not reject a symlink, device or hard-link member, nor
+    a '..' component. For a while it relied on a validation its caller
+    performed, and when that call site was removed the branch was left bare —
+    which is how a hole opened in the one function that already had a hole.
+
+    Honest about what it does and does not prove: this test passes both with
+    and without that validation call, and no case was found that separates the
+    two. Everything reachable on a >=1 MB member is already covered by the
+    branch's own realpath containment, by O_NOFOLLOW on the write, and by
+    extractfile() returning None for a non-regular member. Symlink and
+    hard-link members carry size 0 and take the small branch; a NUL in a name
+    does not survive tar's NUL-terminated name field at all.
+
+    It is therefore a regression guard rather than a demonstration: the
+    validation is defence in depth, and this fails the day someone weakens the
+    inline check that is currently doing the work.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("large tar member validated", "POSIX path semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_largemember")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("large tar member validated", f"could not import target: {e}")
+        return
+
+    import io as _io
+    import tarfile as _tarfile
+
+    class _NullProgress:
+        def update(self, *a, **kw):
+            pass
+
+        def display(self, *a, **kw):
+            pass
+
+    big = 2 * 1024 * 1024          # over the 1 MB small/large threshold
+    problems = []
+
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        tar_path = os.path.join(ws, "big.tar")
+        with _tarfile.open(tar_path, "w") as tf:
+            payload = b"A" * big
+            for name in ("../escaped_big.bin", "ok/inside.bin"):
+                info = _tarfile.TarInfo(name)
+                info.size = len(payload)
+                info.mode = 0o644
+                tf.addfile(info, _io.BytesIO(payload))
+            # a symlink member, which only _validate_tar_member rejects
+            link = _tarfile.TarInfo("ok/evil_link")
+            link.type = _tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            link.size = 0
+            tf.addfile(link)
+
+        with _tarfile.open(tar_path, "r") as tf:
+            ex = mod._ProgressTarExtractor(tf, dst, _NullProgress())
+            results = {}
+            for m in tf.getmembers():
+                try:
+                    results[m.name] = ex.extract_member(m)
+                except Exception as e:                      # noqa: BLE001
+                    results[m.name] = "raised: %r" % (e,)
+
+        if os.path.exists(os.path.join(ws, "escaped_big.bin")):
+            problems.append("a >=1 MB member named '../…' was written above "
+                            "the destination")
+        elif results.get("../escaped_big.bin") is True:
+            problems.append("a >=1 MB member named '../…' was accepted")
+        if results.get("ok/evil_link") is True:
+            problems.append("a symlink member was accepted")
+        if results.get("ok/inside.bin") is not True:
+            problems.append("a legitimate large member was refused: %r"
+                            % (results.get("ok/inside.bin"),))
+
+    if problems:
+        rep.fail("large tar member validated", "; ".join(problems))
+    else:
+        rep.ok("large tar member validated",
+               "the >=1 MB branch refuses traversal and still accepts a "
+               "legitimate member (regression guard; see the docstring for "
+               "what this does not prove)")
+
+
+def _check_untrusted_mode_is_clamped(rep, ctx):
+    """A remote must not be able to land world-writable files.
+
+    _safe_tar_extract already strips setuid/setgid when trusted_source=False,
+    because under --use-sudo the extracted file is root-owned and an
+    attacker-chosen setuid bit is a privilege escalation. The same argument
+    applies to the write bits and it was not being made: the member's mode was
+    re-applied verbatim otherwise, so a hostile remote could ship 0o777 and get
+    0o777 — root-owned and world-writable inside the destination tree.
+
+    Python's own 'data' filter clamps to 0o755 for exactly this reason. Ours ran
+    AFTER the filter and overwrote it, so the clamp was absent on every
+    interpreter, in the default configuration, not only on the ones missing the
+    PEP 706 backport.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("untrusted mode clamped", "POSIX mode semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_modeclamp")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("untrusted mode clamped", f"could not import target: {e}")
+        return
+
+    import io as _io
+    import stat as _stat
+    import tarfile as _tarfile
+
+    hostile = {
+        "worldwrite.sh": 0o777,
+        "grpwrite.txt": 0o664,
+        "setuid.bin": 0o4755,
+        "sticky.txt": 0o1777,
+    }
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        tar_path = os.path.join(ws, "hostile.tar")
+        payload = b"z" * 32
+        with _tarfile.open(tar_path, "w") as tf:
+            for name, mode in hostile.items():
+                info = _tarfile.TarInfo(name)
+                info.size = len(payload)
+                info.mode = mode
+                tf.addfile(info, _io.BytesIO(payload))
+            d = _tarfile.TarInfo("hostiledir")
+            d.type = _tarfile.DIRTYPE
+            d.mode = 0o2777
+            tf.addfile(d)
+
+        with _tarfile.open(tar_path, "r") as tf:
+            for m in tf.getmembers():
+                r = mod._safe_tar_extract(tf, m, dst, trusted_source=False)
+                if r is not True:
+                    rep.fail("untrusted mode clamped",
+                             f"a benign member was refused: {m.name}: {r}")
+                    return
+
+        bad = []
+        forbidden = (_stat.S_ISUID | _stat.S_ISGID | _stat.S_ISVTX
+                     | _stat.S_IWGRP | _stat.S_IWOTH)
+        for name in list(hostile) + ["hostiledir"]:
+            landed = _stat.S_IMODE(os.lstat(os.path.join(dst, name)).st_mode)
+            if landed & forbidden:
+                bad.append("%s landed %s" % (name, oct(landed)))
+
+    if bad:
+        rep.fail("untrusted mode clamped",
+                 "an untrusted remote's mode bits survived: "
+                 + "; ".join(bad)
+                 + " — setuid/setgid/sticky and group/other write must all be "
+                   "masked for trusted_source=False")
+    else:
+        rep.ok("untrusted mode clamped",
+               "setuid, setgid, sticky and group/other write are all masked "
+               "for an untrusted source")
+
+
+def _check_pull_reports_rejections(rep, ctx):
+    """A refused member must reach the caller, and the exit code.
+
+    _tar_extract_stream counts what it refuses and then returns only the
+    delivered count, so the rejections are printed and discarded. The pull
+    driver's exit code is `0 if verified else 1`, and `verified` starts True
+    and is only ever changed inside `if not args.no_verify and caps["hash"]`.
+    With --no-verify, or against a remote with no hash tool, blitcp can refuse
+    every member of the transfer and still exit 0 with a success summary.
+
+    That is incident (E) rebuilt inside the fix for incident (A): a success
+    report for a check that did not run.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("pull reports rejections", "POSIX path semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_reject")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("pull reports rejections", f"could not import target: {e}")
+        return
+
+    import io as _io
+    import tarfile as _tarfile
+
+    bad = []
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        buf = _io.BytesIO()
+        payload = b"q" * 16
+        with _tarfile.open(fileobj=buf, mode="w") as tf:
+            for name in ("good.txt", "../escaped.txt"):
+                i = _tarfile.TarInfo(name)
+                i.size = len(payload)
+                i.mode = 0o644
+                tf.addfile(i, _io.BytesIO(payload))
+        buf.seek(0)
+        result = mod._tar_extract_stream(buf, dst)
+
+        # The caller has to be able to tell "all delivered" from "one refused".
+        if isinstance(result, int):
+            bad.append("_tar_extract_stream returns only the delivered count "
+                       "(%d); a refused member is printed and then dropped, so "
+                       "no caller can act on it" % result)
+        else:
+            try:
+                done, rejected = result
+            except (TypeError, ValueError):
+                bad.append("_tar_extract_stream returned %r, which the caller "
+                           "cannot read as (delivered, refused)" % (result,))
+            else:
+                if rejected < 1:
+                    bad.append("a member above the destination was refused but "
+                               "reported as %d rejections" % rejected)
+                if done != 1:
+                    bad.append("expected 1 delivered member, got %d" % done)
+
+    # And the driver must actually use it, rather than deciding on verification
+    # alone — which does not run under --no-verify.
+    try:
+        eng = open(target, encoding="utf-8", errors="replace").read()
+        tree = ast.parse(eng, filename=target)
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("pull reports rejections", f"could not parse target: {e}")
+        return
+    driver = ""
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == "_ssh_pull_smart":
+            driver = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+    if driver:
+        call = [ln for ln in driver.splitlines()
+                if "_tar_extract_stream(" in ln]
+        if call and "=" not in call[0]:
+            bad.append("_ssh_pull_smart discards the return of "
+                       "_tar_extract_stream, so a refused member cannot reach "
+                       "the exit code")
+        if "return 0 if verified else 1" in driver:
+            bad.append("_ssh_pull_smart's exit code depends on `verified` "
+                       "alone, which stays True under --no-verify and when the "
+                       "remote has no hash tool")
+
+    if bad:
+        rep.fail("pull reports rejections", "; ".join(bad))
+    else:
+        rep.ok("pull reports rejections",
+               "a refused member reaches the caller and the exit code, "
+               "independently of whether verification ran")
+
+
+def _check_pull_link_target_validated(rep, ctx):
+    """The dedup link TARGET is remote-supplied too, and was not checked.
+
+    In _ssh_pull_smart the link list holds (dup, tp) pairs. `dup` is validated;
+    `tp` is not, and for the same-run case it is built from `seen[h]` — another
+    name the remote chose. os.link(tp, dp) then hardlinks an attacker-named
+    path into the destination, and os.symlink points at it.
+
+    create_links() in the same change validates BOTH sides for exactly this
+    reason. This one was missed.
+    """
+    target = ctx["target"]
+    try:
+        eng = open(target, encoding="utf-8", errors="replace").read()
+        tree = ast.parse(eng, filename=target)
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("pull link target validated", f"could not parse target: {e}")
+        return
+    driver = None
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == "_ssh_pull_smart":
+            driver = n
+    if driver is None:
+        rep.skip("pull link target validated", "_ssh_pull_smart not found")
+        return
+
+    # Find the loop that creates the links, then check what reaches os.link.
+    bad = []
+    for loop in ast.walk(driver):
+        if not isinstance(loop, ast.For):
+            continue
+        seg = "\n".join(eng.splitlines()[loop.lineno - 1:loop.end_lineno])
+        if "os.link(" not in seg and "os.symlink(" not in seg:
+            continue
+        # A name counts as validated when it is passed INTO a validator or
+        # comes OUT of one. Only counting the arguments called `safe_tp = 
+        # _safe_pull_link_dest(...)` unvalidated, which is backwards — that is
+        # the validated value.
+        _checks = ("_safe_pull_link_dest", "_safe_local_dest",
+                   "_validate_rel_path")
+        validated = set()
+        for c in ast.walk(loop):
+            if isinstance(c, ast.Call):
+                _q, bare = _call_name_for_audit(c)
+                if bare in _checks:
+                    for a in c.args:
+                        for nn in ast.walk(a):
+                            if isinstance(nn, ast.Name):
+                                validated.add(nn.id)
+        for c in ast.walk(loop):
+            if not isinstance(c, ast.Assign):
+                continue
+            calls = [x for x in ast.walk(c.value) if isinstance(x, ast.Call)]
+            if not any(_call_name_for_audit(x)[1] in _checks for x in calls):
+                continue
+            for t in c.targets:
+                for nn in ast.walk(t):
+                    if isinstance(nn, ast.Name):
+                        validated.add(nn.id)
+        for c in ast.walk(loop):
+            if not isinstance(c, ast.Call):
+                continue
+            _q, bare = _call_name_for_audit(c)
+            if bare not in ("link", "symlink"):
+                continue
+            src_arg = c.args[0] if c.args else None
+            names = {nn.id for nn in ast.walk(src_arg)
+                     if isinstance(nn, ast.Name)} if src_arg else set()
+            if names and not (names & validated):
+                bad.append("os.%s() link target built from %s, which no "
+                           "validator in the loop touches"
+                           % (bare, "/".join(sorted(names))))
+    if bad:
+        rep.fail("pull link target validated", "; ".join(sorted(set(bad))))
+    else:
+        rep.ok("pull link target validated",
+               "both sides of a dedup link are validated, not only the "
+               "destination path")
+
+
+def _call_name_for_audit(node):
+    f = node.func
+    if isinstance(f, ast.Attribute):
+        return None, f.attr
+    if isinstance(f, ast.Name):
+        return f.id, f.id
+    return None, None
+
+
+def _check_dest_symlink_policy(rep, ctx):
+    """Three cases, and the middle one is the whole point.
+
+    _safe_local_dest resolves symlinks and refuses anything landing outside
+    the destination. That is right for a name the far side chose. It is wrong
+    for a local copy into a destination the user deliberately laid out with a
+    symlinked directory — `cp -r` follows those, and refusing is a regression
+    against the tool being replaced.
+
+    But "the user made that symlink" is not something the code can see, and
+    under --use-sudo it must not assume it: a local unprivileged attacker
+    plants dst/photos -> /etc precisely because they know a root copy is
+    coming. So elevation pulls the strict behaviour back even for local names.
+
+        trusted_source=True,  not elevated -> textual check only
+        trusted_source=True,  elevated     -> full check
+        trusted_source=False               -> full check, unchanged
+    """
+    target = ctx["target"]
+    # Not skipped on Windows any more. A junction is the same threat as a
+    # symlink and the policy is the same code; if the platform will not let the
+    # test create one, the decision logic is still worth exercising with a
+    # mocked elevation rather than skipped outright.
+    if os.name == "nt":
+        try:
+            _probe = tempfile.mkdtemp()
+            os.symlink(_probe, os.path.join(_probe, "l"))
+        except (OSError, NotImplementedError, AttributeError):
+            rep.skip("destination symlink policy",
+                     "this Windows account cannot create a link to test with; "
+                     "the elevation logic is covered by trust-remote-modes")
+            return
+    try:
+        mod = _load_target_module(target, "_blitcp_symlinkpolicy")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("destination symlink policy", f"could not import target: {e}")
+        return
+
+    bad = []
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        outside = os.path.join(ws, "elsewhere")
+        os.makedirs(dst)
+        os.makedirs(outside)
+        # the user's own layout: a real directory moved out, linked back in
+        os.symlink(outside, os.path.join(dst, "photos"))
+        real_root = os.path.realpath(dst)
+        rel = "photos/holiday.jpg"
+
+        # _is_elevated is THE predicate for a path decision now;
+        # _is_elevated_for_preserve answers a different question (chown).
+        real_elev = getattr(mod, "_is_elevated", None)
+        if real_elev is None:
+            rep.skip("destination symlink policy",
+                     "_is_elevated_for_preserve is gone")
+            return
+        try:
+            mod._is_elevated = lambda: False
+            try:
+                local_ok = mod._dest_policy(dst, rel, trusted_source=True)[0]
+            except TypeError as e:
+                bad.append("_dest_policy has no trusted_source parameter, so "
+                           "a local copy cannot be told apart from a remote "
+                           "one (%s)" % e)
+                local_ok = None
+                mod._is_elevated = real_elev
+                rep.fail("destination symlink policy", "; ".join(bad))
+                return
+            if local_ok is None:
+                bad.append("a local copy into the user's own symlinked "
+                           "directory was refused; cp -r follows it")
+            remote = mod._dest_policy(dst, rel, trusted_source=False)[0]
+            if remote is not None:
+                bad.append("a REMOTE-supplied name resolved through a "
+                           "symlinked directory and was accepted")
+
+            mod._is_elevated = lambda: True
+            elevated = mod._dest_policy(dst, rel, trusted_source=True)[0]
+            if elevated is not None:
+                bad.append("under elevation a local name still resolved "
+                           "through a symlinked directory — a planted symlink "
+                           "would redirect a root write")
+
+            # The textual check must survive in every mode.
+            for ts in (True, False):
+                mod._is_elevated = lambda: False
+                if mod._dest_policy(dst, "../escape.txt",
+                                    trusted_source=ts)[0] is not None:
+                    bad.append("a '..' name was accepted with "
+                               "trusted_source=%s" % ts)
+        finally:
+            mod._is_elevated = real_elev
+            mod._REAL_ROOT_CACHE.clear()
+
+    if bad:
+        rep.fail("destination symlink policy", "; ".join(bad))
+    else:
+        rep.ok("destination symlink policy",
+               "local names follow the user's symlinks, elevation and remote "
+               "names do not, and '..' is refused in every mode")
+
+
+def _check_symlinked_dest_preflight(rep, ctx):
+    """The refusal has to be reported once, not once per file.
+
+    A symlinked destination directory with 4,000 files under it produces 4,000
+    identical refusals, which is not a diagnosis, it is a flood. The run should
+    say which directory, where it points, and how many incoming files it
+    affects, before it starts copying.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("symlinked destination preflight", "POSIX symlinks only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_preflight")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("symlinked destination preflight",
+                 f"could not import target: {e}")
+        return
+
+    fn = getattr(mod, "report_symlinked_dest_dirs", None)
+    if fn is None:
+        rep.fail("symlinked destination preflight",
+                 "no report_symlinked_dest_dirs() — a symlinked destination "
+                 "directory is discovered one refused file at a time")
+        return
+
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        outside = os.path.join(ws, "elsewhere")
+        os.makedirs(os.path.join(dst, "ok"))
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(dst, "photos"))
+        rels = ["photos/f%04d.jpg" % i for i in range(1847)] + \
+               ["ok/a.txt", "ok/b.txt"]
+        # Elevated: the reporter names only what the policy would actually
+        # refuse, and unelevated the policy allows the user's own symlink.
+        real_elev = mod._is_elevated
+        try:
+            mod._is_elevated = lambda: True
+            mod._REAL_ROOT_CACHE.clear()
+            found = fn(dst, rels)
+        finally:
+            mod._is_elevated = real_elev
+            mod._REAL_ROOT_CACHE.clear()
+
+    if not found:
+        rep.fail("symlinked destination preflight",
+                 "the symlinked directory was not reported at all")
+        return
+    entry = found[0]
+    problems = []
+    if entry.get("rel") != "photos":
+        problems.append("named %r instead of the symlinked directory"
+                        % entry.get("rel"))
+    if entry.get("count") != 1847:
+        problems.append("counted %r affected files, expected 1847"
+                        % entry.get("count"))
+    if not entry.get("target"):
+        problems.append("did not say where the symlink points")
+    if problems:
+        rep.fail("symlinked destination preflight", "; ".join(problems))
+    else:
+        rep.ok("symlinked destination preflight",
+               "the symlinked directory, its target and the number of files "
+               "it affects are reported once, before copying")
+
+
+def _check_trust_remote_modes_optout(rep, ctx):
+    """The permission clamp must have a documented way out.
+
+    4.2.11 changes what a pulled file's mode looks like: group and world write
+    are stripped from anything an untrusted remote sends, so a 0o664 file lands
+    0o644. That is right by default and wrong for someone who pulls into a
+    shared, group-writable tree on purpose.
+
+    The sparse advisory criticised this project, in its own words, for having
+    had "no opt-out". Shipping a second permission change with no opt-out would
+    be the same mistake with the lesson already written down.
+
+    setuid and setgid stay stripped regardless: those were removed before this
+    release, they are a privilege escalation under --use-sudo, and no flag
+    should hand them back.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("trust-remote-modes opt-out", "POSIX mode semantics only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_trustmodes")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("trust-remote-modes opt-out", f"could not import target: {e}")
+        return
+
+    setter = getattr(mod, "_set_trust_remote_modes", None)
+    if setter is None:
+        rep.fail("trust-remote-modes opt-out",
+                 "no _set_trust_remote_modes() — the permission clamp has no "
+                 "opt-out, which is exactly what the sparse advisory faulted "
+                 "this project for")
+        return
+
+    import io as _io
+    import stat as _stat
+    import tarfile as _tarfile
+
+    def landed(trust):
+        with temp_workspace() as ws:
+            dst = os.path.join(ws, "dst")
+            os.makedirs(dst)
+            buf = _io.BytesIO()
+            payload = b"m" * 8
+            with _tarfile.open(fileobj=buf, mode="w") as tf:
+                for name, mode in (("grp.txt", 0o664), ("suid.bin", 0o4755)):
+                    i = _tarfile.TarInfo(name)
+                    i.size = len(payload)
+                    i.mode = mode
+                    tf.addfile(i, _io.BytesIO(payload))
+            buf.seek(0)
+            setter(trust)
+            try:
+                with _tarfile.open(fileobj=buf) as tf:
+                    for m in tf.getmembers():
+                        mod._safe_tar_extract(tf, m, dst, trusted_source=False)
+                return {n: _stat.S_IMODE(
+                            os.lstat(os.path.join(dst, n)).st_mode)
+                        for n in ("grp.txt", "suid.bin")}
+            finally:
+                setter(False)
+
+    bad = []
+    off = landed(False)
+    on = landed(True)
+    if off["grp.txt"] & (_stat.S_IWGRP | _stat.S_IWOTH):
+        bad.append("group write survived with the flag OFF (%s)"
+                   % oct(off["grp.txt"]))
+    if not (on["grp.txt"] & _stat.S_IWGRP):
+        bad.append("group write was still stripped with the flag ON (%s) — "
+                   "the opt-out does not opt out" % oct(on["grp.txt"]))
+    for label, modes in (("off", off), ("on", on)):
+        if modes["suid.bin"] & (_stat.S_ISUID | _stat.S_ISGID):
+            bad.append("setuid/setgid survived with the flag %s (%s) — no flag "
+                       "may hand those back" % (label, oct(modes["suid.bin"])))
+
+    # And it has to be reachable from the command line, and visible when on.
+    try:
+        eng = open(target, encoding="utf-8", errors="replace").read()
+    except OSError:
+        eng = ""
+    if "--trust-remote-modes" not in eng:
+        bad.append("the flag is not exposed on the command line")
+    if "_set_trust_remote_modes(" not in eng.replace("def _set_trust_remote_modes(", ""):
+        bad.append("nothing ever calls _set_trust_remote_modes(), so the CLI "
+                   "flag cannot reach the extraction path")
+
+    if bad:
+        rep.fail("trust-remote-modes opt-out", "; ".join(bad))
+    else:
+        rep.ok("trust-remote-modes opt-out",
+               "the clamp has a documented opt-out, it works, and setuid/"
+               "setgid stay stripped either way")
+
+
+def _run_main_inprocess(mod, argv, elevated=False):
+    """Run the REAL entry point in-process, optionally pretending to be root.
+
+    Unit-testing the helpers is what let two rounds of regressions through:
+    every helper test passed while the copy engines, which do not call those
+    helpers, wrote the file anyway. These tests drive main() over real files
+    on disk for that reason. In-process rather than as a subprocess because
+    elevation has to be simulated, and a child cannot be monkeypatched.
+
+    Returns (exit_code, captured_output).
+    """
+    import contextlib
+    import io as _io
+
+    real_argv = sys.argv
+    real_elev = mod._is_elevated
+    real_elev_p = mod._is_elevated_for_preserve
+    buf = _io.StringIO()
+    try:
+        sys.argv = ["blitcp"] + argv
+        if elevated:
+            mod._is_elevated = lambda: True
+            mod._is_elevated_for_preserve = lambda: True
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                rc = mod.main()
+            except SystemExit as e:
+                rc = e.code if isinstance(e.code, int) else 1
+    finally:
+        sys.argv = real_argv
+        mod._is_elevated = real_elev
+        mod._is_elevated_for_preserve = real_elev_p
+    return (rc or 0), buf.getvalue()
+
+
+def _symlinked_dst_tree(ws):
+    """src with a photos/ subtree, and a dst whose photos/ is a symlink out.
+
+    The shape every one of these tests needs: a destination the user laid out
+    with a symlinked directory, and incoming files that land under it.
+    """
+    src = os.path.join(ws, "src")
+    dst = os.path.join(ws, "dst")
+    outside = os.path.join(ws, "elsewhere")
+    os.makedirs(os.path.join(src, "photos"))
+    os.makedirs(os.path.join(src, "docs"))
+    os.makedirs(dst)
+    os.makedirs(outside)
+    for i in range(1, 6):
+        with open(os.path.join(src, "photos", "f%d.txt" % i), "w") as f:
+            f.write("photo %d\n" % i)
+    with open(os.path.join(src, "docs", "d.txt"), "w") as f:
+        f.write("doc\n")
+    os.symlink(outside, os.path.join(dst, "photos"))
+    return src, dst, outside
+
+
+def _check_local_copy_symlinked_dst_unelevated(rep, ctx):
+    """Not elevated: a local copy into the user's symlinked layout works.
+
+    cp -r follows a symlinked destination directory. So does blitcp, when the
+    names come from our own scan and the process is not root. The whole flow
+    has to work end to end — copy AND verification — because the two used to
+    disagree: the copy wrote through the link and the verifier walked the
+    destination without following it, called every file missing and exited 1.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("local copy into symlinked dst", "POSIX symlinks only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_e2e_unelev")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("local copy into symlinked dst", f"could not import: {e}")
+        return
+
+    with temp_workspace() as ws:
+        src, dst, outside = _symlinked_dst_tree(ws)
+        rc, out = _run_main_inprocess(mod, [src + os.sep, dst], elevated=False)
+        landed = sorted(os.listdir(outside))
+        doc_ok = os.path.isfile(os.path.join(dst, "docs", "d.txt"))
+
+    bad = []
+    if rc != 0:
+        bad.append("exit %s (expected 0)" % rc)
+    if "Verification failed" in out or "verify mismatch" in out:
+        bad.append("verification reported a failure for files that are there")
+    if len(landed) != 5:
+        bad.append("%d of 5 files reached the symlinked directory (%s)"
+                   % (len(landed), ", ".join(landed) or "none"))
+    if not doc_ok:
+        bad.append("the ordinary subdirectory was not copied")
+    if bad:
+        rep.fail("local copy into symlinked dst", "; ".join(bad))
+    else:
+        rep.ok("local copy into symlinked dst",
+               "5 files through the user's symlink, verification clean, exit 0")
+
+
+def _check_local_copy_symlinked_dst_elevated(rep, ctx):
+    """Elevated: the same copy is refused, and nothing lands outside.
+
+    Under --use-sudo the process is root, and a symlinked destination
+    directory redirects a root write. blitcp cannot tell a link the user made
+    from one a local attacker planted to catch exactly this run, so it refuses
+    both. The test asserts the refusal reaches the exit code and, more
+    importantly, that the bytes never leave the destination.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("elevated copy into symlinked dst", "POSIX symlinks only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_e2e_elev")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("elevated copy into symlinked dst", f"could not import: {e}")
+        return
+
+    with temp_workspace() as ws:
+        src, dst, outside = _symlinked_dst_tree(ws)
+        rc, out = _run_main_inprocess(mod, [src + os.sep, dst], elevated=True)
+        escaped = sorted(os.listdir(outside))
+        banners = out.count("Destination contains a symlinked directory")
+
+    bad = []
+    if escaped:
+        bad.append("%d file(s) were written outside the destination through "
+                   "the symlink while elevated: %s"
+                   % (len(escaped), ", ".join(escaped)))
+    if rc == 0:
+        bad.append("exit 0 although files were refused")
+    if banners != 1:
+        bad.append("the symlinked-directory notice appeared %d times, "
+                   "expected exactly 1" % banners)
+    if bad:
+        rep.fail("elevated copy into symlinked dst", "; ".join(bad))
+    else:
+        rep.ok("elevated copy into symlinked dst",
+               "nothing escaped, the run failed, and the notice was printed once")
+
+
+def _check_preflight_in_dry_run_and_cloud(rep, ctx):
+    """The notice has to appear where the user is actually looking.
+
+    Two gaps in the same report. A dry run is exactly when someone checks
+    whether a destination is set up correctly, and it printed nothing — the
+    warning sat after the dry-run return. And the local flow was the only one
+    wired: a cloud download refused objects one "Skipping unsafe key" at a
+    time, with no summary at all.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("preflight in dry-run and cloud", "POSIX symlinks only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_preflight_reach")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("preflight in dry-run and cloud", f"could not import: {e}")
+        return
+
+    bad = []
+    with temp_workspace() as ws:
+        # Elevated, because that is when the policy actually refuses. An
+        # UNELEVATED dry run must say nothing: the files would be copied
+        # through the user's symlink, and warning that they "will be refused"
+        # would be false.
+        src, dst, outside = _symlinked_dst_tree(ws)
+        rc, out = _run_main_inprocess(mod, ["--dry-run", src + os.sep, dst],
+                                      elevated=True)
+        if out.count("Destination contains a symlinked directory") != 1:
+            bad.append("an elevated dry run printed the notice %d times, "
+                       "expected 1 — a dry run is when someone checks the "
+                       "destination"
+                       % out.count("Destination contains a symlinked directory"))
+        _, quiet = _run_main_inprocess(mod, ["--dry-run", src + os.sep, dst],
+                                       elevated=False)
+        if "will be refused" in quiet:
+            bad.append("an unelevated dry run warned that files 'will be "
+                       "refused' when the policy allows them")
+        if os.listdir(outside):
+            bad.append("a dry run wrote files")
+
+    # The cloud download path has to call the same reporter. Checked
+    # structurally because standing up an object store here would test the
+    # fake, not the code.
+    try:
+        eng = open(target, encoding="utf-8", errors="replace").read()
+        tree = ast.parse(eng, filename=target)
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("preflight in dry-run and cloud", f"could not parse: {e}")
+        return
+    for fname in ("_download_from_cloud",):
+        body = ""
+        for n in ast.walk(tree):
+            if isinstance(n, ast.FunctionDef) and n.name == fname:
+                body = "\n".join(eng.splitlines()[n.lineno - 1:n.end_lineno])
+        if not body:
+            bad.append("%s() not found" % fname)
+        elif "warn_symlinked_dest_dirs" not in body:
+            bad.append("%s() never calls warn_symlinked_dest_dirs(), so a "
+                       "symlinked destination is discovered one refused object "
+                       "at a time" % fname)
+
+    if bad:
+        rep.fail("preflight in dry-run and cloud", "; ".join(bad))
+    else:
+        rep.ok("preflight in dry-run and cloud",
+               "a dry run reports it once and writes nothing, and the cloud "
+               "download path reports it too")
+
+
+def _symlinked_case(mod, ws, argv, elevated=False, sudo_user=False):
+    """Run one variant of the symlinked-destination scenario end to end."""
+    src, dst, outside = _symlinked_dst_tree(ws)
+    real_env = os.environ.get("SUDO_USER")
+    try:
+        if sudo_user:
+            os.environ["SUDO_USER"] = "someone"
+        rc, out = _run_main_inprocess(mod, [src + os.sep, dst] + argv,
+                                      elevated=elevated)
+    finally:
+        if sudo_user:
+            if real_env is None:
+                os.environ.pop("SUDO_USER", None)
+            else:
+                os.environ["SUDO_USER"] = real_env
+    return rc, out, sorted(os.listdir(outside)), dst
+
+
+def _files_line(out):
+    """The DONE summary's Files line, for a readable failure message."""
+    m = re.search(r"^\s*Files:.*$", out, re.M)
+    return m.group(0).strip() if m else "(no Files line)"
+
+
+def _data_line(out):
+    """The DONE summary's Data line, for a readable failure message."""
+    m = re.search(r"^\s*Data:.*$", out, re.M)
+    return m.group(0).strip() if m else "(no Data line)"
+
+
+def _symlinked_dst_dedup_tree(ws):
+    """The same symlinked destination, but the five photos are IDENTICAL.
+
+    That one change is the whole point: dedup turns four of the five into
+    LINKS, so the refusals arrive from create_links instead of from a copy
+    engine. With distinct contents the bug below is invisible.
+    """
+    src = os.path.join(ws, "src")
+    dst = os.path.join(ws, "dst")
+    outside = os.path.join(ws, "elsewhere")
+    os.makedirs(os.path.join(src, "photos"))
+    os.makedirs(os.path.join(src, "docs"))
+    os.makedirs(dst)
+    os.makedirs(outside)
+    for i in range(1, 6):
+        with open(os.path.join(src, "photos", "f%d.txt" % i), "w") as f:
+            f.write("same content\n")
+    with open(os.path.join(src, "docs", "d.txt"), "w") as f:
+        f.write("doc\n")
+    os.symlink(outside, os.path.join(dst, "photos"))
+    return src, dst, outside
+
+
+def _check_refused_links_are_counted(rep, ctx):
+    """Refused DUPLICATES are counted as refused — on screen AND in the record.
+
+    create_links kept its own error counter, so a refused link never reached
+    _REFUSED_PATHS. Phase 3 predicted "5 will be refused" and the summary of
+    the same run said "1 refused, 4 linked" — printed on the same screen, and
+    nothing compared them. The audit file and the --log JSON were worse: they
+    recomputed copied/linked from len() of the lists the run STARTED with, so
+    the record of a privileged copy claimed files that were never written.
+
+    Asserts the exact summary line, the byte line, the engine's own line, and
+    the two JSON records — all five have to agree on one run.
+    """
+    if os.name == "nt":
+        rep.skip("refused duplicates counted once", "POSIX symlinks only")
+        return
+    target = ctx["target"]
+    try:
+        mod = _load_target_module(target, "_blitcp_refused")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("refused duplicates counted once", f"could not import: {e}")
+        return
+
+    real_env = os.environ.get("SUDO_USER")
+    real_audit = mod.write_sudo_audit
+    audit = {}
+    with temp_workspace() as ws:
+        src, dst, outside = _symlinked_dst_dedup_tree(ws)
+        log_path = os.path.join(ws, "run.json")
+        try:
+            os.environ["SUDO_USER"] = "someone"
+            # The audit file goes to $SUDO_USER's home and is then made
+            # immutable, which a test must not do to a real account. Capturing
+            # the record it would write asserts the same thing.
+            mod.write_sudo_audit = lambda a, b, summary: audit.update(summary)
+            rc, out = _run_main_inprocess(
+                mod, [src + os.sep, dst, "--no-verify", "--log", log_path],
+                elevated=False)
+        finally:
+            mod.write_sudo_audit = real_audit
+            if real_env is None:
+                os.environ.pop("SUDO_USER", None)
+            else:
+                os.environ["SUDO_USER"] = real_env
+        landed = sorted(os.listdir(outside))
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                logged = json.load(f)["summary"]
+        except Exception as e:                              # noqa: BLE001
+            logged = {"_unreadable": str(e)}
+
+    bad = []
+    if landed:
+        bad.append("%d file(s) escaped through the symlink: %s"
+                   % (len(landed), ", ".join(landed)))
+    if rc == 0:
+        bad.append("exit 0 although five files were refused")
+    if not re.search(r"Files:\s+6 total \(1 copied \+ 0 linked, 5 refused\)",
+                     out):
+        bad.append("summary says %r, expected "
+                   "6 total (1 copied + 0 linked, 5 refused)"
+                   % _files_line(out))
+    # The list under the summary names every refused file, not just one.
+    listed = re.findall(r"^\s+photos/f\d\.txt\s*$", out, re.M)
+    if len(listed) != 5:
+        bad.append("the refusal list names %d file(s), expected 5"
+                   % len(listed))
+    # Bytes: one 4-byte file was written; the other 65 bytes were refused.
+    if not re.search(r"Data:\s+4\.0 B written", out):
+        bad.append("the Data line counts refused bytes as written: %r"
+                   % _data_line(out))
+    if "65.0 B refused, not written" not in out:
+        bad.append("the Data line does not say what was refused: %r"
+                   % _data_line(out))
+    # The engine's own line: a policy refusal is not an error.
+    if re.search(r"Copied \d+ small files, \d+ errors", out):
+        bad.append("the small-file engine reports a refusal as an error")
+    if not re.search(r"Copied \d+ small files, 1 refused", out):
+        bad.append("the small-file engine does not report its refusal")
+    # Prediction vs result, and the summary's own arithmetic.
+    if "5 incoming file(s)" not in out:
+        bad.append("Phase 3 did not predict 5 refusals")
+    if "disagree" in out:
+        bad.append("the preflight and the summary disagree")
+    if "do not add up" in out:
+        bad.append("the summary's own arithmetic does not close: %s"
+                   % out[out.find("do not add up") - 60:][:200].strip())
+
+    # The two records have to describe the run that happened.
+    want = {"total_files": 6, "copied": 1, "linked": 0, "refused": 5,
+            "skipped": 0, "errors": 0, "total_bytes": 69,
+            "bytes_written": 4, "bytes_refused": 65, "dedup_saved": 0}
+    for label, rec in (("--log JSON", logged), ("sudo audit", audit)):
+        for k, v in want.items():
+            if rec.get(k) != v:
+                bad.append("%s says %s=%r, expected %r"
+                           % (label, k, rec.get(k), v))
+        if len(rec.get("refused_paths") or []) != 5:
+            bad.append("%s does not name the refused files" % label)
+
+    if bad:
+        rep.fail("refused duplicates counted once", "; ".join(bad[:6]))
+    else:
+        rep.ok("refused duplicates counted once",
+               "screen, byte line, engine line, --log JSON and audit record "
+               "all say 1 copied / 0 linked / 5 refused / 4 B written")
+
+
+def _check_summaries_share_one_reader(rep, ctx):
+    """Every tree-copy summary reads the refusal list through one function.
+
+    The local flow was fixed first and the pull flow kept its own hand-built
+    line — same engines, same destination policy, same refusals, and a
+    summary that could not see them. A second reader is how one bug gets
+    written twice, so this asserts there is only one for the tree flows:
+    _print_files_summary. (_ssh_done_summary is the SSH-transfer twin; it
+    reads the same list and carries the same closure check.)
+    """
+    target = ctx["target"]
+    try:
+        with open(target, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        rep.skip("one reader for the summary", str(e))
+        return
+
+    def _span(name):
+        head = "def %s(" % name
+        if head not in src:
+            return None
+        a = src.index(head)
+        b = src.find("\ndef ", a)
+        return (a, b if b != -1 else len(src))
+
+    bad = []
+    helper = _span("_print_files_summary")
+    ssh_twin = _span("_ssh_done_summary")
+    if helper is None:
+        rep.fail("one reader for the summary",
+                 "_print_files_summary() is gone; every summary is counting "
+                 "for itself again")
+        return
+
+    # 1) Nobody else prints a "Files: N total" line.
+    for m in re.finditer(r"print\(f?\"[^\"]*Files:[^\"]*\"", src):
+        seg = src[m.start():m.end()]
+        if "total" not in seg and "{_tr(" not in seg:
+            continue                       # not a DONE summary line
+        if helper[0] <= m.start() < helper[1]:
+            continue
+        if ssh_twin and ssh_twin[0] <= m.start() < ssh_twin[1]:
+            continue
+        bad.append("line %d prints its own Files/total line"
+                   % (src.count("\n", 0, m.start()) + 1))
+
+    # 2) Every DONE block that reports a file tree calls the helper. The four
+    #    tree flows are identified by their Data verb; the cloud flows report
+    #    objects and have their own shape.
+    for verb in ("written", "downloaded", "relayed", "sent"):
+        for m in re.finditer(r"Data:\s+\{C\.BOLD\}[^\n]{0,80}\}\s*" + verb,
+                             src):
+            block = src[max(0, m.start() - 3000):m.start()]
+            if "_print_files_summary(" not in block:
+                bad.append("the summary printing 'Data: ... %s' (line %d) "
+                           "does not go through _print_files_summary()"
+                           % (verb, src.count("\n", 0, m.start()) + 1))
+
+    if bad:
+        rep.fail("one reader for the summary", "; ".join(sorted(set(bad))[:6]))
+    else:
+        rep.ok("one reader for the summary",
+               "local, pull, push and relay summaries all count through "
+               "_print_files_summary()")
+
+
+def _check_engine_parity_symlinked_dst(rep, ctx):
+    """Every engine must reach the same verdict on the same tree.
+
+    Four copy engines and _safe_tar_extract each decided independently whether
+    a destination path was allowed, using three different elevation
+    predicates. The result was that --small-files stream and the default
+    engine disagreed about the same directory, and SUDO_USER without root
+    disagreed with both. These run the real flow under each combination and
+    require identical outcomes.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("engine parity on symlinked dst", "POSIX symlinks only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_parity")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("engine parity on symlinked dst", f"could not import: {e}")
+        return
+
+    bad = []
+    # A and B — not elevated: both engines copy through the user's symlink.
+    for label, argv in (("default", []),
+                        ("--small-files stream", ["--small-files", "stream"])):
+        with temp_workspace() as ws:
+            rc, out, landed, dst = _symlinked_case(mod, ws, argv)
+            if rc != 0:
+                bad.append("[%s, not elevated] exit %s, expected 0" % (label, rc))
+            if len(landed) != 5:
+                bad.append("[%s, not elevated] %d of 5 files went through the "
+                           "symlink" % (label, len(landed)))
+            if "will be refused" in out:
+                bad.append("[%s, not elevated] said files 'will be refused' "
+                           "while copying them anyway" % label)
+
+    # C, D and E — elevated: refused, nothing outside, said once, counted right.
+    for label, argv, sudo in (("default", ["--no-verify"], False),
+                              ("--small-files stream",
+                               ["--small-files", "stream", "--no-verify"], False),
+                              # The same engine with a NON-extended --preserve.
+                              # This case is here because its absence is why
+                              # this test passed while the tar engine recorded
+                              # refusals only from the extended-metadata pass:
+                              # elevation promotes --preserve to 'all', that
+                              # pass runs, and the refusals got recorded by
+                              # accident. Ask for mode,times and the pass is
+                              # skipped — the engine then refused five files,
+                              # called them copied and exited 0.
+                              ("--small-files stream --preserve mode,times",
+                               ["--small-files", "stream", "--no-verify",
+                                "--preserve", "mode,times"], False),
+                              ("SUDO_USER, euid!=0", ["--no-verify"], True)):
+        with temp_workspace() as ws:
+            elev = not sudo          # E gets elevation from SUDO_USER, not mock
+            rc, out, landed, dst = _symlinked_case(mod, ws, argv,
+                                                   elevated=elev,
+                                                   sudo_user=sudo)
+            if landed:
+                bad.append("[%s, elevated] %d file(s) escaped: %s"
+                           % (label, len(landed), ", ".join(landed)))
+            if rc == 0:
+                bad.append("[%s, elevated] exit 0 although files were refused"
+                           % label)
+            if out.count("Destination contains a symlinked directory") != 1:
+                bad.append("[%s, elevated] notice printed %d times, expected 1"
+                           % (label,
+                              out.count("Destination contains a symlinked "
+                                        "directory")))
+            if "were refused and not written" not in out:
+                bad.append("[%s, elevated] never said how many files were "
+                           "refused" % label)
+            # 6 files, 5 of them refused: the total stays 6 and the
+            # breakdown has to account for all six. (This used to assert the
+            # total was NOT 6, back when the summary subtracted refusals from
+            # the total instead of naming them — which hid the refused files
+            # from the one number people read.)
+            if not re.search(r"Files:\s+6 total \(1 copied \+ 0 linked, "
+                             r"5 refused\)", out):
+                bad.append("[%s, elevated] summary line is %r, expected "
+                           "6 total (1 copied + 0 linked, 5 refused)"
+                           % (label, _files_line(out)))
+
+    if bad:
+        rep.fail("engine parity on symlinked dst", "; ".join(bad[:8]))
+    else:
+        rep.ok("engine parity on symlinked dst",
+               "both engines and both elevation routes agree: copied when "
+               "allowed, refused and counted when not")
+
+
 def section_bugs(rep, ctx):
     target = ctx["target"]
     _check_quiet_mode(rep, ctx)
@@ -3994,12 +5628,30 @@ def section_bugs(rep, ctx):
     _check_reported_speed(rep, ctx)
     _check_sparse_copy_integrity(rep, ctx)
     _check_sparse_verification_sees_content(rep, ctx)
+    _check_sync_folder_dedup_downgrade(rep, ctx)
     _check_quiet_time_matches(rep, ctx)
     _check_sudo_askpass_route(rep, ctx)
     _check_fuseblk_is_local(rep, ctx)
     _check_memory_fs_detection(rep, ctx)
     _check_cache_preload(rep, ctx)
     _check_threadpool_small_files(rep, ctx)
+    _check_midbatch_symlinked_parent(rep, ctx)
+    _check_pull_paths_are_validated(rep, ctx)
+    _check_create_links_validates(rep, ctx)
+    _check_http_filename_cannot_traverse(rep, ctx)
+    _check_large_member_is_validated(rep, ctx)
+    _check_untrusted_mode_is_clamped(rep, ctx)
+    _check_pull_reports_rejections(rep, ctx)
+    _check_pull_link_target_validated(rep, ctx)
+    _check_dest_symlink_policy(rep, ctx)
+    _check_symlinked_dest_preflight(rep, ctx)
+    _check_trust_remote_modes_optout(rep, ctx)
+    _check_local_copy_symlinked_dst_unelevated(rep, ctx)
+    _check_local_copy_symlinked_dst_elevated(rep, ctx)
+    _check_preflight_in_dry_run_and_cloud(rep, ctx)
+    _check_engine_parity_symlinked_dst(rep, ctx)
+    _check_refused_links_are_counted(rep, ctx)
+    _check_summaries_share_one_reader(rep, ctx)
 
     # empty dirs + nesting + unicode/space names + zero-byte + large file
     with temp_workspace() as ws:

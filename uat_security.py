@@ -19,7 +19,9 @@ import os
 import sys
 import stat
 import tarfile
+import re
 import tempfile
+import time
 import argparse
 
 # i18n guard (I18N_DESIGN.md, M0): assertions expect English output. Must be
@@ -417,6 +419,205 @@ def s_ssh_prompt_no_hang(tmp):
     return True, f"bounded clean failure (exit {p.returncode}, no hang)"
 
 
+def s_ssh_unknown_host_no_hang(tmp):
+    """SEC-SSH-3 — the OTHER question this flow can ask.
+
+    SEC-SSH-1 pins the AUTH prompt. The host-key prompt is a different call
+    site, and it is the one that cost 1800 seconds: a push to a host that is
+    not in known_hosts prints the fingerprint and asks "Accept and save to
+    known_hosts? [y/N]". Measured on a real device (a Synology over ssh, port
+    2205, with an empty HOME so the key was unknown):
+
+        stdin not a terminal -> exit 1 in under a second,
+                                "Host key ... rejected by user"
+        stdin IS a terminal  -> still sitting at the prompt when a 45s timeout
+                                killed it
+
+    So the engine is right on both counts — it asks a person when a person is
+    there, and refuses when nobody is. What was wrong was the harness handing
+    a test process the operator's terminal. This test pins the half that must
+    never change: no terminal, no waiting, and a message that names the host.
+
+    Uses a destination that cannot be in known_hosts (an isolated HOME), so it
+    exercises the prompt rather than the auth failure SEC-SSH-1 covers."""
+    import subprocess
+    import socket
+    s = socket.socket()
+    s.settimeout(2)
+    try:
+        s.connect(("127.0.0.1", 22))
+    except OSError:
+        return None, "no sshd on 127.0.0.1:22 — skipped"
+    finally:
+        s.close()
+    home = os.path.join(tmp, "home")
+    os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
+    src = os.path.join(tmp, "src")
+    os.makedirs(src, exist_ok=True)
+    with open(os.path.join(src, "one.txt"), "w") as fh:
+        fh.write("payload")
+    env = dict(os.environ)
+    env.update({"HOME": home, "NO_COLOR": "1",
+                "BLITCP_CREDENTIALS": os.path.join(home, "credentials.json")})
+    env.pop("BLITCP_CREDS_PASSPHRASE", None)
+    env.pop("FAST_COPY_CREDS_PASSPHRASE", None)
+    t0 = time.time()
+    p = subprocess.Popen(
+        [sys.executable, os.path.abspath(fc.__file__), src,
+         "fcuat_no_such_user_zzz@127.0.0.1:" + os.path.join(tmp, "dst")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+        errors="replace", env=env)
+    try:
+        out, _ = p.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        return False, ("HUNG for 10s with no TTY — an unattended backup would "
+                       "sit at a host-key or passphrase prompt forever")
+    took = time.time() - t0
+    if p.returncode == 0:
+        return False, f"exit 0 without any credentials (in {took:.1f}s)"
+    named = any(k in out for k in ("Host key", "known_hosts", "authentication",
+                                   "Authentication", "credentials"))
+    if not named:
+        return False, (f"exit {p.returncode} in {took:.1f}s but the output "
+                       f"names neither the host key nor the missing "
+                       f"credentials: {out.strip()[-120:]!r}")
+    return True, (f"bounded clean failure (exit {p.returncode} in {took:.1f}s), "
+                  f"and the reason is named")
+
+
+def _ssh_probe_run(tmp, seed_known_host=False, extra=()):
+    """Run a push to 127.0.0.1 with an isolated HOME (so the real ~/.ssh is
+    neither read for keys nor written), stdin at /dev/null, and no credentials.
+    Returns (returncode, output, seconds)."""
+    import subprocess
+    import socket
+    s = socket.socket()
+    s.settimeout(2)
+    try:
+        s.connect(("127.0.0.1", 22))
+    except OSError:
+        return None, "no sshd on 127.0.0.1:22 — skipped", 0.0
+    finally:
+        s.close()
+    home = os.path.join(tmp, "home")
+    os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
+    if seed_known_host:
+        ks = subprocess.run(["ssh-keyscan", "-H", "127.0.0.1"],
+                            capture_output=True, text=True, timeout=30)
+        with open(os.path.join(home, ".ssh", "known_hosts"), "w") as fh:
+            fh.write(ks.stdout)
+    src = os.path.join(tmp, "src")
+    os.makedirs(src, exist_ok=True)
+    with open(os.path.join(src, "one.txt"), "w") as fh:
+        fh.write("payload")
+    env = dict(os.environ)
+    env.update({"HOME": home, "NO_COLOR": "1",
+                "BLITCP_CREDENTIALS": os.path.join(home, "credentials.json")})
+    for k in ("BLITCP_CREDS_PASSPHRASE", "FAST_COPY_CREDS_PASSPHRASE",
+              "SSH_AUTH_SOCK"):
+        env.pop(k, None)
+    t0 = time.time()
+    with open(os.devnull) as devnull:
+        p = subprocess.Popen(
+            [sys.executable, os.path.abspath(fc.__file__), src,
+             "fcuat_no_such_user_zzz@127.0.0.1:" + os.path.join(tmp, "dst")]
+            + list(extra),
+            stdin=devnull, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=env)
+        try:
+            out, _ = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, _ = p.communicate()
+            return 124, out, time.time() - t0
+    return p.returncode, out, time.time() - t0
+
+
+def s_ssh_unknown_host_no_fake_user(tmp):
+    """SEC-SSH-4 — an error message may state only what happened.
+
+    With no terminal, the host-key prompt reads EOF and the run reports
+    "Host key ... rejected by user". Nobody rejected anything: there was no
+    user. An administrator reading that line in a cron log goes looking for a
+    person who does not exist — the same family of untruth as "verified" for a
+    comparison that never ran, or "5 copied" into a destination holding one
+    file.
+
+    So, with no tty: no WARNING block, no fingerprint table, no "[y/N]"
+    question thrown at nobody — one error line that says a terminal was
+    needed, carries the fingerprint (which is what someone needs in order to
+    add the key), and names known_hosts."""
+    rc, out, took = _ssh_probe_run(tmp)
+    if rc is None:
+        return None, out
+    if rc == 124:
+        return False, f"hung for {took:.0f}s with no TTY"
+    if rc == 0:
+        return False, "exit 0 without a host key or credentials"
+    problems = []
+    if "[y/N]" in out or "Accept and save" in out:
+        problems.append("asks a question with no terminal to answer it")
+    if "WARNING: Unknown host key" in out:
+        problems.append("prints the interactive WARNING block to nobody")
+    if re.search(r"rejected by user|by the user", out):
+        problems.append("claims a user rejected the key; there was no user")
+    if "known_hosts" not in out:
+        problems.append("never names known_hosts, so the fix is not stated")
+    if not re.search(r"SHA256:|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}", out):
+        problems.append("drops the fingerprint, which is what is needed to "
+                        "add the key")
+    if problems:
+        return False, "; ".join(problems) + f" | output: {out.strip()[-200:]!r}"
+    return True, (f"one honest line in {took:.1f}s (exit {rc}), fingerprint and "
+                  f"known_hosts named, no invented user")
+
+
+def s_ssh_no_credentials_names_what_it_tried(tmp):
+    """SEC-SSH-5 — "No authentication methods available" is a symptom.
+
+    It does not say which key files were looked for, whether an agent was
+    running, or which saved connection was searched — nor that
+    --ssh-dst-key / --ssh-dst-password exist. The message must name at least
+    one thing that was tried and at least one way to supply what is missing,
+    or the person reading it has to go and read the source."""
+    rc, out, took = _ssh_probe_run(tmp, seed_known_host=True)
+    if rc is None:
+        return None, out
+    # sshd throttles a client that has just failed to authenticate several
+    # times (MaxStartups), and answers the next connection by dropping it
+    # before the banner. Auth never happened, so the auth message cannot be
+    # judged — one retry, then say so rather than blame the message.
+    for backoff in (5, 10, 20):
+        if "protocol banner" not in out and "Connection reset" not in out:
+            break
+        time.sleep(backoff)          # sshd's own rate limiter, not ours to rush
+        rc, out, took = _ssh_probe_run(tmp, seed_known_host=True)
+    else:
+        return None, ("sshd kept dropping the connection before the banner "
+                      "(rate limiting after the earlier auth-failure tests in "
+                      "this suite) — authentication never ran, so its message "
+                      "cannot be checked")
+    if rc == 124:
+        return False, f"hung for {took:.0f}s"
+    if rc == 0:
+        return False, "exit 0 with no credentials at all"
+    tried = any(k in out for k in ("id_rsa", "id_ed25519", "id_ecdsa",
+                                   "ssh-agent", "agent", "credentials.json",
+                                   "saved connection"))
+    howto = any(k in out for k in ("--ssh-dst-key", "--ssh-src-key",
+                                   "--ssh-dst-password", "--ssh-src-password",
+                                   "BLITCP_CREDS_PASSPHRASE",
+                                   "saved connection"))
+    if not tried or not howto:
+        return False, (f"names what was tried: {tried}; names a way to supply "
+                       f"credentials: {howto} | output: {out.strip()[-200:]!r}")
+    return True, (f"exit {rc} in {took:.1f}s, and the message names what was "
+                  f"tried and how to provide it")
+
+
 def s_ssh_creds_from_host(tmp):
     """A saved SSH connection's password must apply to a full user@host:path spec
     (matched by host), so the GUI/CLI get credentials from credentials.json without
@@ -449,6 +650,9 @@ SCENARIOS = [
     ("SEC-GUI-1", "GUI passwords via env, never on argv", s_gui_password_not_on_argv),
     ("SEC-SSH-1", "SSH auth never hangs on a prompt when non-interactive (no TTY)", s_ssh_prompt_no_hang),
     ("SEC-SSH-2", "saved SSH password resolves for a user@host spec (by host)", s_ssh_creds_from_host),
+    ("SEC-SSH-3", "host-key prompt never hangs without a TTY, and names why", s_ssh_unknown_host_no_hang),
+    ("SEC-SSH-4", "no TTY: no prompt to nobody, and no invented user", s_ssh_unknown_host_no_fake_user),
+    ("SEC-SSH-5", "missing credentials: the error names what was tried", s_ssh_no_credentials_names_what_it_tried),
 ]
 
 

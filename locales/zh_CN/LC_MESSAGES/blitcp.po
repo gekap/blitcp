@@ -1170,3 +1170,39 @@ msgstr "为此下载使用 cookies.txt 导出文件或实时浏览器会话"
 
 msgid "not run"
 msgstr "未执行"
+
+msgid "Keep hard-link deduplication even when the destination is inside a cloud-synced folder (OneDrive, Dropbox, Google Drive). Off by default: the sync client uploads every path anyway, so links save no remote space, and the shared inode means editing one copy rewrites the other. Windows only; no other platform is affected."
+msgstr "即使目标位于云同步文件夹（OneDrive、Dropbox、Google 云端硬盘）内，也保留硬链接去重。默认关闭：同步客户端无论如何都会上传每个路径，因此链接不会节省远程空间，而共享 inode 意味着编辑一个副本会改写另一个。仅限 Windows；其他平台不受影响。"
+
+msgid "{n} file(s) were refused and not written"
+msgstr "{n} 个文件被拒绝，未写入"
+
+msgid "Destination contains a symlinked directory:"
+msgstr "目标位置包含一个符号链接目录："
+
+msgid "{n} incoming file(s) resolve outside the destination and will be refused."
+msgstr "{n} 个待写入文件解析后位于目标之外，将被拒绝。"
+
+msgid "Fix: point the destination at {path} instead."
+msgstr "解决方法：请直接将目标指向 {path}。"
+
+msgid "permission bits taken from the remote (--trust-remote-modes)"
+msgstr "权限位取自远端 (--trust-remote-modes)"
+
+msgid "Keep the group/world write bits a remote source sends. Off by default: a pulled file that was 0664 lands 0644, so a machine you do not control cannot decide that what it sends is group-writable on yours. setuid and setgid are stripped either way."
+msgstr "保留远端来源发送的组/其他写权限位。默认关闭：原为 0664 的文件将落地为 0644，使你无法控制的机器不能决定其发送的内容在你这里可被同组写入。setuid 与 setgid 在任何情况下都会被剥离。"
+
+msgid "{n} file(s) were refused and not written:"
+msgstr "{n} 个文件被拒绝，未写入："
+
+msgid "... and {m} more"
+msgstr "…… 另有 {m} 个"
+
+msgid "{n} refused"
+msgstr "{n} 个被拒绝"
+
+msgid "{n} failed"
+msgstr "{n} 个失败"
+
+msgid "Nothing was written: the destination path leads outside itself."
+msgstr "未写入任何内容：目标路径指向其自身之外。"

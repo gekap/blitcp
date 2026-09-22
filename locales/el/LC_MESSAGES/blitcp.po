@@ -1170,3 +1170,39 @@ msgstr "Χρήση εξαγωγής cookies.txt ή ζωντανής συνεδρ
 
 msgid "not run"
 msgstr "δεν έγινε"
+
+msgid "Keep hard-link deduplication even when the destination is inside a cloud-synced folder (OneDrive, Dropbox, Google Drive). Off by default: the sync client uploads every path anyway, so links save no remote space, and the shared inode means editing one copy rewrites the other. Windows only; no other platform is affected."
+msgstr "Διατήρηση της αφαίρεσης διπλότυπων με hard links ακόμη κι όταν ο προορισμός βρίσκεται μέσα σε φάκελο συγχρονισμού cloud (OneDrive, Dropbox, Google Drive). Ανενεργό εξ ορισμού: ο client ανεβάζει έτσι κι αλλιώς κάθε διαδρομή, οπότε τα links δεν γλιτώνουν χώρο στο cloud, ενώ το κοινό inode σημαίνει ότι η επεξεργασία του ενός αντιγράφου ξαναγράφει και το άλλο. Μόνο σε Windows· καμία άλλη πλατφόρμα δεν επηρεάζεται."
+
+msgid "{n} file(s) were refused and not written"
+msgstr "{n} αρχείο/-α απορρίφθηκαν και δεν γράφτηκαν"
+
+msgid "Destination contains a symlinked directory:"
+msgstr "Ο προορισμός περιέχει φάκελο που είναι symlink:"
+
+msgid "{n} incoming file(s) resolve outside the destination and will be refused."
+msgstr "{n} εισερχόμενα αρχεία καταλήγουν εκτός προορισμού και θα απορριφθούν."
+
+msgid "Fix: point the destination at {path} instead."
+msgstr "Λύση: δώσε ως προορισμό το {path}."
+
+msgid "permission bits taken from the remote (--trust-remote-modes)"
+msgstr "τα δικαιώματα λαμβάνονται από το remote (--trust-remote-modes)"
+
+msgid "Keep the group/world write bits a remote source sends. Off by default: a pulled file that was 0664 lands 0644, so a machine you do not control cannot decide that what it sends is group-writable on yours. setuid and setgid are stripped either way."
+msgstr "Διατηρεί τα bits εγγραφής ομάδας/όλων που στέλνει μια απομακρυσμένη πηγή. Ανενεργό εξ ορισμού: αρχείο που ήταν 0664 προσγειώνεται 0644, ώστε ένα μηχάνημα που δεν ελέγχεις να μην αποφασίζει ότι αυτό που στέλνει είναι εγγράψιμο από την ομάδα στο δικό σου. Τα setuid και setgid αφαιρούνται σε κάθε περίπτωση."
+
+msgid "{n} file(s) were refused and not written:"
+msgstr "{n} αρχείο/-α απορρίφθηκαν και δεν γράφτηκαν:"
+
+msgid "... and {m} more"
+msgstr "… και {m} ακόμη"
+
+msgid "{n} refused"
+msgstr "{n} απορρίφθηκαν"
+
+msgid "{n} failed"
+msgstr "{n} απέτυχαν"
+
+msgid "Nothing was written: the destination path leads outside itself."
+msgstr "Δεν γράφτηκε τίποτα: η διαδρομή προορισμού οδηγεί έξω από τον εαυτό της."

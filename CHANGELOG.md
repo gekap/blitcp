@@ -1,5 +1,124 @@
 # Changelog
 
+## v4.2.13 — 2026-09-22
+
+v4.2.10 was the last public release, so this one carries three versions of
+work. The jump is larger than the version number suggests, and some of it
+changes behaviour. Read the first section before upgrading an automated job.
+
+### Behaviour changes
+
+**An ordinary local copy is unchanged.** `blitcp /src /dst` without
+`--use-sudo` behaves as it did in 4.2.10, symlinked destination directories
+included — those are followed, the way `cp -r` follows them. Everything below
+is about elevated copies and about remote destinations. If you copy locally as
+yourself, none of it is about you.
+
+**A symlinked directory in the destination is refused when blitcp is
+elevated.** `blitcp --use-sudo /src /dst` where `/dst/photos` is a symlink
+leading outside `/dst` now refuses the files under `photos/` instead of
+writing through the link. The process is root, and a local unprivileged user
+who can write in the destination can plant that symlink and wait — precisely
+because they know an elevated copy is coming. The link having existed
+beforehand is the attack, not evidence against it, and blitcp cannot tell it
+apart from one you made yourself.
+
+**The same rule now covers every remote destination**, on a pull, a push and a
+relay, whether or not you are elevated, and on both transports (SFTP and the
+tar-over-SSH path a server with the SFTP subsystem off selects by itself). On
+the far side of an SSH connection "it is your own layout" is not a claim
+anyone can check. Before this, a relay refused while a push into the
+byte-identical destination wrote four of five files outside it and exited 0.
+
+**A destination that is itself a symlink is refused**, locally and remotely.
+`user@host:/dst` where `/dst` points at `/somewhere/else` no longer fills
+`/somewhere/else`. Nothing is created on the far side at all — no directory,
+no manifest sidecar, no verification pass.
+
+*What to do about all three:* name the real path as the destination. A server
+that reaches `/home` through a link, as Synology does, needs the target path
+written out. The run says which directory, where it points and how many files
+it affects, once, before anything is written.
+
+### Security
+
+**A pull over plain SSH validated nothing it extracted.** `_tar_extract_stream`
+called `tarfile.extract()` directly on content from a machine you do not
+necessarily control: no traversal check, no refusal of symlink, device or
+hard-link members, no symlinked-ancestor check, no setuid/setgid strip. It is
+held to the same member policy as every other extraction path now.
+
+**The tarfile filter fallback no longer falls through in silence.** On a Python
+without the `filter=` argument the code took a path that looked like a
+fallback and was not one.
+
+**`--use-sudo` no longer loses, or trusts, the credentials path.** The variable
+naming the vault is carried through the re-exec instead of being dropped, and
+it is checked before it is carried: after the re-exec it is *root* who opens
+that file, so a vault someone else can rewrite would hand the elevated run a
+different SSH host, a different key path, a different bucket.
+
+### Fixed
+
+**A run that refused every file could still be recorded as a success.** Four
+engines wrote to a refusal list nobody read, so a run that wrote nothing
+exited 0 under a success summary. The summary now checks its own arithmetic —
+copied + linked + refused + skipped against the total, the same closure over
+bytes — and prints a warning instead of a total it cannot justify. The JSON
+record does the same, and a record that cannot close fails the run.
+
+**An upload to an object store skipped files the destination did not have.**
+The cross-run skip was decided from the signed manifest alone — a fact about
+the source and about the past. Delete one object between two runs and the
+second reported it as unchanged forever and never brought it back. Existence
+and size now come from a listing of the destination. The same driver serves
+SMB, so the same hole was there.
+
+**A cloud download re-fetched everything, every time.** There was no
+incremental check on the way down at all.
+
+**`--preserve owner`, `xattr` and `acl` were dropped on every file when the
+destination supports reflinks.** On XFS with `reflink=1`, btrfs, bcachefs and
+APFS the clone is the fast path, so every file took the one branch that
+carried its own hand-rolled metadata code and applied two of the five kinds.
+A copy on ext4 was never affected; if you used those flags into one of the
+filesystems above, re-run the copy to have the metadata land.
+
+**A pull dropped ownership in silence.** `--preserve owner` over a pull applied
+nothing and said nothing, while the byte-identical local copy said "skipped on
+N (need root)". Ownership is measured against the file that landed now, in
+both directions.
+
+**An elevated pull left no audit trail.** `write_sudo_audit` had one call site,
+in the local flow. All six remote flows write one.
+
+**`--log-file` produced no file on four paths** — the SSH-only pull, push and
+relay, and `--dry-run` in every direction — and wrote entryless records on
+three more.
+
+**A name the destination cannot store is named.** A filename containing `"`
+cannot exist on an SMB share; the server refuses the create and does not log
+the name, and blitcp lost the file with no entry anywhere. It is reported as
+refused, with its name. It does not change the exit code: no re-run or flag
+can fix a name the share cannot represent.
+
+**An HTTP source URL that named a directory was downloaded as if it named a
+file.** `https://host/dir/` produced the destination name `dir`, which was
+plausible enough for the run to continue and report whatever the network said
+next instead of refusing.
+
+**An HTTP download into an SMB directory could write the directory as a file.**
+`smb://host/share/dir/` with no `dir` on the share yet created a *file* named
+`dir` at the root of the share. The run exited 0 and verification passed,
+because it read back the file it had just written.
+
+**`--smb-port` was ignored.** The URL parser filled in 445 whenever the URL did
+not name a port, which consumed the precedence chain before the flag was
+consulted. `--smb-port 1` downloaded the share and exited 0.
+
+**A published speed claim is withdrawn.** See `benchmark.md` for what is
+actually measured.
+
 ## v4.2.10 — 2026-09-07
 
 ### Bug Fixes

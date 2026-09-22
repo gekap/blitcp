@@ -382,7 +382,7 @@ jobs:
             --onefile --windowed --name blitcp_gui --clean --noupx \
             --paths "$PKGDIR" --icon assets/blitcp.icns \
             --hidden-import=xxhash --hidden-import=paramiko $CLOUD_FLAGS \
-            blitcp_gui.py || echo "::warning::macOS-intel GUI build failed; shipping CLI only"
+            blitcp_gui.py || echo "::warning::macOS-intel GUI build failed — verify-release will fail this release"
 
       - name: Rename binaries
         run: |
@@ -429,15 +429,80 @@ jobs:
                    --json assets --jq '.assets[].name')
           echo "Release assets:"; echo "$assets"
           missing=0
+          have() { printf '%s\n' "$assets" | grep -qx "$1"; }
+
+          # CLI — one exact name per platform.
           for expect in blitcp-linux blitcp-macos-arm64 \
                         blitcp-macos-intel blitcp-windows.exe; do
-            if ! printf '%s\n' "$assets" | grep -qx "$expect"; then
-              echo "::error::missing release asset: $expect"
+            have "$expect" || { echo "::error::missing release asset: $expect"; missing=1; }
+          done
+
+          # GUI — the same four platforms. Previously unchecked, so a leg whose
+          # GUI build failed emitted a ::warning:: and the release shipped with
+          # no desktop app for that platform. Now it fails the release instead.
+          # There is no CLI-only allow-list: every platform has shipped a GUI to
+          # date, so an absence is a regression, not a supported configuration.
+          for expect in blitcp_gui-linux blitcp_gui-windows.exe; do
+            have "$expect" || { echo "::error::missing release asset: $expect"; missing=1; }
+          done
+
+          # Windows also publishes onedir bundles, because onefile pays a
+          # 16-33s cold start there. `Build Windows onedir bundles` runs on
+          # every Windows release with BLITCP_ONEDIR=1 and no further
+          # condition, so both zips are expected every time; the zip step
+          # skipping one silently is exactly what this catches. Windows-only:
+          # BLITCP_ONEDIR is set on that step alone, so no other platform
+          # produces them.
+          for expect in blitcp-windows-onedir.zip blitcp_gui-windows-onedir.zip; do
+            have "$expect" || { echo "::error::missing release asset: $expect"; missing=1; }
+          done
+          # macOS is the exception: `Rename binaries` zips dist/blitcp_gui.app
+          # when PyInstaller produced a bundle and otherwise renames the loose
+          # binary, so both spellings are a successful GUI build.
+          for base in blitcp_gui-macos-arm64 blitcp_gui-macos-intel; do
+            if ! have "$base.app.zip" && ! have "$base"; then
+              echo "::error::missing release asset: $base.app.zip (or $base)"
               missing=1
             fi
           done
+
           if [ "$missing" -ne 0 ]; then
             echo "::error::release $tag is INCOMPLETE — a platform binary is missing"
             exit 1
           fi
           echo "All expected platform binaries are present."
+
+  # Runs only after verify-release has confirmed the release is complete, so a
+  # SHA256SUMS.txt can never describe a half-published release. One Linux job
+  # hashes everything after all uploads have landed: per-platform hashing would
+  # give the file a layout that depends on which runner finished last, and the
+  # install page quotes these lines verbatim.
+  checksums:
+    needs: verify-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish SHA256SUMS.txt for every release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          mkdir -p sums && cd sums
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir .
+          # A re-run would otherwise hash the previous run's own sums file.
+          rm -f SHA256SUMS.txt
+          if [ -z "$(ls -A .)" ]; then
+            echo "::error::no assets downloaded for $tag"
+            exit 1
+          fi
+          # The redirection below creates SHA256SUMS.txt before find runs, so
+          # it must be excluded by name or it hashes itself (as empty).
+          # LC_ALL=C sort keeps the order byte-stable across runners, so the
+          # file only changes when an asset does. -d '\n' survives spaces.
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%P\n' \
+            | LC_ALL=C sort \
+            | xargs -d '\n' sha256sum > SHA256SUMS.txt
+          echo "SHA256SUMS.txt:"; cat SHA256SUMS.txt
+          gh release upload "$tag" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber

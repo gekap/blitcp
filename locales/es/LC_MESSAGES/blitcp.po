@@ -1170,3 +1170,39 @@ msgstr "Usar una exportación cookies.txt o una sesión activa del navegador par
 
 msgid "not run"
 msgstr "no realizada"
+
+msgid "Keep hard-link deduplication even when the destination is inside a cloud-synced folder (OneDrive, Dropbox, Google Drive). Off by default: the sync client uploads every path anyway, so links save no remote space, and the shared inode means editing one copy rewrites the other. Windows only; no other platform is affected."
+msgstr "Mantener la deduplicación por enlaces duros incluso cuando el destino está dentro de una carpeta sincronizada en la nube (OneDrive, Dropbox, Google Drive). Desactivado por defecto: el cliente de sincronización sube igualmente todas las rutas, así que los enlaces no ahorran espacio remoto, y el inodo compartido implica que editar una copia reescribe la otra. Solo en Windows; ninguna otra plataforma se ve afectada."
+
+msgid "{n} file(s) were refused and not written"
+msgstr "{n} archivo(s) fueron rechazados y no se escribieron"
+
+msgid "Destination contains a symlinked directory:"
+msgstr "El destino contiene un directorio enlazado simbólicamente:"
+
+msgid "{n} incoming file(s) resolve outside the destination and will be refused."
+msgstr "{n} archivo(s) entrantes se resuelven fuera del destino y serán rechazados."
+
+msgid "Fix: point the destination at {path} instead."
+msgstr "Solución: apunte el destino a {path} en su lugar."
+
+msgid "permission bits taken from the remote (--trust-remote-modes)"
+msgstr "los bits de permisos se toman del remoto (--trust-remote-modes)"
+
+msgid "Keep the group/world write bits a remote source sends. Off by default: a pulled file that was 0664 lands 0644, so a machine you do not control cannot decide that what it sends is group-writable on yours. setuid and setgid are stripped either way."
+msgstr "Conserva los bits de escritura de grupo/otros que envía un origen remoto. Desactivado por defecto: un archivo que era 0664 aterriza como 0644, de modo que una máquina que no controlas no puede decidir que lo que envía sea escribible por el grupo en la tuya. setuid y setgid se eliminan en cualquier caso."
+
+msgid "{n} file(s) were refused and not written:"
+msgstr "{n} archivo(s) fueron rechazados y no se escribieron:"
+
+msgid "... and {m} more"
+msgstr "… y {m} más"
+
+msgid "{n} refused"
+msgstr "{n} rechazados"
+
+msgid "{n} failed"
+msgstr "{n} fallidos"
+
+msgid "Nothing was written: the destination path leads outside itself."
+msgstr "No se escribió nada: la ruta de destino lleva fuera de sí misma."
