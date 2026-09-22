@@ -436,6 +436,36 @@ SUDO_AUDIT_FILE = ".blitcp_audit.jsonl"
 LEGACY_SUDO_AUDIT_FILE = ".fast_copy_audit.jsonl"  # frozen — compat contract
 
 
+def _fs_realpath(path, *args, **kwargs):
+    """os.path.realpath, minus a Windows race that turns it into a refusal.
+
+    ntpath.realpath resolves a path that does not exist yet by resolving its
+    parent and returning the result WITH the \\\\?\\ extended-length prefix,
+    then strips that prefix only after a second lookup succeeds or fails with
+    the SAME error as the first. In a multi-threaded copy the file appears
+    between the two lookups: the first says "not found", the second hits a
+    sharing violation while another thread is writing it, and the prefix
+    stays. `\\\\?\\C:\\...\\dst\\f.dat` then does not start with
+    `C:\\...\\dst`, the containment check in _dest_policy says the name escaped,
+    and an elevated copy (every GitHub Windows runner is Administrator)
+    refuses a handful of perfectly ordinary files and exits 1 — a different
+    handful each run.
+
+    The prefix carries no meaning here: it is removed whenever the caller did
+    not ask for it, which is what CPython itself does on the non-racing path.
+    Everywhere else this is plain os.path.realpath.
+    """
+    got = os.path.realpath(path, *args, **kwargs)
+    if os.name == "nt" and isinstance(got, str):
+        src = os.fspath(path)
+        if isinstance(src, str) and not src.startswith("\\\\?\\"):
+            if got.startswith("\\\\?\\UNC\\"):
+                got = "\\\\" + got[8:]
+            elif got.startswith("\\\\?\\"):
+                got = got[4:]
+    return got
+
+
 def _is_elevated():
     """True when running with elevated privileges — sudo, root, or Windows
     Administrator.
@@ -1515,7 +1545,7 @@ def _apply_dir_metadata(entries, dst_root, link_map=None):
     # Fallback (Windows, or a POSIX without dir_fd support): path-based, but
     # confine each target to dst_root via realpath so a symlinked component can't
     # escape the tree, and refuse a symlinked leaf.
-    real_root = os.path.realpath(dst_root)
+    real_root = _fs_realpath(dst_root)
     for rel_dir, src_dir in pairs.items():
         try:
             st = os.lstat(_long_path(src_dir))
@@ -1524,7 +1554,7 @@ def _apply_dir_metadata(entries, dst_root, link_map=None):
             dst_dir = os.path.join(dst_root, rel_dir)
             if os.path.islink(dst_dir) or not os.path.isdir(dst_dir):
                 continue
-            rp = os.path.realpath(dst_dir)
+            rp = _fs_realpath(dst_dir)
             if rp != real_root and not rp.startswith(real_root + os.sep):
                 continue  # escaped dst_root through a symlinked component
             if spec.mode:
@@ -2134,8 +2164,8 @@ def _within(path, root):
     """True when `path` is `root` itself or lives underneath it. Both sides are
     realpath'd so a symlinked destination compares correctly."""
     try:
-        rp = os.path.realpath(path)
-        rr = os.path.realpath(root)
+        rp = _fs_realpath(path)
+        rr = _fs_realpath(root)
     except OSError:
         return False
     return rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep)
@@ -2180,7 +2210,7 @@ def _safe_pull_link_dest(dst_root, rel):
     write — '../../etc/passwd' removed the real file and hardlinked over it.
     Returns the joinable path, or None to refuse.
     """
-    return _safe_local_dest(os.path.realpath(dst_root), rel,
+    return _safe_local_dest(_fs_realpath(dst_root), rel,
                             trusted_source=False)
 
 
@@ -2224,7 +2254,7 @@ def _reset_refused_paths():
 def _real_dst_root(dst_root):
     got = _REAL_ROOT_CACHE.get(dst_root)
     if got is None:
-        got = os.path.realpath(dst_root)
+        got = _fs_realpath(dst_root)
         _REAL_ROOT_CACHE[dst_root] = got
     return got
 
@@ -2277,7 +2307,7 @@ def _dest_policy(dst_root, rel, trusted_source=True):
     full = os.path.join(real_root, rel.replace("/", os.sep))
     if trusted_source and not _is_elevated():
         return full, ""
-    real_full = os.path.realpath(full)
+    real_full = _fs_realpath(full)
     if real_full != real_root and not real_full.startswith(real_root + os.sep):
         return None, "resolves outside the destination"
     return full, ""
@@ -2329,7 +2359,7 @@ def _safe_local_dest(real_root, rel, trusted_source=False):
     full = os.path.join(real_root, rel.replace("/", os.sep))
     if trusted_source and not _is_elevated():
         return full
-    real_full = os.path.realpath(full)
+    real_full = _fs_realpath(full)
     if real_full != real_root and not real_full.startswith(real_root + os.sep):
         return None
     return full
@@ -2355,7 +2385,7 @@ def report_symlinked_dest_dirs(dst_root, rels, trusted_source=True):
     preflight.
     """
     try:
-        real_root = os.path.realpath(dst_root)
+        real_root = _fs_realpath(dst_root)
     except OSError:
         return []
     # Only report what the policy would actually refuse. Printing "will be
@@ -2381,7 +2411,7 @@ def report_symlinked_dest_dirs(dst_root, rels, trusted_source=True):
                 if not os.path.islink(full):
                     checked[acc] = None
                     continue
-                resolved = os.path.realpath(full)
+                resolved = _fs_realpath(full)
             except OSError:
                 checked[acc] = None
                 continue
@@ -2764,7 +2794,7 @@ class _ExtractCtx:
         self._real_dst = None
 
     def real_dst(self):
-        """os.path.realpath(dst_root), resolved once per batch.
+        """_fs_realpath(dst_root), resolved once per batch.
 
         The destination root does not change under a batch in any supported
         flow, and resolving it per member cost one stat per path component,
@@ -2775,7 +2805,7 @@ class _ExtractCtx:
         actually started against.
         """
         if self._real_dst is None:
-            self._real_dst = os.path.realpath(self.dst_root)
+            self._real_dst = _fs_realpath(self.dst_root)
         return self._real_dst
 
 
@@ -2814,7 +2844,7 @@ def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
     # 8.3 short-name resolution), which used to falsely block EVERY streamed file
     # on such a destination.
     real_dst = (ctx.real_dst() if ctx is not None and ctx.dst_root == dst_root
-                else os.path.realpath(dst_root))
+                else _fs_realpath(dst_root))
     target = os.path.normpath(os.path.join(real_dst, member.name))
     nc_target = os.path.normcase(target)
     nc_real_dst = os.path.normcase(real_dst)
@@ -2839,7 +2869,7 @@ def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
         anc = os.path.dirname(target)
         while len(anc) > len(real_dst) and not os.path.lexists(anc):
             anc = os.path.dirname(anc)
-        nc_anc = os.path.normcase(os.path.realpath(anc))
+        nc_anc = os.path.normcase(_fs_realpath(anc))
         if not (nc_anc == nc_real_dst
                 or nc_anc.startswith(nc_real_dst + os.sep)):
             return "blocked: resolves outside destination (symlinked parent)"
@@ -2945,7 +2975,7 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True, ctx=None):
     if trusted_source and not _is_elevated():
         _policy_path, _ = _dest_policy(dst_root, member.name)
         if _policy_path is not None:
-            _resolved = os.path.realpath(os.path.dirname(_policy_path))
+            _resolved = _fs_realpath(os.path.dirname(_policy_path))
             _root = _real_dst_root(dst_root)
             if _resolved != _root and not _resolved.startswith(_root + os.sep):
                 os.makedirs(_resolved, exist_ok=True)
@@ -3026,7 +3056,7 @@ DEFAULT_DIR_EXCLUDES = ("node_modules",)
 
 def _find_mount_point(path):
     """Walk up from path to find the filesystem mount point."""
-    path = os.path.realpath(path)
+    path = _fs_realpath(path)
     while not os.path.ismount(path):
         path = os.path.dirname(path)
     return path
@@ -3055,7 +3085,7 @@ def _classify_storage(path):
 
 
 def _classify_storage_linux(path):
-    rp = os.path.realpath(path)
+    rp = _fs_realpath(path)
     best_mp = ""
     fstype = source = ""
     with open("/proc/self/mountinfo") as f:
@@ -3090,7 +3120,7 @@ def _classify_storage_linux(path):
     # Resolve a partition (sdl1, nvme0n1p2) to its parent whole-device.
     sysdev = "/sys/class/block/" + dev
     if os.path.exists(sysdev + "/partition"):
-        dev = os.path.basename(os.path.dirname(os.path.realpath(sysdev)))
+        dev = os.path.basename(os.path.dirname(_fs_realpath(sysdev)))
     with open("/sys/block/%s/queue/rotational" % dev) as r:
         return "hdd" if r.read().strip() == "1" else "ssd"
 
@@ -3250,12 +3280,12 @@ class DedupDB:
     """
 
     def __init__(self, dst_root):
-        self.dst_root = os.path.realpath(dst_root)
+        self.dst_root = _fs_realpath(dst_root)
         self.mount = _find_mount_point(dst_root)
         # Resolved once. safe_full_path() used to recompute it for every row a
         # hash lookup returned, and the mount cannot move mid-run — the row's
         # own path is what has to be re-resolved each time, and still is.
-        self._real_mount = os.path.realpath(self.mount)
+        self._real_mount = _fs_realpath(self.mount)
         # Cross-run dedup links a new copy onto content the DB already knows.
         # Restricted to THIS destination by default: linking a fresh backup
         # onto the inodes of an older backup elsewhere on the drive makes the
@@ -3588,8 +3618,8 @@ class DedupDB:
         against them with a pure DB lookup (lookup_by_hash) — it never hashes an
         existing file on the fly during a copy. Files already recorded in
         dest_files (hash known) are skipped, so re-runs are cheap."""
-        root_path = os.path.realpath(root_path)
-        real_mount = os.path.realpath(self.mount)
+        root_path = _fs_realpath(root_path)
+        real_mount = _fs_realpath(self.mount)
         prefix = real_mount if real_mount.endswith(os.sep) else real_mount + os.sep
         if not (root_path == real_mount or root_path.startswith(prefix)):
             print(f"  {C.YELLOW}Warning: --index-existing path {root_path!r} is not "
@@ -3774,7 +3804,7 @@ class DedupDB:
         Peers reflink to a deterministic canonical (smallest mount_rel)."""
         try:
             root_rel = os.path.relpath(
-                os.path.realpath(root_path), self.mount).replace(os.sep, '/')
+                _fs_realpath(root_path), self.mount).replace(os.sep, '/')
         except ValueError:
             return
         with self.lock:
@@ -3913,7 +3943,7 @@ class DedupDB:
         if os.path.isabs(mount_rel):
             return None
         full = os.path.join(self.mount, mount_rel)
-        real_full = os.path.realpath(full)
+        real_full = _fs_realpath(full)
         real_mount = self._real_mount
         # Normalise the separator so the prefix check also holds when the mount
         # IS the filesystem root ("/"), where real_mount + os.sep would be "//".
@@ -5359,7 +5389,7 @@ def _apply_remote_dir_metadata_local(dirmeta, dst_root):
         except OSError:
             use_fd = False
     try:
-        real_root = os.path.realpath(dst_root)
+        real_root = _fs_realpath(dst_root)
         for rel, (mode, atime_ns, mtime_ns, uid, gid) in dirmeta.items():
             try:
                 if use_fd:
@@ -5389,7 +5419,7 @@ def _apply_remote_dir_metadata_local(dirmeta, dst_root):
                     dst_dir = os.path.join(dst_root, rel.replace("/", os.sep))
                     if os.path.islink(dst_dir) or not os.path.isdir(dst_dir):
                         continue
-                    rp = os.path.realpath(dst_dir)
+                    rp = _fs_realpath(dst_dir)
                     if rp != real_root and not rp.startswith(real_root + os.sep):
                         continue  # escaped dst_root through a symlinked component
                     # NOTE: owner is intentionally NOT applied on this path-based
@@ -5909,7 +5939,7 @@ def _walk_up_to_existing(path):
         return None  # reject null bytes — would corrupt C-API calls below
     try:
         if os.path.exists(path):
-            cur = os.path.realpath(path)
+            cur = _fs_realpath(path)
         else:
             cur = os.path.abspath(path)
     except (OSError, RuntimeError, ValueError):
@@ -6994,7 +7024,7 @@ _MEMORY_FS = frozenset(("tmpfs", "ramfs", "devtmpfs"))
 def _fstype_linux(path):
     """Filesystem type of the mount holding `path`, or None."""
     try:
-        target = os.path.realpath(path)
+        target = _fs_realpath(path)
         best, best_type = "", None
         with open("/proc/self/mounts") as f:
             for line in f:
@@ -7017,7 +7047,7 @@ def _is_usb_backed(sysfs_base):
     try:
         # The bus shows up as a numbered controller component: .../usb4/4-3/...
         return any(re.fullmatch(r"usb\d*", c)
-                   for c in os.path.realpath(sysfs_base).lower().split("/"))
+                   for c in _fs_realpath(sysfs_base).lower().split("/"))
     except OSError:
         return False
 
@@ -7236,8 +7266,8 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
     visited_real = set()  # avoid infinite loops from circular symlinks
 
     # Resolve destination path to detect overlap
-    dst_real = os.path.realpath(dst_root) if dst_root else None
-    src_real = os.path.realpath(src_root)
+    dst_real = _fs_realpath(dst_root) if dst_root else None
+    src_real = _fs_realpath(src_root)
 
     # Check if destination is inside source
     if dst_real and dst_real.startswith(src_real + os.sep):
@@ -7278,7 +7308,7 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
     for root, dirs, files in os.walk(walk_src, followlinks=follow_links_setting, onerror=on_walk_error):
         # Circular symlink protection
         try:
-            real = os.path.realpath(_strip_long_path(root))
+            real = _fs_realpath(_strip_long_path(root))
             if real in visited_real:
                 dirs.clear()  # don't descend further
                 continue
@@ -7296,7 +7326,7 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
         if dst_real:
             dirs_to_remove = []
             for d in dirs:
-                dir_real = os.path.realpath(_strip_long_path(os.path.join(root, d)))
+                dir_real = _fs_realpath(_strip_long_path(os.path.join(root, d)))
                 if dir_real == dst_real or dst_real.startswith(dir_real + os.sep):
                     dirs_to_remove.append(d)
                     skipped_dst = True
@@ -7348,7 +7378,7 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
             if elevated:
                 return ("rej", _strip_long_path(src_path))
             try:
-                real_target = os.path.realpath(src_path)
+                real_target = _fs_realpath(src_path)
             except OSError:
                 return ("rej", _strip_long_path(src_path))
             if not (real_target == src_real or
@@ -8111,7 +8141,7 @@ def create_links(link_map, dst_root, fs_strategy=None, trusted_source=False):
     # wrong: _safe_local_dest resolves symlinks, so a destination the user
     # deliberately laid out with a symlinked directory fails it. Removed rather
     # than reworded, so nobody reasons from it.
-    _real_root = os.path.realpath(dst_root)
+    _real_root = _fs_realpath(dst_root)
     for dup_rel, target in link_map.items():
         _link_done += 1
         if _link_done % 200 == 0:
@@ -10889,7 +10919,7 @@ def copy_individual_remote_to_local(entries, ssh, dst_root, progress, buf_size,
     """Download large files from remote to local via SFTP."""
     sftp = ssh.open_sftp()
 
-    real_root = os.path.realpath(dst_root)
+    real_root = _fs_realpath(dst_root)
     for entry in entries:
         remote_path = entry.src
         # entry.rel comes from the REMOTE listing. The tar path filters these
@@ -11056,7 +11086,7 @@ class _ProgressTarExtractor:
         # Validate with plain paths, use _long_path only for I/O.
         # Use normcase for the comparison to handle case-insensitive
         # filesystems (Windows NTFS, macOS HFS+/APFS).
-        resolved = os.path.realpath(os.path.join(self._dst_root, member.name))
+        resolved = _fs_realpath(os.path.join(self._dst_root, member.name))
         real_dst = self._ctx.real_dst()
         nc_resolved = os.path.normcase(resolved)
         nc_real_dst = os.path.normcase(real_dst)
@@ -11816,10 +11846,10 @@ def _compute_install_kind():
     try:
         import importlib.metadata as _md
         dist = _md.distribution(PYPI_NAME)
-        here = os.path.realpath(os.path.abspath(__file__))
+        here = _fs_realpath(os.path.abspath(__file__))
         for f in (dist.files or ()):
             try:
-                if os.path.realpath(str(dist.locate_file(f))) == here:
+                if _fs_realpath(str(dist.locate_file(f))) == here:
                     return "pip"
             except (OSError, ValueError):
                 continue
@@ -11863,8 +11893,8 @@ def _pypi_update_state():
 def _get_self_path():
     """Get the path of the currently running script or binary."""
     if _is_frozen():
-        return os.path.realpath(sys.executable)
-    return os.path.realpath(__file__)
+        return _fs_realpath(sys.executable)
+    return _fs_realpath(__file__)
 
 
 def _get_asset_name():
@@ -13867,7 +13897,7 @@ def load_credentials_file(path=None):
         if explicit:
             print(f"  {C.YELLOW}Warning: credentials file not found: {path}{C.RESET}")
         return {}
-    ckey = os.path.realpath(path)
+    ckey = _fs_realpath(path)
     if ckey in _creds_cache:
         return _creds_cache[ckey]
     if hasattr(os, "geteuid"):
@@ -17182,7 +17212,7 @@ def _download_from_cloud(args, src_spec):
 
     downloaded = skipped = errors = refused = verified_fail = 0
     bytes_written = 0
-    real_root = os.path.realpath(dst_root)
+    real_root = _fs_realpath(dst_root)
     # Same report as the local flow, same reason: an object store with a
     # thousand keys under a symlinked destination directory would print a
     # thousand "Skipping unsafe key" lines and no explanation. The
@@ -18877,7 +18907,7 @@ def _local_dedup_db_path(dst):
     inside the destination dir if the root isn't writable). So pull (R2L) shares
     the on-disk location convention with L2L, and the DB travels with the drive."""
     try:
-        dst_root = os.path.realpath(dst)
+        dst_root = _fs_realpath(dst)
         mount = _find_mount_point(dst_root)
         if mount == os.sep or not _dir_really_writable(mount):
             return _migrate_local_sidecar(dst_root, DEDUP_DB_NAME,
@@ -18885,7 +18915,7 @@ def _local_dedup_db_path(dst):
         return _migrate_local_sidecar(mount, DEDUP_DB_NAME,
                                       LEGACY_DEDUP_DB_NAME)
     except Exception:
-        return os.path.join(os.path.realpath(dst), DEDUP_DB_NAME)
+        return os.path.join(_fs_realpath(dst), DEDUP_DB_NAME)
 
 
 def _local_listing(dst):
@@ -22197,7 +22227,7 @@ def _reexec_under_sudo():
     # the resulting root process.
     def _check_safe_for_sudo(path, label):
         try:
-            rp = os.path.realpath(path)
+            rp = _fs_realpath(path)
             st = os.stat(rp)
         except OSError as e:
             print(f"Error: --use-sudo: cannot stat {label} ({path}): {e}",
