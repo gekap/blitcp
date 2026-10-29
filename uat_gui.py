@@ -536,6 +536,8 @@ def s_gio_hook(w):
     hands launched programs (browser, file manager) the session's GIO back."""
     import json
     import build
+    if not sys.platform.startswith("linux"):
+        return None, "the GIO hook acts on Linux only"
     if "runtime_hooks=[{hook!r}]" not in build.GUI_SPEC_TEMPLATE:
         return False, "GUI spec does not install the GIO runtime hook"
     tmp = tempfile.mkdtemp(prefix="uat_gio_")

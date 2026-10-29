@@ -881,6 +881,33 @@ def c_dedup_cached_twin(ws, rc, out, info):
                    f"uncached twin was copied instead of linked")
 
 
+def b_probe_binary(ws):
+    """Regression (4.2.14, Windows CI): the source pre-flight read probe
+    refused three 1.2 MB os.urandom files in UAT-LOCAL-22 — '3.5 MB failed,
+    not written' — while the same bytes copied fine in 4.2.13. The probe
+    reads the first and last MB and three interior points; every one of
+    those regions here holds the bytes a text-mode read would act on
+    (CR LF, LF CR, 0x1A, NUL)."""
+    nasty = b"ab\r\ncd\x1aef\n\rgh\x00\xff"
+    data = (nasty + _rand(240, b"probe")) * (3_000_000 // (len(nasty) + 240) + 1)
+    _write(os.path.join(ws, "src/probe.bin"), data[:3_000_000])
+    return [os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/"], {}
+
+
+def c_probe_binary(ws, rc, out, info):
+    errs = [ln.strip() for ln in out.splitlines() if "Error:" in ln]
+    if rc != 0:
+        return False, f"exit {rc}: {errs[0] if errs else out.strip()[-200:]}"
+    if _h(os.path.join(ws, "src/probe.bin")) != _h(os.path.join(ws, "dst/probe.bin")):
+        return False, "content mismatch"
+    probe = next((ln.strip() for ln in out.splitlines() if "Read probe:" in ln), "")
+    if not probe:
+        return False, "no 'Read probe:' line — the pre-flight did not probe the large file"
+    if "all readable" not in probe:
+        return False, f"{probe} | {errs[0] if errs else ''}"
+    return True, "probe read CR/LF/0x1A/NUL regions and the copy matches"
+
+
 def b_idx_link(ws):
     existing = _payload(ws)
     return [os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/",
@@ -1630,7 +1657,8 @@ def c_smb_banner_host(ws, rc, out, info):
             ("Dest:", [src, "smb://nas.example:4455/refs/up"],
              "smb://nas.example:4455/refs/up")):
         r = subprocess.run([sys.executable, "-c", _SMB_BANNER_CHILD, here] + argv,
-                           capture_output=True, text=True, timeout=120, env=env,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120, env=env,
                            stdin=subprocess.DEVNULL)
         line = next((ln.strip() for ln in (r.stdout + r.stderr).splitlines()
                      if ln.strip().startswith(label)), "")
@@ -2336,6 +2364,7 @@ SCENARIOS = [
     S("UAT-LOCAL-20", "local", "local copy preserves setuid/setgid (not over-stripped)", b_local_keeps_setuid, c_local_keeps_setuid, needs="posix"),
     S("UAT-LOCAL-21", "local", "progress never reports 100% while files remain", b_progress_no_early_100, c_progress_no_early_100),
     S("UAT-LOCAL-22", "local", "uncached twin of a cache-warmed duplicate still links", b_dedup_cached_twin, c_dedup_cached_twin),
+    S("UAT-LOCAL-23", "local", "pre-flight read probe passes binary data (CR/LF/0x1A/NUL)", b_probe_binary, c_probe_binary),
 
     S("UAT-INDEX-1", "index", "index-existing links an identical pre-existing file", b_idx_link, c_idx_link),
     S("UAT-INDEX-2", "index", "same size / different content not falsely matched", b_idx_collision, c_idx_collision),
