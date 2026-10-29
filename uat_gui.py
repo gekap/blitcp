@@ -344,6 +344,10 @@ def _rss_mb():
 
 _FLOOD_ENGINE = r'''
 import json, sys
+# The real engine writes UTF-8 to a pipe (blitcp.py reconfigures its streams);
+# a Windows pipe would otherwise be cp1252, which has no '⚠'.
+for _s in (sys.stdout, sys.stderr):
+    _s.reconfigure(encoding="utf-8", errors="replace")
 n = int(sys.argv[1])
 print("  Phase 1 — Scanning source", flush=True)
 for i in range(n):
