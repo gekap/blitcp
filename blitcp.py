@@ -170,13 +170,13 @@ import threading
 import queue
 from pathlib import Path
 import errno
-from collections import namedtuple, defaultdict, deque
+from collections import namedtuple, defaultdict, deque, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.2.13"
+__version__ = "4.2.14"
 # Shown only where the user explicitly asked for it (--version, GUI
 # About/Settings). A plain static URL: no redirect, no tracking, no
 # network call of any kind is made on our side.
@@ -341,6 +341,80 @@ _log_lock = threading.Lock()
 _COPY_ERRORS = {}   # rel → (error string, is_source_read); lets verify explain
                     # WHY a file is missing and whether the cause was benign
 
+# What the pre-flight checks found. Written by _source_preflight, the lock
+# probe in copy_individual and the drift check; read by
+# _print_preflight_summary (the DONE block) and _preflight_record (the audit
+# and --log-file records). `skip_rels` are files a check decided the engine
+# must not copy — they stay in the copy list so the summary and the verifier
+# still account for them, and the engine is handed the list without them.
+_PREFLIGHT = {}
+_PREFLIGHT_LOCK = threading.Lock()
+
+
+def _reset_preflight():
+    _PREFLIGHT.clear()
+    _PREFLIGHT.update({
+        "integrity": 0, "device": 0, "locked": 0,
+        "integrity_files": [], "device_notes": [], "locked_files": [],
+        "probe_failed": [], "probed": 0, "devices": [], "skip_rels": set(),
+    })
+
+
+_reset_preflight()
+
+_STRICT_INTEGRITY = False   # --strict-integrity: a drifted file is not kept
+_STRICT_LOCKS = False       # --strict-locks: a locked source file is not copied
+
+
+def _set_strict_flags(integrity, locks):
+    """Module-wide, set once from main() after argparse — like _preserve_spec."""
+    global _STRICT_INTEGRITY, _STRICT_LOCKS
+    _STRICT_INTEGRITY = bool(integrity)
+    _STRICT_LOCKS = bool(locks)
+
+
+def _preflight_note(kind, text, rel=None):
+    """Count one warning of `kind` ('integrity' | 'device' | 'locked') and
+    remember what it was about, under the lock: the lock probe runs inside
+    the copy engine, which may be threaded."""
+    with _PREFLIGHT_LOCK:
+        _PREFLIGHT[kind] += 1
+        if kind == "integrity":
+            _PREFLIGHT["integrity_files"].append(rel)
+        elif kind == "locked":
+            _PREFLIGHT["locked_files"].append(rel)
+        else:
+            _PREFLIGHT["device_notes"].append(text)
+
+
+def _print_preflight_summary():
+    """One line in the DONE block, only when something was found: a clean run
+    prints nothing here and looks exactly as it did."""
+    p = _PREFLIGHT
+    parts = []
+    if p["integrity"]:
+        parts.append(f"{C.YELLOW}{p['integrity']} integrity{C.RESET} "
+                     f"(content changed, size/mtime did not)")
+    if p["device"]:
+        parts.append(f"{C.YELLOW}{p['device']} device{C.RESET}")
+    if p["locked"]:
+        parts.append(f"{C.YELLOW}{p['locked']} locked{C.RESET}")
+    if parts:
+        print(f"  Warnings: " + ", ".join(parts))
+
+
+def _preflight_record():
+    """The pre-flight findings for the run record (audit / --log-file)."""
+    p = _PREFLIGHT
+    return {
+        "devices": list(p["devices"]),
+        "device_warnings": list(p["device_notes"]),
+        "probed_large_files": p["probed"],
+        "probe_failed": list(p["probe_failed"]),
+        "locked": list(p["locked_files"]),
+        "integrity": list(p["integrity_files"]),
+    }
+
 
 def _is_benign_source_read(e):
     """True for an OSError that means a SPECIFIC source file couldn't be read for
@@ -366,6 +440,90 @@ def _benign_source_error(e, src_path):
     not re-implement the check inline."""
     return _is_benign_source_read(e) and getattr(e, "filename", None) in (
         src_path, _long_path(src_path))
+
+
+def _win_error_hint():
+    """Best effort: the Windows error behind the last failed CRT call on this
+    thread. Python reports a failed read()/write() on an open descriptor as
+    "[Errno 13] Permission denied" for a long list of different Windows errors
+    — access denied, a sharing or lock violation, a CRC or read fault, a device
+    that is not ready — and attaches a WinError only to calls that go through
+    the Win32 API directly. The CRT keeps the original code in _doserrno; this
+    reads it. The next failing CRT call on the thread overwrites it, so the
+    caller reads it before doing anything else, and it is printed as a hint,
+    not as a fact."""
+    if _system != "Windows":
+        return ""
+    try:
+        import ctypes
+        code = ctypes.c_ulong(0)
+        ctypes.CDLL("ucrtbase")._get_doserrno(ctypes.byref(code))
+        if code.value:
+            return " [last Windows error on this thread: %d %s]" % (
+                code.value, ctypes.FormatError(code.value).strip())
+    except Exception:                                   # noqa: BLE001
+        pass
+    return ""
+
+
+def _describe_copy_error(e, step, done, size, src=None, dst=None, where=None):
+    """One line that says WHAT failed: operation, role, full path, the error,
+    and how far the file had got.
+
+    `step` is the engine's running [operation, role, path] — set before each
+    call that can fail, because the exception itself does not say: a failed
+    read()/write() on an open descriptor carries no filename at all, and
+    "could not copy ([Errno 13] Permission denied)" names neither the side nor
+    the call. When the exception does carry a filename it wins over `step`,
+    and the role is re-derived from which side it names."""
+    op, role, path = step
+    fname = getattr(e, "filename", None)
+    if isinstance(fname, bytes):
+        fname = fname.decode(errors="replace")
+    if isinstance(fname, str) and fname:
+        fname = _strip_long_path(fname)
+        path = fname
+        if src is not None and fname == _strip_long_path(_long_path(src)):
+            role = "src"
+        elif dst is not None and fname == _strip_long_path(_long_path(dst)):
+            role = "dst"
+    if getattr(e, "winerror", None):
+        text = f"[WinError {e.winerror}] {e.strerror}"
+    elif getattr(e, "errno", None) is not None and e.strerror:
+        text = f"[Errno {e.errno}] {e.strerror}"
+    else:
+        text = str(e)
+    hint = "" if getattr(e, "winerror", None) else _win_error_hint()
+    if where is None:
+        where = ""
+        if size:
+            where = f" (after {fmt_size(done)} of {fmt_size(size)} written)"
+    return f"{op} {role} {path}: {text}{hint}{where}"
+
+
+def _report_partial_dest(dst_path):
+    """After a failed copy: say what is at the destination path, and remove
+    the partial file as the local engines always have — a half-written file
+    left behind is what the next run finds as 'present, wrong size' at best.
+    Returns 'absent' | 'removed' | 'left' for the record. Never raises."""
+    try:
+        st = os.lstat(_long_path(dst_path))
+    except OSError:
+        print(f"  {C.DIM}Nothing was created at {dst_path}.{C.RESET}")
+        return "absent"
+    if not stat.S_ISREG(st.st_mode):
+        print(f"  {C.YELLOW}Destination path is not a regular file, left "
+              f"untouched: {dst_path}{C.RESET}")
+        return "left"
+    try:
+        os.remove(_long_path(dst_path))
+    except OSError as e:
+        print(f"  {C.YELLOW}Partial file LEFT on disk: {dst_path} "
+              f"({fmt_size(st.st_size)}) — could not remove: {e}{C.RESET}")
+        return "left"
+    print(f"  {C.YELLOW}Partial file removed: {dst_path} "
+          f"({fmt_size(st.st_size)} had been written){C.RESET}")
+    return "removed"
 
 
 def _log(action, rel_path, size, **extra):
@@ -2193,6 +2351,26 @@ def _flush_destination(path):
         pass
 
 
+def _flush_remote_destination(run, dst):
+    """The remote counterpart of _flush_destination: have the destination
+    host write its dirty pages out before we stop the clock.
+
+    `run(cmd)` executes on the destination and returns (out, err, rc).
+    `sync -f` flushes only the destination's filesystem; old coreutils and
+    non-GNU syncs lack -f, so a plain system-wide `sync` follows. When both
+    fail — or the channel does — the copy has still landed, so the run
+    carries on with one note instead of an error."""
+    for cmd in ("sync -f " + shlex.quote(dst), "sync"):
+        try:
+            if run(cmd)[2] == 0:
+                return True
+        except Exception:                                   # noqa: BLE001
+            break  # a channel error will not improve on a second try
+    print(f"  {C.DIM}Note: could not sync the remote destination — the time "
+          f"may end before its cache reaches disk.{C.RESET}")
+    return False
+
+
 def _within(path, root):
     """True when `path` is `root` itself or lives underneath it. Both sides are
     realpath'd so a symlinked destination compares correctly."""
@@ -2255,6 +2433,9 @@ def _safe_pull_link_dest(dst_root, rel):
 # realpath would follow it and call the attacker's directory the destination,
 # while the cached value keeps writes pointed where the run started.
 _REAL_ROOT_CACHE = {}
+# (st_dev, st_ino) of each memoised real root at first resolution — the
+# identity anchor _DestFdTree checks its freshly opened root fd against.
+_REAL_ROOT_ID = {}
 
 # Names the destination-path check refused this run. A refusal is a file the
 # user asked for and did not get, so it has to reach the exit code the same
@@ -2289,7 +2470,29 @@ def _real_dst_root(dst_root):
     if got is None:
         got = _fs_realpath(dst_root)
         _REAL_ROOT_CACHE[dst_root] = got
+        # Anchor the IDENTITY of the root the run started against, not just
+        # its name. The legacy checks compare realpath output to this cached
+        # STRING, so a root swapped for a symlink mid-run fails them — a
+        # documented safety margin. Anything that resolves the root afresh
+        # (the fd tree) must verify against this anchor or it would follow
+        # the swap that the string comparison refuses.
+        try:
+            _st = os.stat(got)
+            _REAL_ROOT_ID[got] = (_st.st_dev, _st.st_ino)
+        except OSError:
+            pass
     return got
+
+
+# A fast openat2-based admit check for _dest_policy/_safe_local_dest was
+# built here and REMOVED by review before it shipped: it proved containment
+# against a cached root fd (an inode) while its callers went on to write
+# through the PATH — so the fd's immunity to directory swaps protected
+# nothing, and a stale cached fd (deleted or renamed root, second run of a
+# long-lived process) turned every lookup into ENOENT, which the
+# missing-component walk read as "resolves textually", ADMITTING names the
+# realpath check refuses. An fd-based proof is only sound when the write
+# goes through the same fd — which is what _DestFdTree's users do.
 
 
 def _dest_policy(dst_root, rel, trusted_source=True):
@@ -2787,6 +2990,268 @@ def _refuse_remote_dest(dst_root, copy_entries, link_map, refused, found):
             {k: v for k, v in (link_map or {}).items() if k not in refused})
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# FD-BASED DESTINATION RESOLUTION — openat2 / per-component O_NOFOLLOW
+# ════════════════════════════════════════════════════════════════════════════
+# The realpath()-based containment checks cost one stat per path COMPONENT
+# per file — ~18 of the ~28 destination metadata syscalls each extracted
+# member and each dedup link paid on the incident run, re-resolving a prefix
+# that cannot change mid-run [measured: 2026-09-28, uat_perf_r2l.py fixture].
+# On a high-latency destination (SMB, WSL drvfs) every one is a network
+# round-trip.
+#
+# This block is the dirfd design the _ExtractCtx comment reserves for its own
+# change: resolve a destination directory ONCE into a file descriptor and do
+# the work through it. An fd names an inode, so a later dir→symlink swap
+# cannot redirect it — which is why holding it is not the rejected
+# "validated-directory cache": that cached a PATH verdict a swap could
+# invalidate; this holds the object the verdict was about.
+#
+# Resolution ladder:
+#   1. openat2(2) with RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS (Linux 5.6+):
+#      one syscall, refuses any symlink component and any escape — strictly
+#      stronger than the realpath containment it stands in for, so a success
+#      can never admit a path the legacy check would refuse.
+#   2. Per-component O_NOFOLLOW | O_DIRECTORY openat walk (other POSIX).
+#   3. Any failure at all → the caller falls back to the legacy path-based
+#      code, whose verdicts are unchanged. ELOOP lands there too, on
+#      purpose: a symlink that stays INSIDE the destination is allowed by
+#      the legacy rules (the user's own layout, unelevated), and only the
+#      realpath check can tell it from an escape.
+#
+# BLITCP_NO_OPENAT2=1 disables the fast paths entirely (debugging, A/B).
+
+_OPENAT2_NR = 437                  # same syscall number on every Linux arch
+_RESOLVE_NO_SYMLINKS = 0x04
+_RESOLVE_BENEATH = 0x08
+_openat2_state = []                # [] = unprobed, else [bool]
+_openat2_libc = None
+_openat2_how = None
+
+
+def _openat2(dirfd, rel, flags, resolve):
+    """Raw openat2(2). Returns an fd; raises OSError on any failure."""
+    global _openat2_libc, _openat2_how
+    if _openat2_libc is None:
+        import ctypes
+
+        class _OpenHow(ctypes.Structure):
+            _fields_ = [("flags", ctypes.c_uint64),
+                        ("mode", ctypes.c_uint64),
+                        ("resolve", ctypes.c_uint64)]
+        _openat2_how = (ctypes, _OpenHow)
+        _openat2_libc = ctypes.CDLL(None, use_errno=True)
+    ctypes, _OpenHow = _openat2_how
+    how = _OpenHow(flags, 0, resolve)
+    # Explicit widths: syscall(2) is varargs, and bare Python ints go
+    # through as c_int. Register writes zero-extend on x86-64/aarch64 so
+    # that happens to work, but a big-endian 64-bit ABI reads garbage in
+    # the upper half — pass the number and size at their real widths.
+    fd = _openat2_libc.syscall(ctypes.c_long(_OPENAT2_NR),
+                               ctypes.c_int(dirfd),
+                               os.fsencode(rel), ctypes.byref(how),
+                               ctypes.c_size_t(ctypes.sizeof(how)))
+    if fd < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, os.strerror(e), rel)
+    return fd
+
+
+def _openat2_supported():
+    """One probe per process. False on non-Linux, seccomp-filtered
+    environments, kernels before 5.6, and under BLITCP_NO_OPENAT2=1."""
+    if _openat2_state:
+        return _openat2_state[0]
+    ok = False
+    if (sys.platform.startswith("linux")
+            and not os.environ.get("BLITCP_NO_OPENAT2")):
+        probe_fd = None
+        try:
+            probe_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+            fd = _openat2(probe_fd, ".", os.O_RDONLY | os.O_DIRECTORY
+                          | getattr(os, "O_CLOEXEC", 0), 0)
+            os.close(fd)
+            ok = True
+        except OSError:
+            ok = False
+        finally:
+            if probe_fd is not None:
+                try:
+                    os.close(probe_fd)
+                except OSError:
+                    pass
+    _openat2_state.append(ok)
+    return ok
+
+
+class _DestFdTree:
+    """Directory fds under one destination root, resolved without symlinks.
+
+    Single-threaded by design: each user (a tar extraction batch, one
+    create_links call) builds its own tree and closes it. The cache holds at
+    most MAX_FDS descriptors (LRU) so a deep tree cannot exhaust the process
+    fd limit; eviction closes the fd, and a later request re-resolves.
+
+    `dir()` raises OSError on ANY resolution problem — a symlink in the way
+    (ELOOP), an escape (EXDEV), a missing component without create=True — and
+    the caller then takes the legacy path-based route, which keeps its exact
+    verdicts. Nothing here refuses; it only succeeds fast or steps aside.
+    """
+
+    MAX_FDS = 128
+
+    def __init__(self, root):
+        self.available = False
+        self._fds = OrderedDict()
+        self._recent = deque(maxlen=2)   # keys of the last two borrowed fds
+        self._root_fd = None
+        if os.name == "nt":
+            return
+        if not (os.open in os.supports_dir_fd
+                and os.mkdir in os.supports_dir_fd):
+            return
+        if os.environ.get("BLITCP_NO_OPENAT2"):
+            # The kill-switch turns off BOTH rungs of the ladder, so a run
+            # under it exercises exactly the pre-fd code.
+            return
+        try:
+            # THE MEMOISED root, not a fresh resolution. The legacy checks
+            # compare against the string cached when the run first asked;
+            # resolving here afresh would FOLLOW a root swapped for a
+            # symlink after that moment — links into the attacker's
+            # directory where every legacy check refuses. So: open the
+            # memoised name, then require the opened inode to BE the one
+            # anchored at first resolution. Any mismatch (swap, delete and
+            # recreate, no anchor recorded) makes the tree unavailable and
+            # every caller takes the legacy path, which refuses correctly.
+            real = _real_dst_root(root)
+            self._root_fd = os.open(real,
+                                    os.O_RDONLY | os.O_DIRECTORY
+                                    | getattr(os, "O_CLOEXEC", 0))
+            anchor = _REAL_ROOT_ID.get(real)
+            got = os.fstat(self._root_fd)
+            if anchor is None or (got.st_dev, got.st_ino) != anchor:
+                os.close(self._root_fd)
+                self._root_fd = None
+                return
+        except OSError:
+            if self._root_fd is not None:
+                try:
+                    os.close(self._root_fd)
+                except OSError:
+                    pass
+                self._root_fd = None
+            return
+        self._use_openat2 = _openat2_supported()
+        self.available = True
+
+    def dir(self, rel_dir, create=False):
+        """fd for `rel_dir` ('' or '.' = the root) — borrowed, tree-owned.
+
+        The last two fds handed out are never evicted: a caller may hold
+        both sides of a link across a second dir() call, and an eviction
+        closing a borrowed fd whose number the tree then reuses would make
+        that linkat land in the WRONG directory — silently, inside the
+        destination, at a name nobody asked for."""
+        if self._root_fd is None:
+            raise OSError(errno.EBADF, "fd tree is closed")
+        if not rel_dir or rel_dir == ".":
+            return self._root_fd
+        got = self._fds.get(rel_dir)
+        if got is not None:
+            self._fds.move_to_end(rel_dir)
+            self._recent.append(rel_dir)
+            return got
+        if self._use_openat2:
+            fd = self._open2(rel_dir, create)
+        else:
+            fd = self._open_walk(rel_dir, create)
+        self._fds[rel_dir] = fd
+        self._recent.append(rel_dir)
+        evictions = 0
+        while len(self._fds) > self.MAX_FDS and evictions < 3:
+            _old, oldfd = self._fds.popitem(last=False)
+            if _old in self._recent:
+                # Borrowed moments ago — put it back as most-recent and
+                # try the next-oldest instead (bounded: _recent holds 2).
+                self._fds[_old] = oldfd
+                evictions += 1
+                continue
+            try:
+                os.close(oldfd)
+            except OSError:
+                pass
+            break
+        return fd
+
+    def _dir_flags(self):
+        return (os.O_RDONLY | os.O_DIRECTORY
+                | getattr(os, "O_CLOEXEC", 0))
+
+    def _open2(self, rel_dir, create):
+        resolve = _RESOLVE_BENEATH | _RESOLVE_NO_SYMLINKS
+        try:
+            return _openat2(self._root_fd, rel_dir, self._dir_flags(),
+                            resolve)
+        except OSError as e:
+            if e.errno != errno.ENOENT or not create:
+                raise
+        parent = posixpath.dirname(rel_dir)
+        pfd = self.dir(parent, create=True)
+        try:
+            os.mkdir(posixpath.basename(rel_dir), 0o777, dir_fd=pfd)
+        except FileExistsError:
+            pass
+        return _openat2(self._root_fd, rel_dir, self._dir_flags(), resolve)
+
+    def _open_walk(self, rel_dir, create):
+        """Per-component O_NOFOLLOW walk for kernels/OSes without openat2.
+        Components are already textually validated by the caller ('..' and
+        absolute paths never reach here); refuse defensively anyway."""
+        flags = self._dir_flags() | os.O_NOFOLLOW
+        parts = rel_dir.split("/")
+        for part in parts:
+            if part in ("", ".", ".."):
+                raise OSError(errno.EINVAL, "unsafe component", rel_dir)
+        fd = self._root_fd
+        owned = False
+        try:
+            for part in parts:
+                try:
+                    nfd = os.open(part, flags, dir_fd=fd)
+                except FileNotFoundError:
+                    if not create:
+                        raise
+                    os.mkdir(part, 0o777, dir_fd=fd)
+                    nfd = os.open(part, flags, dir_fd=fd)
+                if owned:
+                    os.close(fd)
+                fd, owned = nfd, True
+            got, fd, owned = fd, None, False
+            return got
+        finally:
+            if owned and fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    def close(self):
+        for fd in self._fds.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+        if self._root_fd is not None:
+            try:
+                os.close(self._root_fd)
+            except OSError:
+                pass
+            self._root_fd = None
+        self.available = False
+
+
 class _ExtractCtx:
     """Per-batch scratch for the tar extraction checks.
 
@@ -2820,11 +3285,25 @@ class _ExtractCtx:
     # O_NOFOLLOW). An fd names an inode, so a later swap cannot redirect it.
     # That means writing the bytes instead of calling tar.extract(), which is a
     # rewrite of a security-critical path and belongs in its own change.
-    __slots__ = ("dst_root", "_real_dst")
+    __slots__ = ("dst_root", "_real_dst", "_fdtree")
 
     def __init__(self, dst_root):
         self.dst_root = dst_root
         self._real_dst = None
+        self._fdtree = None
+
+    def fdtree(self):
+        """The batch's _DestFdTree, built once. May come back unavailable
+        (Windows, no dir_fd support, kill-switch, unopenable root) — the
+        caller checks .available and takes the legacy path."""
+        if self._fdtree is None:
+            self._fdtree = _DestFdTree(self.dst_root)
+        return self._fdtree
+
+    def close(self):
+        if self._fdtree is not None:
+            self._fdtree.close()
+            self._fdtree = None
 
     def real_dst(self):
         """_fs_realpath(dst_root), resolved once per batch.
@@ -2842,8 +3321,14 @@ class _ExtractCtx:
         return self._real_dst
 
 
-def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
-    """Validate a tar member for safety. Returns True or error string."""
+def _validate_tar_member_name(member):
+    """The syscall-free half of tar-member validation: the NAME and TYPE
+    checks. Split out so the fd-based extraction path — whose openat2 /
+    O_NOFOLLOW resolution enforces containment more strictly than the
+    realpath comparison below — can run them without paying for a
+    path-based containment check it is about to supersede. Every result
+    here is also re-checked by _validate_tar_member on the legacy path;
+    running it twice is two string scans, not two stats."""
     # Reject absolute paths
     if member.name.startswith('/') or os.path.isabs(member.name):
         return "blocked: absolute path"
@@ -2864,6 +3349,14 @@ def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
     # Reject null bytes in name
     if '\0' in member.name:
         return "blocked: null byte in name"
+    return True
+
+
+def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
+    """Validate a tar member for safety. Returns True or error string."""
+    check = _validate_tar_member_name(member)
+    if check is not True:
+        return check
     # Resolve final path and verify it stays within dst_root.
     # Use os.path.normcase for the comparison so case-insensitive
     # filesystems (Windows NTFS, macOS HFS+ default, APFS default)
@@ -2913,6 +3406,102 @@ def _validate_tar_member(member, dst_root, ctx=None, trusted_source=False):
     return True
 
 
+def _fd_extract_member(tar, member, fdt, trusted_source, src_mode,
+                       preserve_owner, dst_root):
+    """Extract one REGULAR member through directory fds. Returns True on
+    success, an error string for a definitive refusal, or None meaning
+    "could not take this path — run the legacy extraction instead".
+
+    None is only ever returned BEFORE the member's bytes are read: the tar
+    may be a non-seekable stream ('r|'), and a member consumed here cannot
+    be re-read by the legacy tar.extract(). A failure after reading starts
+    (ENOSPC, EIO) raises OSError instead — the same exception, caught by
+    the same callers, that tar.extract() itself raises there.
+
+    Containment is the fd resolution itself: fdt.dir() refuses symlinked
+    components and escapes (openat2 RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS, or
+    the O_NOFOLLOW walk), and the leaf is opened O_NOFOLLOW — stronger than
+    the realpath comparison the legacy path applies, so nothing the legacy
+    check would refuse can be written here. A symlink AT the leaf is
+    REFUSED with the legacy path's exact words, never replaced: the legacy
+    check refuses a link present at validation time, and this path has no
+    later moment to tell that case from one planted in a race.
+    The mode written is src_mode & 0o7777 — the caller has already
+    applied the untrusted-source mask to src_mode, and the gate in
+    _safe_tar_extract requires --preserve mode (the default), under which
+    the legacy path's final mode is the same value by the same re-apply."""
+    d, leaf = posixpath.split(member.name)
+    if not leaf:
+        return None
+    # The reader comes BEFORE the leaf is opened: extractfile() is lazy (no
+    # stream bytes move until read), and any refusal or step-aside after an
+    # O_CREAT|O_TRUNC open would leave a truncated file behind a "no".
+    fobj = tar.extractfile(member)
+    if fobj is None:
+        return None
+    try:
+        dirfd = fdt.dir(d, create=True)
+    except OSError:
+        return None
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(leaf, flags, 0o600, dir_fd=dirfd)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            # A symlink AT the leaf. The legacy path REFUSES this — it never
+            # extracts over a link that was present at check time (its
+            # pre-extract unlink covers only one planted in the race after
+            # validation). Same verdict, same words, so the record and the
+            # exit code cannot tell the two routes apart.
+            return "blocked: destination path is a symlink"
+        return None
+    try:
+        while True:
+            chunk = fobj.read(1 << 20)
+            if not chunk:
+                break
+            # os.write is not obliged to take the whole buffer (quota edge,
+            # network filesystems — the very destinations this path is
+            # for). Loop the remainder; a write that accepts nothing raises
+            # instead of spinning, and the caller reports it exactly as it
+            # reports tar.extract's own write failure.
+            view = memoryview(chunk)
+            while view:
+                n = os.write(fd, view)
+                if n <= 0:
+                    raise OSError(errno.EIO,
+                                  "short write on destination")
+                view = view[n:]
+        # hasattr guards: this path is unreachable on Windows (_DestFdTree
+        # is never available there), but the guard keeps the module free of
+        # names that would AttributeError if that ever changed.
+        if preserve_owner and hasattr(os, "fchown"):
+            try:
+                os.fchown(fd, member.uid, member.gid)
+            except OSError:
+                pass          # non-root chown: tarfile swallows this too
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, src_mode & 0o7777)
+            except OSError:
+                pass          # parity with the legacy re-apply's swallow
+        try:
+            os.utime(fd, (member.mtime, member.mtime))
+        except OSError:
+            pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if not trusted_source:
+        _record_remote_owner(
+            os.path.join(dst_root, member.name.replace("/", os.sep)),
+            member.uid, member.gid)
+    return True
+
+
 # One notice per run when the tarfile filter is unavailable; see the fallback
 # inside _safe_tar_extract.
 _TAR_FILTER_FALLBACK_WARNED = False
@@ -2939,18 +3528,9 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True, ctx=None):
       • Non-root extraction silently fails to chown (tarfile swallows the
         EPERM) — we count those as owner_skip_unprivileged at the start
         of the R2L copy phase rather than per-member."""
-    check = _validate_tar_member(member, dst_root, ctx, trusted_source)
+    check = _validate_tar_member_name(member)
     if check is not True:
         return check
-    extract_path = _long_path(dst_root) if _system == "Windows" else dst_root
-    if _system == "Windows":
-        # A destination file left read-only/hidden by a prior run (most often a
-        # locked credentials.json — Windows immutability is just the read-only
-        # attribute) can't be overwritten: open() fails with EACCES/Errno 13.
-        # Strip those attributes first so the extract can replace it, mirroring
-        # how _save_credentials_file overwrites our own locked creds file.
-        target = os.path.join(extract_path, member.name.replace("/", os.sep))
-        _windows_clear_attrs(target)
     preserve_owner = _preserve_spec.owner
     if not preserve_owner:
         # Default safe behavior: drop ownership info from the member.
@@ -2987,6 +3567,37 @@ def _safe_tar_extract(tar, member, dst_root, trusted_source=True, ctx=None):
             _untrusted_mask &= ~(stat.S_IWGRP | stat.S_IWOTH)
         member.mode &= _untrusted_mask
         src_mode &= _untrusted_mask
+
+    # ── fd fast path ──────────────────────────────────────────────────
+    # Regular files, default --preserve mode, POSIX with dir_fd support:
+    # resolve the parent directory through the batch's fd tree and write
+    # through it. Containment is enforced by the resolution itself (see
+    # _fd_extract_member); every mode/owner input was prepared above, so
+    # the two paths cannot disagree about what lands on disk. None means
+    # the fd route stepped aside BEFORE touching the stream — fall through
+    # to the legacy path below, whose checks and verdicts are unchanged.
+    if member.isfile() and _preserve_spec.mode and ctx is not None \
+            and ctx.dst_root == dst_root:
+        _fdt = ctx.fdtree()
+        if _fdt.available:
+            _got = _fd_extract_member(tar, member, _fdt, trusted_source,
+                                      src_mode, preserve_owner, dst_root)
+            if _got is not None:
+                return _got
+
+    # ── legacy path-based extraction ──────────────────────────────────
+    check = _validate_tar_member(member, dst_root, ctx, trusted_source)
+    if check is not True:
+        return check
+    extract_path = _long_path(dst_root) if _system == "Windows" else dst_root
+    if _system == "Windows":
+        # A destination file left read-only/hidden by a prior run (most often a
+        # locked credentials.json — Windows immutability is just the read-only
+        # attribute) can't be overwritten: open() fails with EACCES/Errno 13.
+        # Strip those attributes first so the extract can replace it, mirroring
+        # how _save_credentials_file overwrites our own locked creds file.
+        target = os.path.join(extract_path, member.name.replace("/", os.sep))
+        _windows_clear_attrs(target)
     _rel = member.name.replace("/", os.sep) if _system == "Windows" else member.name
     _target = os.path.join(extract_path, _rel)
     # Validation refuses a symlinked leaf, but close the residual TOCTOU window:
@@ -3093,6 +3704,70 @@ def _find_mount_point(path):
     while not os.path.ismount(path):
         path = os.path.dirname(path)
     return path
+
+
+def _dest_wsl_drvfs(path, _version_file="/proc/version", _fstype=None):
+    """True when `path` sits on a Windows drive mounted into WSL (drvfs on
+    WSL1, 9p on WSL2 — /mnt/c and friends).
+
+    Named because the generic 'network (SMB / NFS / SSHFS)' label gave the
+    user nothing to act on: a 9,908-file pull to /mnt/c spent 40m49s on
+    8.8 MB, every metadata syscall a drvfs round-trip into Windows
+    [measured: 2026-09-28, incident run]. The two real escapes — a
+    WSL-native destination, or the native Windows build — only help if the
+    banner says which mount kind this is.
+
+    `_version_file` and `_fstype` exist for the audit test; real callers
+    pass only the path."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open(_version_file) as f:
+            if "microsoft" not in f.read().lower():
+                return False
+    except OSError:
+        return False
+    fstype = _fstype if _fstype is not None else _fs_type_linux(path)[0]
+    return fstype in ("9p", "drvfs")
+
+
+def _drvfs_without_metadata(path, _version_file="/proc/version",
+                            _mountinfo="/proc/self/mountinfo"):
+    """True when `path` is on a WSL-mounted Windows drive that lacks the
+    'metadata' mount option. There every file reports 0o777 and chmod has no
+    effect, so advice to chmod cannot be followed.
+
+    WSL2 carries the option inside the 9p aname (`aname=drvfs;…;metadata;…`),
+    WSL1 as a plain drvfs option — both are split on ',' and ';'.
+    `_version_file` and `_mountinfo` exist for the audit test."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open(_version_file) as f:
+            if "microsoft" not in f.read().lower():
+                return False
+        check = _walk_up_to_existing(path)
+        if not check:
+            return False
+        best, fstype, opts = "", "", ""
+        with open(_mountinfo) as f:
+            for line in f:
+                parts = line.split()
+                try:
+                    sep = parts.index("-")
+                    mp = _unescape_mountinfo(parts[4])
+                    ft = _unescape_mountinfo(parts[sep + 1])
+                    o = parts[5] + "," + (parts[sep + 3] if len(parts) > sep + 3 else "")
+                except (IndexError, ValueError):
+                    continue
+                if (check == mp or check.startswith(mp.rstrip("/") + "/")) \
+                        and len(mp) > len(best):
+                    best, fstype, opts = mp, ft, o
+    except OSError:
+        return False
+    if fstype not in ("9p", "drvfs"):
+        return False
+    return "metadata" not in re.split(r"[,;]", opts)
 
 
 def _classify_storage(path):
@@ -3432,6 +4107,33 @@ class DedupDB:
                 PRIMARY KEY (rel_path, hash_algo)
             )
         """)
+        # When the source hash was recorded. Rows from before this column
+        # exists carry NULL and the drift warning says "date unknown".
+        try:
+            c.execute("ALTER TABLE source_cache ADD COLUMN seen_at INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already present
+        # A source file that came back with the SAME size and mtime and a
+        # DIFFERENT hash. The source_cache row is deliberately NOT replaced:
+        # the old hash stays there, the new one is recorded here, and the
+        # next run can tell a stable change (the same new hash again: the
+        # medium changed once) from a flapping one (a third hash: a bridge or
+        # cable returning wrong bytes).
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS source_drift (
+                rel_path     TEXT NOT NULL,
+                hash_algo    TEXT NOT NULL,
+                size         INTEGER NOT NULL,
+                mtime_ns     INTEGER NOT NULL,
+                cached_hash  TEXT NOT NULL,
+                seen_hash    TEXT NOT NULL,
+                first_seen   INTEGER NOT NULL,
+                last_seen    INTEGER NOT NULL,
+                times        INTEGER NOT NULL,
+                distinct_hashes INTEGER NOT NULL,
+                PRIMARY KEY (rel_path, hash_algo)
+            )
+        """)
         # Destination file index — tracks files on the drive.
         # mtime_ns pairs with content_hash: a consumer trusts the stored hash
         # only if the file's CURRENT (size, mtime_ns) still matches — otherwise
@@ -3524,14 +4226,60 @@ class DedupDB:
 
     def store_source_batch(self, rows):
         """Cache source hashes. rows = list of (rel_path, size, mtime_ns, hash)."""
+        now = int(time.time())
         with self.lock:
             self.conn.executemany(
                 "INSERT OR REPLACE INTO source_cache "
-                "(rel_path, size, mtime_ns, content_hash, hash_algo) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [(r[0], r[1], r[2], r[3], _hash_name) for r in rows],
+                "(rel_path, size, mtime_ns, content_hash, hash_algo, seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(r[0], r[1], r[2], r[3], _hash_name, now) for r in rows],
             )
             self.conn.commit()
+
+    def source_entry(self, rel_path):
+        """The cached row for a source path: (size, mtime_ns, hash, seen_at)
+        or None. Used only once a drift has been seen — the hot path reads
+        the preloaded dict."""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT size, mtime_ns, content_hash, seen_at FROM source_cache "
+                "WHERE rel_path = ? AND hash_algo = ?",
+                (rel_path, _hash_name)).fetchone()
+        return tuple(row) if row else None
+
+    def record_source_drift(self, rel_path, size, mtime_ns, cached_hash,
+                            seen_hash):
+        """Record that `rel_path` hashed to `seen_hash` while the cache held
+        `cached_hash` for the same size and mtime. The cache row is left as it
+        is. Returns (times, distinct_hashes): how often this file has drifted
+        and how many different "new" hashes it has produced — one means the
+        content changed once and stays changed, more than one means the bytes
+        read differ from run to run."""
+        now = int(time.time())
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT seen_hash, times, distinct_hashes FROM source_drift "
+                "WHERE rel_path = ? AND hash_algo = ?",
+                (rel_path, _hash_name)).fetchone()
+            if row is None:
+                self.conn.execute(
+                    "INSERT INTO source_drift (rel_path, hash_algo, size, "
+                    "mtime_ns, cached_hash, seen_hash, first_seen, last_seen, "
+                    "times, distinct_hashes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)",
+                    (rel_path, _hash_name, size, mtime_ns, cached_hash,
+                     seen_hash, now, now))
+                times, distinct = 1, 1
+            else:
+                times = row[1] + 1
+                distinct = row[2] + (0 if row[0] == seen_hash else 1)
+                self.conn.execute(
+                    "UPDATE source_drift SET seen_hash = ?, last_seen = ?, "
+                    "times = ?, distinct_hashes = ?, size = ?, mtime_ns = ? "
+                    "WHERE rel_path = ? AND hash_algo = ?",
+                    (seen_hash, now, times, distinct, size, mtime_ns,
+                     rel_path, _hash_name))
+            self.conn.commit()
+        return times, distinct
 
     # ── Destination index (cross-run dedup) ───────────────────────
 
@@ -4232,6 +4980,26 @@ class SSHConnection:
             print(f"\n  {C.YELLOW}Authentication cancelled.{C.RESET}")
             self.client.close()
             sys.exit(0)
+        except OSError as e:
+            # The name does not resolve, nothing listens, no route, timed out:
+            # socket.gaierror, paramiko's NoValidConnectionsError and
+            # socket.timeout are all OSError. One line naming host and port —
+            # they used to escape as a traceback ([PYI-81503] when frozen).
+            import socket
+            self.client.close()
+            host, port = self.spec.host, self.spec.port
+            if isinstance(e, socket.gaierror):
+                msg = (f"cannot resolve SSH host {host!r} (port {port}): "
+                       f"{e.strerror or e}")
+            else:
+                cause = e
+                errs = getattr(e, "errors", None)  # NoValidConnectionsError: per address
+                if isinstance(errs, dict) and errs:
+                    cause = next(iter(errs.values()))
+                why = getattr(cause, "strerror", None) or str(cause) or type(cause).__name__
+                msg = f"cannot connect to SSH host {host} port {port}: {why}"
+            print(f"  {C.RED}Error: {msg}{C.RESET}")
+            sys.exit(1)
 
         transport = self.client.get_transport()
         transport.set_keepalive(30)
@@ -5423,7 +6191,18 @@ def _apply_remote_dir_metadata_local(dirmeta, dst_root):
             use_fd = False
     try:
         real_root = _fs_realpath(dst_root)
+        # Progress: on a high-latency destination this loop is 2-3 round
+        # trips per directory, and it used to run in total silence right
+        # after the copy bar hit 100% — minutes of a finished-looking
+        # terminal. Every 100 dirs, or after a quiet second.
+        _md_total = len(dirmeta)
+        _md_done = 0
+        _md_last = time.time()
         for rel, (mode, atime_ns, mtime_ns, uid, gid) in dirmeta.items():
+            _md_done += 1
+            if _md_done % 100 == 0 or time.time() - _md_last >= 1.0:
+                _phase_emit("Dir metadata", _md_done, _md_total)
+                _md_last = time.time()
             try:
                 if use_fd:
                     fd = _open_subdir_nofollow(root_fd, rel)
@@ -5467,6 +6246,8 @@ def _apply_remote_dir_metadata_local(dirmeta, dst_root):
                         os.utime(_long_path(dst_dir), ns=(atime_ns, mtime_ns))
             except OSError:
                 continue
+        if _md_total:
+            _phase_emit("Dir metadata", _md_total, _md_total)
     finally:
         if root_fd is not None:
             os.close(root_fd)
@@ -5731,6 +6512,52 @@ def check_destination_space(dst, required_bytes, force=False, create=True):
 # ════════════════════════════════════════════════════════════════════════════
 # PHYSICAL OFFSET DETECTION — WINDOWS
 # ════════════════════════════════════════════════════════════════════════════
+# Why a file could not be mapped — written by the get_physical_offset_*
+# probes, read by resolve_physical_offsets, which prints the first few under
+# its "N/M files mapped" line. A bare count hid an open that failed on the
+# very file the copy then failed on, for the whole length of the copy.
+_MAP_FAILURES = {}            # path → reason, the first _MAP_FAILURES_KEEP
+_MAP_FAILURES_COUNT = [0]     # every failure, kept or not
+_MAP_FAILURES_KEEP = 5
+_MAP_LOCK = threading.Lock()
+
+
+def _note_map_failure(path, reason):
+    with _MAP_LOCK:
+        _MAP_FAILURES_COUNT[0] += 1
+        if len(_MAP_FAILURES) < _MAP_FAILURES_KEEP:
+            _MAP_FAILURES[path] = reason
+
+
+def _reset_map_failures():
+    with _MAP_LOCK:
+        _MAP_FAILURES.clear()
+        _MAP_FAILURES_COUNT[0] = 0
+
+
+def _print_map_failures():
+    with _MAP_LOCK:
+        items = list(_MAP_FAILURES.items())
+        total = _MAP_FAILURES_COUNT[0]
+    for path, reason in items:
+        print(f"    {C.DIM}{path}: {reason}{C.RESET}")
+    if total > len(items):
+        print(f"    {C.DIM}... and {total - len(items)} more{C.RESET}")
+
+
+def _win_last_error_text():
+    """GetLastError() as 'WinError N text', read straight after a failed
+    kernel32 call. ctypes.GetLastError() asks Windows directly; nothing of
+    ours runs in between, but the interpreter may, so this is the usual
+    answer rather than a guaranteed one."""
+    try:
+        import ctypes
+        code = ctypes.GetLastError()
+        return "WinError %d %s" % (code, ctypes.FormatError(code).strip())
+    except Exception:                                   # noqa: BLE001
+        return "WinError unknown"
+
+
 def get_physical_offset_windows(filepath):
     """Use FSCTL_GET_RETRIEVAL_POINTERS for starting LCN."""
     try:
@@ -5760,6 +6587,7 @@ def get_physical_offset_windows(filepath):
         )
         INVALID = wt.HANDLE(-1).value
         if handle == INVALID:
+            _note_map_failure(filepath, "CreateFileW: " + _win_last_error_text())
             return 0
 
         try:
@@ -5775,21 +6603,32 @@ def get_physical_offset_windows(filepath):
                 ctypes.byref(bytes_returned), None,
             )
             if not ok:
+                _note_map_failure(filepath, "FSCTL_GET_RETRIEVAL_POINTERS: "
+                                  + _win_last_error_text())
                 return 0
 
             raw = out_buf.raw[:bytes_returned.value]
             if len(raw) < 32:
+                _note_map_failure(filepath, "FSCTL_GET_RETRIEVAL_POINTERS: "
+                                  "short reply")
                 return 0
 
             extent_count = struct.unpack_from("<I", raw, 0)[0]
             if extent_count == 0:
+                _note_map_failure(filepath, "no extents reported (resident or "
+                                  "empty file)")
                 return 0
 
             first_lcn = struct.unpack_from("<q", raw, 24)[0]
-            return first_lcn if first_lcn >= 0 else 0
+            if first_lcn < 0:
+                _note_map_failure(filepath, "first extent has no LCN "
+                                  "(compressed, sparse or deduplicated file)")
+                return 0
+            return first_lcn
         finally:
             CloseHandle(handle)
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error) as e:
+        _note_map_failure(filepath, f"{type(e).__name__}: {e}")
         return 0
 
 
@@ -5818,13 +6657,14 @@ def get_physical_offset_linux(filepath):
 
             mapped = struct.unpack_from("<I", fiemap, 20)[0]
             if mapped == 0:
+                _note_map_failure(filepath, "FIEMAP: no extents reported")
                 return 0
 
             physical = struct.unpack_from("<Q", fiemap, FIEMAP_SIZE + 8)[0]
             return physical
         finally:
             os.close(fd)
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, struct.error) as first:
         try:
             import fcntl
             FIBMAP = 1
@@ -5835,7 +6675,8 @@ def get_physical_offset_linux(filepath):
                 return struct.unpack("<I", result)[0]
             finally:
                 os.close(fd)
-        except (OSError, ValueError, struct.error):
+        except (OSError, ValueError, struct.error) as second:
+            _note_map_failure(filepath, f"FIEMAP: {first}; FIBMAP: {second}")
             return 0
 
 
@@ -6994,52 +7835,60 @@ def get_physical_offset(filepath):
     return 0
 
 
+def _win_dev_ioctl(device, code, in_buf, out_len):
+    """DeviceIoControl on a device path opened with no access rights — enough
+    for every query IOCTL used here. Returns the bytes returned, or None."""
+    import ctypes.wintypes as wt
+    kernel32 = ctypes.windll.kernel32
+    CreateFileW = kernel32.CreateFileW
+    CreateFileW.restype = wt.HANDLE
+    DeviceIoControl = kernel32.DeviceIoControl
+    CloseHandle = kernel32.CloseHandle
+    INVALID = wt.HANDLE(-1).value
+    h = CreateFileW(device, 0, 3, None, 3, 0, None)
+    if h == INVALID:
+        return None
+    try:
+        out = ctypes.create_string_buffer(out_len)
+        ret = wt.DWORD(0)
+        ok = DeviceIoControl(h, code,
+                             in_buf, len(in_buf) if in_buf else 0,
+                             out, out_len, ctypes.byref(ret), None)
+        return out.raw[:ret.value] if ok else None
+    finally:
+        CloseHandle(h)
+
+
+def _win_physical_drive(drive):
+    """The PhysicalDrive number behind a drive letter ('D:'), or None."""
+    IOCTL_STORAGE_GET_DEVICE_NUMBER = 0x2D1080
+    raw = _win_dev_ioctl("\\\\.\\" + drive,
+                         IOCTL_STORAGE_GET_DEVICE_NUMBER, None, 12)
+    if raw is None or len(raw) < 12:
+        return None
+    return struct.unpack_from("<I", raw, 4)[0]
+
+
 def _volume_seek_penalty_windows(path):
     """Does the physical disk behind `path` incur a seek penalty?
 
     True = rotational HDD, False = SSD/NVMe, None = unknown (UNC, error).
     One IOCTL pair per VOLUME — not per file."""
     try:
-        import ctypes.wintypes as wt
-
         drive = os.path.splitdrive(os.path.abspath(path))[0]
         if not drive or drive.startswith("\\\\"):
             return None  # UNC share — no local physical disk to ask
 
-        kernel32 = ctypes.windll.kernel32
-        CreateFileW = kernel32.CreateFileW
-        CreateFileW.restype = wt.HANDLE
-        DeviceIoControl = kernel32.DeviceIoControl
-        CloseHandle = kernel32.CloseHandle
-        INVALID = wt.HANDLE(-1).value
-
-        def _dev_ioctl(device, code, in_buf, out_len):
-            h = CreateFileW(device, 0, 3, None, 3, 0, None)
-            if h == INVALID:
-                return None
-            try:
-                out = ctypes.create_string_buffer(out_len)
-                ret = wt.DWORD(0)
-                ok = DeviceIoControl(h, code,
-                                     in_buf, len(in_buf) if in_buf else 0,
-                                     out, out_len, ctypes.byref(ret), None)
-                return out.raw[:ret.value] if ok else None
-            finally:
-                CloseHandle(h)
-
-        IOCTL_STORAGE_GET_DEVICE_NUMBER = 0x2D1080
-        raw = _dev_ioctl("\\\\.\\" + drive,
-                         IOCTL_STORAGE_GET_DEVICE_NUMBER, None, 12)
-        if raw is None or len(raw) < 12:
+        devnum = _win_physical_drive(drive)
+        if devnum is None:
             return None
-        devnum = struct.unpack_from("<I", raw, 4)[0]
 
         IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
         # STORAGE_PROPERTY_QUERY {PropertyId=StorageDeviceSeekPenaltyProperty(7),
         #                         QueryType=PropertyStandardQuery(0), pad}
         query = struct.pack("<II4x", 7, 0)
-        raw = _dev_ioctl("\\\\.\\PhysicalDrive%d" % devnum,
-                         IOCTL_STORAGE_QUERY_PROPERTY, query, 12)
+        raw = _win_dev_ioctl("\\\\.\\PhysicalDrive%d" % devnum,
+                             IOCTL_STORAGE_QUERY_PROPERTY, query, 12)
         if raw is None or len(raw) < 9:
             return None
         # DEVICE_SEEK_PENALTY_DESCRIPTOR: Version(4) Size(4) IncursSeekPenalty(1)
@@ -7519,6 +8368,363 @@ def scan_source(src_root, dst_root=None, excludes=None, include_node_modules=Fal
     return entries, errors
 
 
+def _mtime_granularity_note(mtime_ns):
+    """What the mtime's resolution allows: on a filesystem that stores two-
+    second timestamps (FAT, exFAT) a rewrite inside the same window keeps the
+    mtime, and the drift warning has to say so."""
+    if mtime_ns % 2_000_000_000 == 0:
+        return ("mtime has 2 s resolution (FAT/exFAT-style): a rewrite within "
+                "the same 2 s window would also look like this")
+    if mtime_ns % 1_000_000_000 == 0:
+        return ("mtime has 1 s resolution: a rewrite within the same second "
+                "would also look like this")
+    return "mtime has sub-second resolution, so a rewrite would have moved it"
+
+
+def _note_source_drift(dedup_db, src_path, size, mtime_ns, fresh_hash, rel,
+                       cached_hash):
+    """The hash cache held `cached_hash` for (src_path, size, mtime_ns) and the
+    file just hashed to `fresh_hash`. Nothing wrote to this file as far as the
+    filesystem knows, and the bytes changed: bit rot, a bad sector, or a
+    bridge or cable handing back wrong data. Print the warning, record it so
+    the next run can tell stable from flapping, and count it. Never silently
+    replaces the cache row. Returns nothing; the caller decides what strict
+    mode does with the file."""
+    import datetime
+    entry = dedup_db.source_entry(src_path)
+    seen_at = entry[3] if entry else None
+    when = (datetime.datetime.fromtimestamp(seen_at).strftime("%Y-%m-%d %H:%M")
+            if seen_at else "date unknown")
+    times, distinct = dedup_db.record_source_drift(
+        src_path, size, mtime_ns, cached_hash, fresh_hash)
+    if times == 1:
+        pattern = ("first time seen — a second run will tell whether the "
+                   "change is stable (medium) or flapping (bridge/cable)")
+    elif distinct == 1:
+        pattern = (f"seen {times} times with the same new hash — stable: the "
+                   f"bytes on the medium changed once")
+    else:
+        pattern = (f"seen {times} times with {distinct} different new hashes "
+                   f"— flapping: reads return different bytes each time, "
+                   f"suspect the bridge, cable or controller")
+    print(f"\n  {C.YELLOW}⚠ INTEGRITY: {rel}: content changed but size and "
+          f"mtime did not — possible media corruption on the SOURCE volume"
+          f"{C.RESET}")
+    print(f"    {C.DIM}cached {cached_hash} (seen {when}) → now {fresh_hash}; "
+          f"{_mtime_granularity_note(mtime_ns)}; {pattern}{C.RESET}")
+    _preflight_note("integrity", "", rel=rel)
+
+
+def _check_stream_drift(copy_entries, dedup_db, dst_root):
+    """After Phase 5: compare the digest the engine captured while the bytes
+    streamed past with what the hash cache holds for the same (path, size,
+    mtime). No extra read — the digest is a by-product of the copy, and the
+    cache is one table scan. Files with no cache row get one, so the next run
+    of the same unchanged file has something to compare against; a drifted
+    file's row is left alone (see record_source_drift).
+
+    Under --strict-integrity a drifted file is removed from the destination
+    and recorded as failed: the copy already happened, so "do not copy" can
+    only mean "do not keep"."""
+    if dedup_db is None or not _SRC_DIGESTS.enabled:
+        return
+    digests = _SRC_DIGESTS.snapshot()
+    if not digests:
+        return
+    try:
+        cache = dedup_db.preload_source_cache()
+    except Exception:                                   # noqa: BLE001
+        cache = None
+    sentinels = (_SourceDigests.SKIP, _SourceDigests.NA, _SourceDigests.SPARSE)
+    new_rows = []
+    for e in copy_entries:
+        d = digests.get(e.rel)
+        if d is None or d in sentinels:
+            continue
+        try:
+            st = os.stat(e.src)
+        except OSError:
+            continue
+        if st.st_size != e.size or not st.st_mtime_ns:
+            continue
+        mt = st.st_mtime_ns
+        if cache is not None:
+            cached = cache.get((e.src, e.size, mt))
+        else:
+            cached = dedup_db.lookup(e.src, e.size, mt)
+        if cached is None:
+            new_rows.append((e.src, e.size, mt, d))
+            continue
+        if cached == d:
+            continue
+        _note_source_drift(dedup_db, e.src, e.size, mt, d, e.rel, cached)
+        if _STRICT_INTEGRITY:
+            path, _why = _dest_policy(dst_root, e.rel)
+            kept = "destination path refused"
+            if path is not None:
+                try:
+                    os.remove(_long_path(path))
+                    kept = "removed from the destination"
+                except OSError as ex:
+                    kept = f"could NOT be removed from the destination: {ex}"
+            print(f"    {C.RED}{kept} (--strict-integrity){C.RESET}")
+            _log("error", e.rel, e.size,
+                 error=f"source content drift: cached {cached}, read {d} "
+                       f"with unchanged size and mtime — {kept} "
+                       f"(--strict-integrity)",
+                 source_read=False, destination="removed")
+    if new_rows:
+        try:
+            dedup_db.store_source_batch(new_rows)
+        except Exception as ex:                           # noqa: BLE001
+            print(f"  {C.DIM}hash cache not updated: {ex}{C.RESET}")
+
+
+# ── Source-device pre-flight ────────────────────────────────────────────
+# A failing or sleepy source device announces itself minutes into a long
+# read, which is the most expensive moment to learn about it. These checks
+# cost seconds and name a specific condition each; none of them says a file
+# is good.
+
+_WIN_BUS_TYPE = {1: "SCSI", 2: "ATAPI", 3: "ATA", 4: "IEEE 1394", 5: "SSA",
+                 6: "Fibre Channel", 7: "USB", 8: "RAID", 9: "iSCSI", 10: "SAS",
+                 11: "SATA", 12: "SD", 13: "MMC", 14: "virtual",
+                 15: "file-backed virtual", 16: "Storage Spaces", 17: "NVMe",
+                 18: "SCM", 19: "UFS"}
+_REMOVABLE_BUSES = ("USB", "IEEE 1394", "SD", "MMC")
+_PROBE_CHUNK = 1 << 20          # one read of this size per probed offset
+_PROBE_BUDGET_S = 10.0          # the whole read-probe pass stops after this
+_PREFLIGHT_DOCS = 'DOCUMENTATION.md § "What blitcp checks before it copies"'
+
+
+def _source_device_info(path):
+    """What is known about the device under `path`, cheaply:
+    {bus, removable, dirty, detail}. Every value may be None = unknown, and
+    unknown is printed as unknown — a guess here would be acted on."""
+    info = {"bus": None, "removable": None, "dirty": None, "detail": ""}
+    if _system == "Windows":
+        try:
+            drive = os.path.splitdrive(os.path.abspath(_strip_long_path(path)))[0]
+            if not drive or drive.startswith("\\\\"):
+                info["detail"] = "UNC share: no local device to ask"
+                return info
+            devnum = _win_physical_drive(drive)
+            if devnum is not None:
+                IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
+                # STORAGE_PROPERTY_QUERY {StorageDeviceProperty(0),
+                #                         PropertyStandardQuery(0), pad}
+                raw = _win_dev_ioctl("\\\\.\\PhysicalDrive%d" % devnum,
+                                     IOCTL_STORAGE_QUERY_PROPERTY,
+                                     struct.pack("<II4x", 0, 0), 1024)
+                # STORAGE_DEVICE_DESCRIPTOR: Version(4) Size(4) DeviceType(1)
+                # DeviceTypeModifier(1) RemovableMedia(1) CommandQueueing(1)
+                # 4 offsets(16) BusType(4) ...
+                if raw is not None and len(raw) >= 32:
+                    bus = struct.unpack_from("<I", raw, 28)[0]
+                    info["bus"] = _WIN_BUS_TYPE.get(bus, "bus type %d" % bus)
+                    info["removable"] = bool(raw[8]) or (info["bus"] in _REMOVABLE_BUSES)
+                IOCTL_STORAGE_GET_HOTPLUG_INFO = 0x2D0C14
+                raw = _win_dev_ioctl("\\\\.\\PhysicalDrive%d" % devnum,
+                                     IOCTL_STORAGE_GET_HOTPLUG_INFO, None, 8)
+                # STORAGE_HOTPLUG_INFO: Size(4) MediaRemovable(1)
+                # MediaHotplug(1) DeviceHotplug(1) WriteCacheEnableOverride(1)
+                if raw is not None and len(raw) >= 7 and raw[6]:
+                    info["removable"] = True
+            else:
+                info["detail"] = "no physical drive behind %s" % drive
+            FSCTL_IS_VOLUME_DIRTY = 0x90078
+            raw = _win_dev_ioctl("\\\\.\\" + drive, FSCTL_IS_VOLUME_DIRTY, None, 4)
+            if raw is not None and len(raw) >= 4:
+                info["dirty"] = bool(struct.unpack_from("<I", raw, 0)[0] & 1)
+        except (OSError, ValueError, struct.error) as e:
+            info["detail"] = str(e)
+        return info
+    if _system == "Linux":
+        try:
+            st = os.stat(path)
+            base = "/sys/dev/block/%d:%d" % (os.major(st.st_dev),
+                                             os.minor(st.st_dev))
+            real = _fs_realpath(base)
+            # A dm/LVM volume says nothing about its bus; its first slave does.
+            if os.path.isdir(base + "/slaves"):
+                slaves = sorted(os.listdir(base + "/slaves"))
+                if slaves:
+                    real = _fs_realpath(base + "/slaves/" + slaves[0])
+            parts = real.lower().split("/")
+            if any(re.fullmatch(r"usb\d*", c) for c in parts):
+                info["bus"] = "USB"
+            elif any(c.startswith("nvme") for c in parts):
+                info["bus"] = "NVMe"
+            elif any(re.fullmatch(r"ata\d*", c) for c in parts):
+                info["bus"] = "ATA/SATA"
+            elif any(c.startswith("mmc") for c in parts):
+                info["bus"] = "SD/MMC"
+            elif any(c.startswith("virtio") for c in parts):
+                info["bus"] = "virtio"
+            for p in (real + "/removable", os.path.dirname(real) + "/removable"):
+                try:
+                    with open(p) as f:
+                        info["removable"] = f.read().strip() == "1"
+                    break
+                except OSError:
+                    continue
+            if info["bus"] in _REMOVABLE_BUSES:
+                info["removable"] = True
+            fstype = _fs_type_linux(path)[0]
+            if fstype == "ext4":
+                try:
+                    with open("/sys/fs/ext4/%s/errors_count"
+                              % os.path.basename(_fs_realpath(base))) as f:
+                        n = int(f.read().strip() or "0")
+                    info["dirty"] = n > 0
+                    if n:
+                        info["detail"] = "ext4 reports %d error(s) since mount" % n
+                except (OSError, ValueError):
+                    pass
+            else:
+                info["detail"] = "dirty state not checked for %s" % fstype
+        except (OSError, ValueError):
+            pass
+        return info
+    info["detail"] = "device details not available on this platform"
+    return info
+
+
+def _source_volumes(entries):
+    """[(label, sample_path)] — one per distinct source volume, cheaply:
+    drive letters on Windows, st_dev of each distinct directory elsewhere
+    (the same walk-order trick _skip_physical_mapping uses)."""
+    out = {}
+    if _system == "Windows":
+        for e in entries:
+            d = os.path.splitdrive(os.path.abspath(_strip_long_path(e.src)))[0]
+            key = d or "UNC"
+            out.setdefault(key, e.src)
+        return sorted(out.items())
+    last_dir = None
+    for e in entries:
+        d = os.path.dirname(os.path.abspath(e.src))
+        if d == last_dir:
+            continue
+        last_dir = d
+        try:
+            dev = os.stat(d).st_dev
+        except OSError:
+            continue
+        if dev not in out:
+            out[dev] = (d, e.src)
+    return [("dev %d:%d (%s)" % (os.major(dev), os.minor(dev), d), s)
+            for dev, (d, s) in sorted(out.items())]
+
+
+def _read_at(fd, n, off):
+    if hasattr(os, "pread"):
+        return os.pread(fd, n, off)
+    os.lseek(fd, off, os.SEEK_SET)
+    return os.read(fd, n)
+
+
+def _probe_source_reads(entry):
+    """Read the first and last _PROBE_CHUNK and three interior points of a
+    large file through the same open the copy loop uses. Returns None when
+    every read succeeded, else the decorated error (operation, side, path,
+    error, offset) — the same line the copy would have printed at minute
+    ten. This is the only pre-flight check that stops a file, because it IS
+    the copy's own failure, found early."""
+    off = 0
+    size = entry.size
+    try:
+        fd = _safe_open_read_fd(entry.src)
+    except OSError as e:
+        return _describe_copy_error(e, ["open", "src", entry.src], 0, size,
+                                    src=entry.src, where="")
+    try:
+        try:
+            size = os.fstat(fd).st_size
+            chunk = min(_PROBE_CHUNK, size)
+            offsets = sorted({0, size // 4, size // 2, (3 * size) // 4,
+                              max(0, size - chunk)})
+            for off in offsets:
+                want = min(chunk, size - off)
+                got = _read_at(fd, want, off)
+                if len(got) < want:
+                    raise OSError(errno.EIO, "short read: %d of %d bytes"
+                                  % (len(got), want))
+        except OSError as e:
+            return _describe_copy_error(
+                e, ["read", "src", entry.src], off, size, src=entry.src,
+                where=f" (probe read at offset {fmt_size(off)} of {fmt_size(size)})")
+    finally:
+        os.close(fd)
+    return None
+
+
+def _source_preflight(entries):
+    """Phase 4 sub-step: name what is known about each source volume, warn
+    about the conditions that end long reads early, and probe every large
+    file's readability within a time budget. Prints what it found; files
+    whose probe failed are recorded as failed and added to
+    _PREFLIGHT['skip_rels'] so the engine never opens them."""
+    if not entries:
+        return
+    print(f"\n  {C.BOLD}Source pre-flight{C.RESET}")
+    for label, sample in _source_volumes(entries):
+        info = _source_device_info(sample)
+        bus = info["bus"] or "unknown"
+        rem = {True: "removable", False: "fixed", None: "removable: unknown"}[info["removable"]]
+        dirty = {True: "dirty", False: "clean", None: "unknown"}[info["dirty"]]
+        extra = f" — {info['detail']}" if info["detail"] else ""
+        print(f"    {label}: bus {bus}, {rem}; volume dirty bit: {dirty}{extra}")
+        _PREFLIGHT["devices"].append({"volume": label, "bus": info["bus"],
+                                      "removable": info["removable"],
+                                      "dirty": info["dirty"],
+                                      "detail": info["detail"]})
+        if info["removable"]:
+            msg = (f"source {label} is on a removable/USB device — sustained "
+                   f"reads can be interrupted by selective suspend, power "
+                   f"limits or hubs; see {_PREFLIGHT_DOCS}")
+            print(f"    {C.YELLOW}⚠ DEVICE: {msg}{C.RESET}")
+            _preflight_note("device", msg)
+        if info["dirty"]:
+            msg = (f"source {label} volume was not cleanly unmounted / has "
+                   f"pending errors — run chkdsk/fsck before relying on this copy")
+            print(f"    {C.YELLOW}⚠ DEVICE: {msg}{C.RESET}")
+            _preflight_note("device", msg)
+
+    large = [e for e in entries if e.size >= SMALL_FILE_THRESHOLD]
+    if not large:
+        return
+    t0 = time.perf_counter()
+    probed = failed = 0
+    stopped = False
+    for i, e in enumerate(large):
+        if time.perf_counter() - t0 > _PROBE_BUDGET_S:
+            stopped = True
+            break
+        desc = _probe_source_reads(e)
+        probed += 1
+        if desc is not None:
+            failed += 1
+            print(f"    {C.RED}Error: {e.rel}: {desc}{C.RESET}")
+            _log("error", e.rel, e.size, error=desc,
+                 source_read=("[Errno %d]" % errno.EACCES in desc
+                              or "[Errno %d]" % errno.EPERM in desc
+                              or "[Errno %d]" % errno.ENOENT in desc),
+                 destination="absent", stage="preflight")
+            _PREFLIGHT["probe_failed"].append(e.rel)
+            _PREFLIGHT["skip_rels"].add(e.rel)
+        if (i + 1) % 100 == 0:
+            _phase_emit("Pre-flight", i + 1, len(large))
+    _PREFLIGHT["probed"] = probed
+    took = time.perf_counter() - t0
+    tail = (f" — stopped after {fmt_time(_PROBE_BUDGET_S)}: probed {probed} of "
+            f"{len(large)}" if stopped else "")
+    verdict = (f"{C.RED}{failed} failed — not copied{C.RESET}" if failed
+               else f"{C.GREEN}all readable{C.RESET}")
+    print(f"    Read probe: {probed} large file(s), up to 5 × "
+          f"{fmt_size(_PROBE_CHUNK)} each, {fmt_time(took)}: {verdict}{tail}")
+
+
 def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     """Query physical offsets in parallel, return entries sorted by disk position."""
     # Nothing to copy (everything deduped to links, or all files unchanged):
@@ -7548,6 +8754,9 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     # Fail-fast: filesystems with no physical-offset support (tmpfs, most
     # network/virtual FS) return 0 for EVERY file — detect that with a handful
     # of probes instead of paying one ioctl per file across the whole tree.
+    # Phase 2's existing-layout pass uses the same probes; its failures are
+    # not this phase's, so they go before the first probe below.
+    _reset_map_failures()
     nonempty = [e for e in entries if e.size > 0]
     if len(nonempty) >= 4:
         step = max(1, len(nonempty) // 8)
@@ -7555,6 +8764,7 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
         if all(get_physical_offset(e.src) == 0 for e in probe_sample):
             print(f"  {C.YELLOW}Filesystem reports no physical offsets "
                   f"(probe) — skipping layout mapping.{C.RESET}")
+            _print_map_failures()
             return entries
 
     print(f"  {C.DIM}Reading disk layout ({_system})...{C.RESET}", end="", flush=True)
@@ -7592,6 +8802,9 @@ def resolve_physical_offsets(entries, threads=DEFAULT_THREADS):
     has_offset = sum(1 for e in new_entries if e.physical_offset > 0)
     print("\r  " + C.GREEN + _tr("Disk layout resolved: {n}/{total} files mapped").format(n=has_offset, total=len(entries)) + C.RESET + "          ")
 
+    if has_offset < len(entries):
+        # The reason per file, or the count above is all anyone ever learns.
+        _print_map_failures()
     if has_offset == 0:
         print(f"  {C.YELLOW}Could not map physical layout — falling back to size-sorted order.{C.RESET}")
         new_entries.sort(key=lambda e: e.size, reverse=True)
@@ -8136,6 +9349,61 @@ def deduplicate(entries, threads=DEFAULT_THREADS, dedup_db=None,
     return unique_entries, link_map, saved_bytes
 
 
+def _fd_link_fast(fdt, canon_cache, dup_rel, target):
+    """One dedup hardlink through validated directory fds, or step aside.
+
+    Returns "linked" (link created and logged), "in_place" (the dup path
+    already holds the canonical's inode — the legacy self-link guard's
+    silent skip), or None: this link belongs to the legacy body, whose
+    verdicts, counters and refusal records then apply unchanged.
+
+    This function owns the WHOLE fast-path decision, textual check
+    included: it asks _validate_rel_path — the same primitive
+    _dest_policy asks — and steps aside on any "no" so the legacy body is
+    the only place a refusal is decided and recorded. The textual question
+    cannot be left to the fd resolution: openat2 refuses '..' and absolute
+    names, but a NUL truncates in the ctypes layer (the kernel sees a
+    shorter path that may exist) and a newline is a legal filename to
+    every syscall — neither may reach the fd operations under a name the
+    policy refuses.
+
+    Containment is the fd resolution (openat2 BENEATH|NO_SYMLINKS or the
+    O_NOFOLLOW walk), and linkat never follows the leaf, so a canonical
+    swapped for a symlink mid-run cannot redirect the link. The canonical's
+    stat is cached per distinct target for the log size and a cheap
+    not-a-regular-file bailout; it is bookkeeping, not a guard — the
+    no-follow linkat is the guard."""
+    try:
+        if (_validate_rel_path(dup_rel) is not True
+                or _validate_rel_path(target) is not True):
+            return None
+        dd, dleaf = posixpath.split(dup_rel.replace(os.sep, "/"))
+        cd, cleaf = posixpath.split(target.replace(os.sep, "/"))
+        ddfd = fdt.dir(dd, create=True)
+        cdfd = fdt.dir(cd)
+        info = canon_cache.get(target)
+        if info is None:
+            cst = os.stat(cleaf, dir_fd=cdfd, follow_symlinks=False)
+            info = (cst.st_size, stat.S_ISREG(cst.st_mode))
+            canon_cache[target] = info
+        csize, c_isreg = info
+        if not c_isreg:
+            return None
+        try:
+            os.link(cleaf, dleaf, src_dir_fd=cdfd,
+                    dst_dir_fd=ddfd, follow_symlinks=False)
+        except FileExistsError:
+            sd = os.stat(dleaf, dir_fd=ddfd, follow_symlinks=False)
+            sc = os.stat(cleaf, dir_fd=cdfd, follow_symlinks=False)
+            if sd.st_dev == sc.st_dev and sd.st_ino == sc.st_ino:
+                return "in_place"
+            return None
+    except (OSError, ValueError):
+        return None
+    _log("linked", dup_rel, csize, method="hardlink", link_target=target)
+    return "linked"
+
+
 def create_links(link_map, dst_root, fs_strategy=None, trusted_source=False):
     """
     Create dedup links for duplicated files.
@@ -8174,113 +9442,163 @@ def create_links(link_map, dst_root, fs_strategy=None, trusted_source=False):
     # wrong: _safe_local_dest resolves symlinks, so a destination the user
     # deliberately laid out with a symlinked directory fails it. Removed rather
     # than reworded, so nobody reasons from it.
-    _real_root = _fs_realpath(dst_root)
-    for dup_rel, target in link_map.items():
-        _link_done += 1
-        if _link_done % 200 == 0:
-            _phase_emit("Linking", _link_done, _link_total)
-        _safe_dup, _ = _dest_policy(dst_root, dup_rel,
-                                    trusted_source=trusted_source)
-        if _safe_dup is None:
-            # A refusal, not a link error. It goes to the one refusal list the
-            # summary and the exit code read; the local `errors` counter is for
-            # links that were attempted and failed (EXDEV, EPERM), which is a
-            # different thing and used to be reported as if it were this one.
-            _note_refusal(dup_rel)
-            _log("refused", dup_rel, 0,
-                 error="refused: resolves outside the destination")
-            continue
-        dst_dup = _long_path(_safe_dup)
-        # Target is either a rel path or ("__abs__", full_path) for cross-run dedup
-        if isinstance(target, tuple) and target[0] == "__abs__":
-            # Cross-run dedup target from our own dedup DB, already absolute.
-            dst_canonical = _long_path(target[1])
-        else:
-            # Same provenance as dup_rel, so the same check.
-            _safe_canon, _ = _dest_policy(dst_root, target,
-                                          trusted_source=trusted_source)
-            if _safe_canon is None:
-                # Same refusal, named by the file the user does not get: the
-                # duplicate. Recording the canonical name here would count a
-                # file that was written as one that was not.
+    # One makedirs per distinct directory, not per link. The unconditional
+    # per-link call was 6,514 EEXIST mkdirs plus their component stats on a
+    # 6,512-link run — pure metadata churn, and on a high-latency destination
+    # (SMB, WSL drvfs) every one is a network round-trip. The set caches only
+    # "this run already ensured this directory", never a policy verdict; the
+    # per-link _dest_policy checks above it are unchanged. Regression-tested
+    # by uat_perf_r2l.py (mkdir ceiling) — a manual benchmark that needs
+    # sshd+strace and SKIPs where it cannot run; it is not in the always-run
+    # suites.
+    _dirs_made = set()
+    # ── fd fast path (hardlinks only) ─────────────────────────────────
+    # One linkat through validated directory fds replaces, per link: two
+    # full realpath resolutions inside _dest_policy, the two-stat self-link
+    # guard, a makedirs and a getsize — the bulk of the ~22 destination
+    # metadata syscalls a link paid [measured: 2026-09-28, uat_perf_r2l.py].
+    # Containment comes from the fd resolution (openat2 BENEATH|NO_SYMLINKS
+    # or the O_NOFOLLOW walk — stronger than the realpath the legacy check
+    # runs), and linkat NEVER follows the leaf, so a file swapped for a
+    # symlink mid-run cannot redirect the link — the legacy os.link, which
+    # follows its source argument, cannot say the same. The canonical's
+    # stat is cached per distinct target for the LOG SIZE and a cheap
+    # not-a-regular-file bailout; it is bookkeeping, not a guard — the
+    # no-follow linkat is the guard. Any surprise at all
+    # drops the link into the legacy body below, whose verdicts, counters
+    # and refusal records are unchanged. Reflink strategy and cross-run
+    # ("__abs__") targets always take the legacy body.
+    _fdt = _DestFdTree(dst_root)
+    _canon_cache = {}
+    # Count-gated AND time-gated: every 200 links, or after a second of
+    # silence. On a high-latency destination 200 links is minutes — the
+    # incident run sat on a finished-looking bar for over half an hour
+    # while this loop worked. A quiet second is the most a long phase may
+    # go without saying where it is.
+    _last_emit = time.time()
+    try:
+        for dup_rel, target in link_map.items():
+            _link_done += 1
+            if _link_done % 200 == 0 or time.time() - _last_emit >= 1.0:
+                _phase_emit("Linking", _link_done, _link_total)
+                _last_emit = time.time()
+            if (_fdt.available and fs_strategy != "reflink"
+                    and isinstance(target, str)):
+                _fast = _fd_link_fast(_fdt, _canon_cache, dup_rel, target)
+                if _fast is not None:
+                    if _fast == "linked":
+                        hardlink_ok += 1
+                    continue          # "in_place" skips silently, as the
+                                      # legacy self-link guard does
+
+            # ── legacy per-link body (verdicts unchanged) ─────────────
+            _safe_dup, _ = _dest_policy(dst_root, dup_rel,
+                                        trusted_source=trusted_source)
+            if _safe_dup is None:
+                # A refusal, not a link error. It goes to the one refusal list the
+                # summary and the exit code read; the local `errors` counter is for
+                # links that were attempted and failed (EXDEV, EPERM), which is a
+                # different thing and used to be reported as if it were this one.
                 _note_refusal(dup_rel)
                 _log("refused", dup_rel, 0,
-                     error="refused: link target resolves outside the "
-                           "destination")
+                     error="refused: resolves outside the destination")
                 continue
-            dst_canonical = _long_path(_safe_canon)
-
-        # GUARD against linking a file to ITSELF. On an incremental re-copy the
-        # cross-run cache can match a destination file against its own existing
-        # copy (same path). _try_reflink opens the target with O_TRUNC *before*
-        # cloning, so reflinking a file onto itself would empty it — silent data
-        # loss on btrfs/XFS. (Hardlink fails EEXIST and is harmless; reflink is
-        # not.) If dst_dup already IS dst_canonical, it's correctly in place.
-        try:
-            _sd = os.stat(_strip_long_path(dst_dup))
-            _sc = os.stat(_strip_long_path(dst_canonical))
-            if _sd.st_dev == _sc.st_dev and _sd.st_ino == _sc.st_ino:
-                continue
-        except OSError:
-            pass
-
-        os.makedirs(os.path.dirname(dst_dup), exist_ok=True)
-
-        # Get file size for logging
-        try:
-            _link_size = os.path.getsize(dst_canonical)
-        except OSError:
-            _link_size = 0
-        _link_target = target if isinstance(target, str) else target[1]
-
-        # 1. Try reflink first when the FS supports it. Reflinks are the
-        #    BEST dedup mechanism because they share storage initially but
-        #    are CoW on write — modifying one peer doesn't affect others.
-        #    This eliminates the link-update problem that hardlinks have.
-        if fs_strategy == "reflink":
-            if _try_reflink(_strip_long_path(dst_canonical),
-                            _strip_long_path(dst_dup)):
-                _log("linked", dup_rel, _link_size, method="reflink",
-                     link_target=_link_target)
-                reflink_ok += 1
-                continue
-
-        # 2. Try hard link (fast, no extra space, but inode-shared)
-        try:
-            os.link(dst_canonical, dst_dup)
-            _log("linked", dup_rel, _link_size, method="hardlink", link_target=_link_target)
-            hardlink_ok += 1
-            continue
-        except OSError:
-            pass
-
-        # 3. Try symlink (works on most filesystems)
-        try:
-            # Compute relative path from dup to canonical (strip \\?\ for relpath)
-            rel_target = os.path.relpath(
-                _strip_long_path(dst_canonical),
-                os.path.dirname(_strip_long_path(dst_dup)))
-            os.symlink(rel_target, dst_dup)
-            # Verify the symlink actually resolves (NTFS via Linux creates
-            # symlinks that don't work)
-            if os.path.isfile(dst_dup):
-                _log("linked", dup_rel, _link_size, method="symlink", link_target=_link_target)
-                symlink_ok += 1
-                continue
+            dst_dup = _long_path(_safe_dup)
+            # Target is either a rel path or ("__abs__", full_path) for cross-run dedup
+            if isinstance(target, tuple) and target[0] == "__abs__":
+                # Cross-run dedup target from our own dedup DB, already absolute.
+                dst_canonical = _long_path(target[1])
             else:
-                # Broken symlink — remove and fall through to copy
-                os.unlink(dst_dup)
-        except OSError:
-            pass
+                # Same provenance as dup_rel, so the same check.
+                _safe_canon, _ = _dest_policy(dst_root, target,
+                                              trusted_source=trusted_source)
+                if _safe_canon is None:
+                    # Same refusal, named by the file the user does not get: the
+                    # duplicate. Recording the canonical name here would count a
+                    # file that was written as one that was not.
+                    _note_refusal(dup_rel)
+                    _log("refused", dup_rel, 0,
+                         error="refused: link target resolves outside the "
+                               "destination")
+                    continue
+                dst_canonical = _long_path(_safe_canon)
 
-        # 4. Last resort: actual copy
-        try:
-            shutil.copy2(dst_canonical, dst_dup)
-            _log("linked", dup_rel, _link_size, method="copy_fallback", link_target=_link_target)
-            copy_fallback += 1
-        except OSError as e:
-            _log("error", dup_rel, _link_size, error=str(e))
-            errors += 1
+            # GUARD against linking a file to ITSELF. On an incremental re-copy the
+            # cross-run cache can match a destination file against its own existing
+            # copy (same path). _try_reflink opens the target with O_TRUNC *before*
+            # cloning, so reflinking a file onto itself would empty it — silent data
+            # loss on btrfs/XFS. (Hardlink fails EEXIST and is harmless; reflink is
+            # not.) If dst_dup already IS dst_canonical, it's correctly in place.
+            try:
+                _sd = os.stat(_strip_long_path(dst_dup))
+                _sc = os.stat(_strip_long_path(dst_canonical))
+                if _sd.st_dev == _sc.st_dev and _sd.st_ino == _sc.st_ino:
+                    continue
+            except OSError:
+                pass
+
+            _dup_dir = os.path.dirname(dst_dup)
+            if _dup_dir not in _dirs_made:
+                os.makedirs(_dup_dir, exist_ok=True)
+                _dirs_made.add(_dup_dir)
+
+            # Get file size for logging
+            try:
+                _link_size = os.path.getsize(dst_canonical)
+            except OSError:
+                _link_size = 0
+            _link_target = target if isinstance(target, str) else target[1]
+
+            # 1. Try reflink first when the FS supports it. Reflinks are the
+            #    BEST dedup mechanism because they share storage initially but
+            #    are CoW on write — modifying one peer doesn't affect others.
+            #    This eliminates the link-update problem that hardlinks have.
+            if fs_strategy == "reflink":
+                if _try_reflink(_strip_long_path(dst_canonical),
+                                _strip_long_path(dst_dup)):
+                    _log("linked", dup_rel, _link_size, method="reflink",
+                         link_target=_link_target)
+                    reflink_ok += 1
+                    continue
+
+            # 2. Try hard link (fast, no extra space, but inode-shared)
+            try:
+                os.link(dst_canonical, dst_dup)
+                _log("linked", dup_rel, _link_size, method="hardlink", link_target=_link_target)
+                hardlink_ok += 1
+                continue
+            except OSError:
+                pass
+
+            # 3. Try symlink (works on most filesystems)
+            try:
+                # Compute relative path from dup to canonical (strip \\?\ for relpath)
+                rel_target = os.path.relpath(
+                    _strip_long_path(dst_canonical),
+                    os.path.dirname(_strip_long_path(dst_dup)))
+                os.symlink(rel_target, dst_dup)
+                # Verify the symlink actually resolves (NTFS via Linux creates
+                # symlinks that don't work)
+                if os.path.isfile(dst_dup):
+                    _log("linked", dup_rel, _link_size, method="symlink", link_target=_link_target)
+                    symlink_ok += 1
+                    continue
+                else:
+                    # Broken symlink — remove and fall through to copy
+                    os.unlink(dst_dup)
+            except OSError:
+                pass
+
+            # 4. Last resort: actual copy
+            try:
+                shutil.copy2(dst_canonical, dst_dup)
+                _log("linked", dup_rel, _link_size, method="copy_fallback", link_target=_link_target)
+                copy_fallback += 1
+            except OSError as e:
+                _log("error", dup_rel, _link_size, error=str(e))
+                errors += 1
+    finally:
+        _fdt.close()
     if _link_total:
         _phase_emit("Linking", _link_total, _link_total)
 
@@ -8548,7 +9866,7 @@ class Progress:
         self.bytes_done = 0
         self.files_done = 0
         self.lock = threading.Lock()
-        self.start = time.time()
+        self.start = time.perf_counter()
         self._last_print = 0
         # (timestamp, files_done, bytes_done) samples over the last ~30s.
         # Speed/ETA use this RECENT window, not the run-long average: the
@@ -8610,7 +9928,7 @@ class Progress:
     def display(self):
         if QUIET and not QUIET_PROGRESS:
             return
-        now = time.time()
+        now = time.perf_counter()
         if now - self._last_print < 0.08:
             return
         self._last_print = now
@@ -8659,6 +9977,12 @@ class Progress:
 
         if eta_speed > 0:
             frate = (files_done - f0) / span if span > 0 else 0
+            # The file-rate estimates below are smoothed; the plain byte
+            # estimate is not — it is remaining bytes over the rate printed
+            # beside it, which is already a 30s window. Smoothing it again
+            # carried a slow start's minutes-long ETA onto a bar showing
+            # 0.8 MB left at 244.7 KB/s.
+            smooth = True
             if cur_stage:
                 # Stage-scoped ETA (parallel small-file pool): these copies
                 # are per-file-latency-bound, so files/s is the honest rate;
@@ -8671,6 +9995,7 @@ class Progress:
                     eta = max(cur_total - cur_done, 0) / eta_speed
             else:
                 eta = max((self.total_bytes - bytes_done) / eta_speed, 0)
+                smooth = False
 
                 # Recent file rate for a many-small-files tail. Only when a
                 # real crowd remains: with small files copying first, the run
@@ -8679,17 +10004,24 @@ class Progress:
                 # gets right.
                 if pct >= 99.0 and self.total_files - files_done > 64:
                     if frate > 0:
-                        eta = max(eta, (self.total_files - files_done) / frate)
+                        tail = (self.total_files - files_done) / frate
+                        if tail > eta:
+                            eta, smooth = tail, True
 
-            # Smooth the displayed ETA (irregular-sampling EMA, ~10s const).
-            if self._eta_smooth is None:
-                self._eta_smooth = eta
+            if smooth:
+                # Smooth the displayed ETA (irregular-sampling EMA, ~10s const).
+                if self._eta_smooth is None:
+                    self._eta_smooth = eta
+                else:
+                    dt = now - self._eta_ts
+                    alpha = dt / (dt + 10.0)
+                    self._eta_smooth += alpha * (eta - self._eta_smooth)
+                self._eta_ts = now
+                eta = max(self._eta_smooth, 0.0)
             else:
-                dt = now - self._eta_ts
-                alpha = dt / (dt + 10.0)
-                self._eta_smooth += alpha * (eta - self._eta_smooth)
-            self._eta_ts = now
-            eta = max(self._eta_smooth, 0.0)
+                # Leave no stale state for a later switch to a file-rate ETA.
+                self._eta_smooth = None
+                self._eta_ts = None
         else:
             eta = None  # not enough history yet
 
@@ -8730,7 +10062,7 @@ class Progress:
         _BAR_DIRTY = True
 
     def finish(self):
-        elapsed = time.time() - self.start
+        elapsed = time.perf_counter() - self.start
         speed = self.bytes_done / elapsed if elapsed > 0 else 0
         # Every copy mode drives a Progress, so this is the one hook that
         # gives --quiet its totals without touching five summary blocks.
@@ -8899,6 +10231,7 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
     extracted = 0
     extract_errors = []
     read_file = None
+    _ctx = None
 
     try:
         read_file = os.fdopen(read_fd, "rb")
@@ -8939,6 +10272,8 @@ def copy_block_stream(small_entries, dst_root, progress, cancel_check=None):
         print(f"\n  {C.RED}Streaming extraction failed: {e}{C.RESET}")
     finally:
         consumer_done.set()  # signal producer to stop if still running
+        if _ctx is not None:
+            _ctx.close()     # releases the fd tree's directory descriptors
         if read_file:
             try:
                 read_file.close()
@@ -9335,8 +10670,12 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
             progress.update(entry.size, 1)
             return
         counted = 0  # bytes already added to progress for THIS file
+        # Same running [operation, role, path] as copy_individual, for the
+        # same reason: the exception does not say which call on which side.
+        step = ["mkdir", "dst-dir", os.path.dirname(dst_path)]
         try:
             os.makedirs(_long_path(os.path.dirname(dst_path)), exist_ok=True)
+            step[:] = ["open", "src", entry.src]
             try:
                 src_fd = _safe_open_read_fd(entry.src)
             except OSError as e:
@@ -9347,10 +10686,12 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
                     # Benign only for a permission error on the SOURCE
                     # (exit 3); systemic errnos stay untagged so they
                     # surface as real failures (exit 1), not silent skips.
-                    _log("error", entry.rel, entry.size, error=str(e),
+                    _log("error", entry.rel, entry.size,
+                         error=f"open src {entry.src}: {e}",
                          source_read=_is_benign_source_read(e))
                 progress.update(entry.size, 1)
                 return
+            step[:] = ["open", "dst", dst_path]
             try:
                 dst_fd = _safe_open_write_fd(dst_path, truncate=True)
             except OSError as e:
@@ -9359,7 +10700,8 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
                     _log("error", entry.rel, entry.size,
                          error="symlink at destination")
                 else:
-                    _log("error", entry.rel, entry.size, error=str(e))
+                    _log("error", entry.rel, entry.size,
+                         error=f"open dst {dst_path}: {e}")
                 progress.update(entry.size, 1)
                 return
             buf = bytearray(256 * 1024)
@@ -9367,12 +10709,14 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
                 keep_fd = fout.fileno()
                 _dig = _digest_sink()
                 while True:
+                    step[:] = ["read", "src", entry.src]
                     n = fin.readinto(buf)
                     if not n:
                         break
                     _mv = memoryview(buf)[:n]
                     if _dig is not None:
                         _dig.update(_mv)
+                    step[:] = ["write", "dst", dst_path]
                     fout.write(_mv)
                     counted += n
                     progress.update(n)
@@ -9382,6 +10726,7 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
                 # Flush BEFORE utime: a <8KB file still sits in the
                 # BufferedWriter, and the flush-at-close would land after
                 # _safe_apply_meta and clobber the copied mtime.
+                step[:] = ["flush", "dst", dst_path]
                 fout.flush()
                 try:
                     st = os.fstat(fin.fileno())
@@ -9392,15 +10737,16 @@ def copy_small_parallel(small_entries, dst_root, progress, cancel_check=None,
             progress.update(0, 1)
             return True
         except (OSError, IOError) as e:
-            print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
-            _log("error", entry.rel, entry.size, error=str(e),
-                 source_read=_benign_source_error(e, entry.src))
-            # Clean up the partial file (same policy as copy_individual).
-            try:
-                if os.path.exists(dst_path):
-                    os.remove(dst_path)
-            except OSError:
-                pass
+            desc = _describe_copy_error(e, step, counted, entry.size,
+                                        src=entry.src, dst=dst_path)
+            print(f"\n  {C.RED}Error: {entry.rel}: {desc}{C.RESET}")
+            src_side = ((step[1] == "src" and _is_benign_source_read(e))
+                        or _benign_source_error(e, entry.src))
+            # Same policy as copy_individual: the partial file goes, and the
+            # run says so.
+            left = _report_partial_dest(dst_path)
+            _log("error", entry.rel, entry.size, error=desc,
+                 source_read=src_side, destination=left)
             # Only the bytes NOT already counted — otherwise a file that
             # failed partway is double-counted and the bar overshoots.
             progress.update(max(0, entry.size - counted), 1)
@@ -9540,6 +10886,67 @@ def _copy_sparse(src_path, dst_path, buf, progress, cancel_check=None):
     return True
 
 
+def _source_lock_probe(path):
+    """Is another process holding `path`? ('free' | 'locked' | 'unknown', detail).
+
+    Windows: one CreateFile with dwShareMode=0, closed at once. Another
+    process holding the file open (any share mode) makes that open fail with
+    ERROR_SHARING_VIOLATION; a byte-range lock gives ERROR_LOCK_VIOLATION.
+    This handle is never kept and the copy's own open is unchanged.
+
+    Linux: fcntl F_OFD_GETLK asks whether a POSIX/OFD *advisory* write lock
+    is held. Detection is weak there by design: a process that merely has the
+    file open, or that uses flock(), is not seen. Elsewhere: not checked."""
+    if _system == "Windows":
+        try:
+            import ctypes
+            import ctypes.wintypes as wt
+            k32 = ctypes.windll.kernel32
+            CreateFileW = k32.CreateFileW
+            CreateFileW.restype = wt.HANDLE
+            INVALID = wt.HANDLE(-1).value
+            GENERIC_READ, OPEN_EXISTING = 0x80000000, 3
+            h = CreateFileW(_long_path(path), GENERIC_READ, 0, None,
+                            OPEN_EXISTING, 0, None)
+            if h == INVALID:
+                code = ctypes.GetLastError()
+                text = "WinError %d %s" % (code, ctypes.FormatError(code).strip())
+                return ("locked" if code in (32, 33) else "unknown"), text
+            k32.CloseHandle(h)
+            return "free", ""
+        except Exception as e:                              # noqa: BLE001
+            return "unknown", str(e)
+    if _system == "Linux" and hasattr(os, "O_RDONLY"):
+        try:
+            import fcntl
+            if not hasattr(fcntl, "F_OFD_GETLK"):
+                return "unknown", "no F_OFD_GETLK on this interpreter"
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+            try:
+                # struct flock: l_type(h) l_whence(h) l_start(q) l_len(q) l_pid(i)
+                probe = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0)
+                res = fcntl.fcntl(fd, fcntl.F_OFD_GETLK, probe)
+                l_type, _w, _s, _l, pid = struct.unpack("hhqqi", res)
+                if l_type != fcntl.F_UNLCK:
+                    return "locked", ("advisory %s lock held by pid %d"
+                                      % ("write" if l_type == fcntl.F_WRLCK
+                                         else "read", pid))
+                return "free", "advisory locks only: a plain open is not seen"
+            finally:
+                os.close(fd)
+        except (OSError, struct.error, ValueError) as e:
+            return "unknown", str(e)
+    return "unknown", "not checked on this platform"
+
+
+def _warn_locked_source(rel, detail):
+    print(f"\n  {C.YELLOW}⚠ LOCKED: {rel} is open/locked by another process "
+          f"({detail}) — if this is a backup repository, a job may be running "
+          f"(Veeam, etc.); the copy may fail mid-stream or produce an "
+          f"inconsistent file{C.RESET}")
+    _preflight_note("locked", detail, rel=rel)
+
+
 def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     fs_strategy=None):
     """Copy large files individually with big buffers in physical disk order.
@@ -9567,15 +10974,38 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             progress.update(entry.size, 1)
             continue
         dst_dir = os.path.dirname(dst_path)
+        # One short exclusive open per LARGE file, closed at once: a file
+        # another process holds is the one whose copy fails at minute ten or
+        # lands inconsistent. Warn and go on, unless --strict-locks.
+        if entry.size >= SMALL_FILE_THRESHOLD:
+            _lock_state, _lock_detail = _source_lock_probe(entry.src)
+            if _lock_state == "locked":
+                _warn_locked_source(entry.rel, _lock_detail)
+                if _STRICT_LOCKS:
+                    print(f"    {C.RED}not copied (--strict-locks){C.RESET}")
+                    _log("error", entry.rel, entry.size,
+                         error=f"locked by another process ({_lock_detail}) "
+                               f"— not copied (--strict-locks)",
+                         source_read=False, destination="absent")
+                    progress.update(entry.size, 1)
+                    continue
         # Snapshot so the error path below can tell how many of THIS entry's
         # bytes were already counted mid-copy (byte loop or _copy_sparse).
         # Safe without the lock: only this thread updates progress here.
         bytes_before = progress.bytes_done
+        # What the engine is doing right now — operation, role, path — so the
+        # handler below can say WHICH call failed on WHICH file. The exception
+        # alone does not: a failed read()/write() on an open descriptor has no
+        # filename, and on Windows "[Errno 13] Permission denied" stands for
+        # access denied, a sharing or lock violation, a CRC or read fault and
+        # a device that is not ready alike.
+        step = ["mkdir", "dst-dir", dst_dir]
 
         try:
             os.makedirs(_long_path(dst_dir), exist_ok=True)
 
             if entry.size == 0:
+                step[:] = ["open", "dst", dst_path]
                 try:
                     fd = _safe_open_write_fd(dst_path, truncate=True)
                 except OSError as e:
@@ -9644,6 +11074,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
             # huge but actual allocated bytes are small.
             if (_HAS_SEEK_HOLE and entry.alloc_size is not None
                     and entry.alloc_size < entry.size):
+                step[:] = ["sparse copy", "src", entry.src]
                 ok = _copy_sparse(entry.src, dst_path, buf, progress,
                                   cancel_check)
                 if ok is None:
@@ -9663,6 +11094,7 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                 # over real data report "all files OK".
                 _SRC_DIGESTS.mark_sparse(entry.rel)
             else:
+                step[:] = ["open", "src", entry.src]
                 try:
                     src_fd_raw = _safe_open_read_fd(entry.src)
                 except OSError as e:
@@ -9676,10 +11108,12 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                     # systemic errno (EIO/EMFILE/…) stays untagged so it surfaces
                     # as a real failure (exit 1) instead of a silent skip.
                     print(f"\n  {C.RED}Error reading source {entry.src}: {e}{C.RESET}")
-                    _log("error", entry.rel, entry.size, error=str(e),
+                    _log("error", entry.rel, entry.size,
+                         error=f"open src {entry.src}: {e}",
                          source_read=_is_benign_source_read(e))
                     progress.update(entry.size, 1)
                     continue
+                step[:] = ["open", "dst", dst_path]
                 try:
                     dst_fd_raw = _safe_open_write_fd(dst_path, truncate=True)
                 except OSError as e:
@@ -9703,41 +11137,52 @@ def copy_individual(entries, dst_root, progress, buf, cancel_check=None,
                             except OSError:
                                 pass
                             return
+                        step[:] = ["read", "src", entry.src]
                         n = fin.readinto(buf)
                         if not n:
                             break
                         if _dig is not None:
                             _dig.update(mv[:n])
+                        step[:] = ["write", "dst", dst_path]
                         fout.write(mv[:n])
                         progress.update(n)
                         progress.display()
                     if _dig is not None:
                         _SRC_DIGESTS.put(entry.rel, _dig.hexdigest())
+                    # Flush here, not at the `with` exit: a tail shorter than
+                    # the writer's buffer is still in memory, and an error
+                    # raised while leaving the block would be attributed to
+                    # whatever step was set last.
+                    step[:] = ["flush", "dst", dst_path]
+                    fout.flush()
                     try:
                         st = os.fstat(fin.fileno())
                         _safe_apply_meta(dst_fd_keep, dst_path, st, src_path=entry.src)
                     except OSError:
                         pass
+                    step[:] = ["close", "dst", dst_path]
 
             _log("copied", entry.rel, entry.size, method="individual")
             progress.update(0, 1)
 
         except (OSError, IOError) as e:
-            print(f"\n  {C.RED}Error: {entry.rel}: {e}{C.RESET}")
-            # A permission/absent error on the SOURCE (e.g. the sparse path's
-            # source open) is a benign source-read → exit 3. A dest-write error or
-            # any systemic errno stays untagged → exit 1.
-            _log("error", entry.rel, entry.size, error=str(e),
-                 source_read=_benign_source_error(e, entry.src))
-            # Clean up partial file
-            try:
-                if os.path.exists(dst_path):
-                    os.remove(dst_path)
-            except OSError:
-                pass
+            # Describe FIRST — the Windows error hint is overwritten by the
+            # next failing CRT call on this thread.
+            already = progress.bytes_done - bytes_before
+            desc = _describe_copy_error(e, step, already, entry.size,
+                                        src=entry.src, dst=dst_path)
+            print(f"\n  {C.RED}Error: {entry.rel}: {desc}{C.RESET}")
+            # A permission/absent error on the SOURCE — its open, or a read
+            # that failed partway — is a benign source-read → exit 3. A
+            # destination-side error or any systemic errno stays untagged →
+            # exit 1.
+            src_side = ((step[1] == "src" and _is_benign_source_read(e))
+                        or _benign_source_error(e, entry.src))
+            left = _report_partial_dest(dst_path)
+            _log("error", entry.rel, entry.size, error=desc,
+                 source_read=src_side, destination=left)
             # Only the bytes NOT already counted mid-copy — otherwise a file
             # that failed partway is counted twice and the bar overshoots.
-            already = progress.bytes_done - bytes_before
             progress.update(max(0, entry.size - already), 1)
 
     progress.set_current(None)
@@ -10323,10 +11768,30 @@ def _exit_for_verify(status):
     # happened to land.
     if _RECORD_INCONSISTENT:
         sys.exit(1)
-    if status == "corrupt":
+    # 'incomplete' — files the copy did not deliver, nothing measured wrong —
+    # fails the run exactly as 'corrupt' does; the two differ in what the
+    # verifier can honestly claim, not in whether the run succeeded.
+    if status in ("corrupt", "incomplete"):
         sys.exit(1)
     if status == "source_skipped":
         sys.exit(EXIT_SOURCE_UNREADABLE)
+
+
+def _dest_state_for_report(dst_root, rel, exp_size):
+    """What is at the destination path of a file the copy did not deliver —
+    present with which size, or absent — against the source size. The
+    verifier prints this instead of calling an unhashed file corrupted."""
+    path, _why = _dest_policy(dst_root, rel)
+    if path is None:
+        return "destination path refused"
+    src_txt = f", source {fmt_size(exp_size)}" if exp_size is not None else ""
+    try:
+        st = os.lstat(_long_path(path))
+    except OSError:
+        return "destination absent" + src_txt
+    if not stat.S_ISREG(st.st_mode):
+        return "destination is not a regular file" + src_txt
+    return f"destination present ({fmt_size(st.st_size)})" + src_txt
 
 
 def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
@@ -10409,8 +11874,9 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
                 found[rel] = exp_size if exp_size is not None else 0
                 continue
             info = _COPY_ERRORS.get(rel)
+            tag = " (link)" if exp_size is None else ""
             if info is None:
-                reason, src = "missing — incomplete/corrupted", False
+                reason, src = "missing (no copy error was recorded)", False
             else:
                 # info is (message, is_source_read). ONLY an explicitly-tagged
                 # source-READ failure is benign (src=True → exit 3). A
@@ -10418,11 +11884,16 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
                 # text but is_source_read=False, so it stays a real copy failure
                 # (src=False → exit 1) instead of being silently downgraded.
                 err, src_read = info
+                err = err.splitlines()[0]
+                # No digest was computed for this file and nothing was
+                # compared — the copy stopped first. Say that, and say what
+                # IS at the destination path, instead of re-labelling the
+                # copy error as a verification finding.
+                tag += " — " + _dest_state_for_report(dst_root, rel, exp_size)
                 if src_read:
-                    reason, src = "permission denied (could not read source)", True
+                    reason, src = f"NOT VERIFIED (source could not be read: {err})", True
                 else:
-                    reason, src = f"could not copy ({err.splitlines()[0][:70]})", False
-            tag = " (link)" if exp_size is None else ""
+                    reason, src = f"NOT VERIFIED (copy failed: {err})", False
             missing.append((f"{rel}{tag}", reason, src))
         elif exp_size is not None and found[rel] != exp_size:
             if found[rel] > exp_size:
@@ -10603,17 +12074,45 @@ def verify_copy(entries, link_map, dst_root, threads=DEFAULT_THREADS):
                   f"source (permission denied / locked); everything else copied OK "
                   f"— exclude or unlock them and re-run.{C.RESET}")
             return "source_skipped"
-        print(f"  {C.RED}✗ Destination is INCOMPLETE or CORRUPTED.{C.RESET}")
-        return "corrupt"
+        if mismatches or content_bad or content_unreadable:
+            # Measured: a size or a digest was compared and disagreed, or the
+            # destination would not hand its bytes back.
+            print(f"  {C.RED}✗ Destination is INCOMPLETE or CORRUPTED.{C.RESET}")
+            return "corrupt"
+        # Nothing measured is wrong — files are absent. A copy that failed
+        # never produced a digest to compare, so "corrupted" would be a label
+        # on an unknown state. Say what is known: how many never arrived, and
+        # why, in the words the copy engine recorded.
+        n_src = sum(1 for _, _, s in missing if s)
+        n_failed = sum(1 for _, r, s in missing
+                       if not s and r.startswith("NOT VERIFIED"))
+        n_unexplained = len(missing) - n_src - n_failed
+        parts = []
+        if n_failed:
+            parts.append(f"{n_failed} file(s) failed during copy and were not "
+                         f"verified (no hash was computed for them)")
+        if n_src:
+            parts.append(f"{n_src} file(s) could not be read from the source")
+        if n_unexplained:
+            parts.append(f"{n_unexplained} file(s) missing with no recorded error")
+        print(f"  {C.RED}✗ Destination is INCOMPLETE: " + "; ".join(parts)
+              + f".{C.RESET}")
+        return "incomplete"
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SKIP IDENTICAL FILES (incremental mode)
 # ════════════════════════════════════════════════════════════════════════════
-def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
+def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS,
+                     dedup_db=None):
     """
     Compare source files against existing destination files.
     Skip files that already exist at destination with identical content.
+
+    `dedup_db`, when given, is the hash cache: the source hash this check
+    computes anyway is compared with the cached one for the same (path,
+    size, mtime), and a difference is reported as a possible media problem
+    (see _note_source_drift). No extra read.
 
     Strategy (fast to slow):
       1. If destination file doesn't exist → must copy
@@ -10683,6 +12182,14 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
     src_hashes = [None] * len(need_hash)
     dst_hashes = [None] * len(need_hash)
 
+    _cache = None
+    if dedup_db is not None:
+        try:
+            _cache = dedup_db.preload_source_cache()
+        except Exception:                                   # noqa: BLE001
+            _cache = None
+    drifted = set()
+
     def hash_pair(idx):
         entry = need_hash[idx]
         dst_path, _why = _dest_policy(dst_root, entry.rel)
@@ -10690,6 +12197,19 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
             return None
         src_hashes[idx] = hash_file(entry.src)
         dst_hashes[idx] = hash_file(dst_path)
+        if dedup_db is not None and src_hashes[idx] is not None:
+            try:
+                mt = os.stat(entry.src).st_mtime_ns
+            except OSError:
+                mt = 0
+            if mt:
+                cached = (_cache.get((entry.src, entry.size, mt)) if _cache is not None
+                          else dedup_db.lookup(entry.src, entry.size, mt))
+                if cached is not None and cached != src_hashes[idx]:
+                    with lock:
+                        _note_source_drift(dedup_db, entry.src, entry.size, mt,
+                                           src_hashes[idx], entry.rel, cached)
+                        drifted.add(entry.rel)
 
     done_count = [0]
     lock = threading.Lock()
@@ -10706,6 +12226,17 @@ def filter_unchanged(entries, link_map, dst_root, threads=DEFAULT_THREADS):
 
     # Compare hashes
     for i, entry in enumerate(need_hash):
+        if entry.rel in drifted and _STRICT_INTEGRITY:
+            # Stays in the copy list so the summary and the verifier account
+            # for it; the engine is handed the list without it.
+            print(f"    {C.RED}not copied (--strict-integrity){C.RESET}")
+            _log("error", entry.rel, entry.size,
+                 error="source content drift with unchanged size and mtime "
+                       "— not copied (--strict-integrity)",
+                 source_read=False, destination="absent")
+            _PREFLIGHT["skip_rels"].add(entry.rel)
+            need_copy.append(entry)
+            continue
         if (src_hashes[i] is not None and dst_hashes[i] is not None
                 and src_hashes[i] == dst_hashes[i]):
             _log("skipped", entry.rel, entry.size, reason="unchanged")
@@ -11051,6 +12582,12 @@ class _ProgressTarExtractor:
         # for.
         self._ctx = _ExtractCtx(dst_root)
 
+    def close(self):
+        """Release the context's directory fds. The batch streamer calls this
+        from its finally; leaking 128 fds per batch would exhaust a 1024-fd
+        process on the eighth batch."""
+        self._ctx.close()
+
     # Maximum bytes to extract from a single tar member (50 GB safety limit)
     MAX_MEMBER_SIZE = 50 * 1024 * 1024 * 1024
 
@@ -11338,6 +12875,7 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
     os.makedirs(_long_path(dst_root), exist_ok=True)
     reader = channel.makefile("rb")
     extracted = 0
+    extractor = None
     try:
         with tarfile.open(fileobj=reader, mode="r|") as tar:
             # Allowlist uses original names (as they arrive from remote tar)
@@ -11384,6 +12922,8 @@ def _stream_tar_batch_from_remote(batch, ssh, src_root, dst_root, progress,
     except (OSError, tarfile.TarError) as e:
         print(f"\n  {C.RED}Tar extraction failed: {e}{C.RESET}")
     finally:
+        if extractor is not None:
+            extractor.close()
         reader.close()
 
     sender.settle()
@@ -13063,13 +14603,15 @@ def resolve_named_endpoint(token, conns):
     if ctype == "smb":
         if not conn.get("host"):
             raise SystemExit(f"Error: SMB connection {name!r} has no host.")
-        share = conn.get("share")
-        if share and sub:
-            loc = f"{share}/{sub.strip('/')}"
+        # A share saved as "refs/" (or "/refs") joined as "refs//sub".
+        share = (conn.get("share") or "").strip("/\\")
+        sub_s = (sub or "").strip("/")
+        if share and sub_s:
+            loc = f"{share}/{sub_s}"
         elif share:
             loc = share
-        elif sub:
-            loc = sub                     # name:share/path when no default share
+        elif sub_s:
+            loc = sub_s                   # name:share/path when no default share
         else:
             raise SystemExit(
                 f"Error: SMB connection {name!r} has no default share. Use "
@@ -13084,9 +14626,85 @@ def resolve_named_endpoint(token, conns):
     return None, None
 
 
+def _conns_for_hint(args):
+    """Saved connections for a did-you-mean hint — never prompts. An encrypted
+    file with no passphrase at hand, or one that will not load, gives none."""
+    path = getattr(args, "credentials_file", None) or default_credentials_path()
+    if not os.path.isfile(path):
+        return {}
+    if _file_is_encrypted(path) and not _have_creds_passphrase():
+        return {}
+    try:
+        return load_credentials_file(path) or {}
+    except (SystemExit, Exception):
+        return {}
+
+
+def _saved_name_hint(token, args, is_source):
+    """The error for an endpoint that is a saved connection's name used the
+    wrong way, or a near miss of one; None when it is not. Two shapes:
+      • user@<name>:path or <name>:path whose host does not resolve, where
+        <name> is a saved connection or close to one (difflib). Only after
+        DNS has failed — a real host that happens to look like a saved name
+        keeps working;
+      • a bare source name that is no local path and close to a saved name.
+    It suggests, it never substitutes: the user re-types the endpoint."""
+    if not token or parse_object_url(token):
+        return None
+    spec = parse_remote_path(token)
+    if spec is None:
+        if (not is_source or os.path.exists(token)
+                or any(c in token for c in ":/\\")):
+            return None
+        host, path = token, None
+    else:
+        host, path = spec.host, spec.path
+        import socket
+        try:
+            socket.getaddrinfo(host, None)
+            return None
+        except socket.gaierror:
+            pass
+        except OSError:
+            return None
+    import difflib
+    conns = _conns_for_hint(args)
+    by_lower = {n.lower(): n for n, c in conns.items() if isinstance(c, dict)}
+    match = by_lower.get(host.lower())
+    if not match:
+        near = difflib.get_close_matches(host.lower(), list(by_lower), n=1,
+                                         cutoff=0.8)
+        match = by_lower[near[0]] if near else None
+    if not match:
+        return None
+    if path is None:
+        return (f"Error: source {token!r} is neither a local path nor a saved "
+                f"connection. Did you mean {match}?")
+    if match == host:
+        return (f"Error: {host!r} is the name of a saved connection, not a "
+                f"host name — in user@host:path the host is looked up in DNS. "
+                f"Did you mean {match}:{path}?")
+    return (f"Error: cannot resolve SSH host {host!r}, and no saved connection "
+            f"has that name. Did you mean {match}:{path}?")
+
+
 def apply_named_endpoints(args):
     """Rewrite args.source/args.destination when they name a saved connection,
-    routing any SSH credentials from the profile into the existing arg fields."""
+    routing any SSH credentials from the profile into the existing arg fields.
+    An endpoint left as it was gets one more look: a saved connection's name
+    used as an SSH host, or a near miss of one, stops here with a hint instead
+    of going on to a DNS error."""
+    before = (args.source, args.destination)
+    _apply_named_endpoints(args)
+    for was, now, is_source in ((before[0], args.source, True),
+                                (before[1], args.destination, False)):
+        if now == was:
+            hint = _saved_name_hint(now, args, is_source)
+            if hint:
+                raise SystemExit(hint)
+
+
+def _apply_named_endpoints(args):
     # Only touch the credentials file when an endpoint actually looks like a
     # profile name — keeps plain local/SSH copies prompt-free.
     if not (_looks_like_profile_ref(args.source)
@@ -13936,7 +15554,16 @@ def load_credentials_file(path=None):
     if hasattr(os, "geteuid"):
         try:
             mode = stat.S_IMODE(os.stat(path).st_mode)
-            if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            if mode & (stat.S_IRWXG | stat.S_IRWXO) and _drvfs_without_metadata(path):
+                # chmod is a no-op there: every file reads 0o777.
+                print(f"  {C.YELLOW}Warning: {path} is on a Windows drive "
+                      f"mounted into WSL without the 'metadata' option, so it "
+                      f"is group/world-accessible (mode {oct(mode)}) and chmod "
+                      f"cannot change that. Fix: move it to a WSL-native path "
+                      f"(e.g. ~/.config/blitcp/credentials.json, or point "
+                      f"BLITCP_CREDENTIALS at one), or remount the drive with "
+                      f"the 'metadata' option.{C.RESET}")
+            elif mode & (stat.S_IRWXG | stat.S_IRWXO):
                 print(f"  {C.YELLOW}Warning: {path} is group/world-accessible "
                       f"(mode {oct(mode)}). Fix: chmod 600 {path}{C.RESET}")
         except OSError:
@@ -14182,6 +15809,24 @@ class CloudBackend:
         """Return {full_key: {'size': int}} for every object under prefix."""
         raise NotImplementedError
 
+    def list_dir(self, prefix, limit=None, cancelled=None):
+        """One level under prefix, for a file browser — never the whole tree.
+        Returns (dirs, files, total): dirs = [name], files = [(name, size)],
+        at most `limit` of them together, total = every entry of the level.
+        `cancelled()` returning True stops the listing early."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _level_add(acc, name, size, limit):
+        """list_dir bookkeeping: keep the first `limit` entries, count all.
+        size None = a directory."""
+        if name and (limit is None or len(acc[0]) + len(acc[1]) < limit):
+            if size is None:
+                acc[0].append(name)
+            else:
+                acc[1].append((name, size))
+        acc[2] += bool(name)
+
     def head(self, key):
         """Return metadata dict for key, or None if it does not exist."""
         raise NotImplementedError
@@ -14271,6 +15916,20 @@ class S3Backend(CloudBackend):
                                    "etag": (obj.get("ETag") or "").strip('"')}
         return out
 
+    def list_dir(self, prefix, limit=None, cancelled=None):
+        acc = [[], [], 0]
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.container, Prefix=prefix or "",
+                                       Delimiter="/"):
+            for cp in page.get("CommonPrefixes", []):
+                self._level_add(acc, cp["Prefix"][len(prefix):].rstrip("/"),
+                                None, limit)
+            for obj in page.get("Contents", []):
+                self._level_add(acc, obj["Key"][len(prefix):], obj["Size"], limit)
+            if cancelled and cancelled():
+                break
+        return tuple(acc)
+
     def head(self, key):
         try:
             r = self.client.head_object(Bucket=self.container, Key=key)
@@ -14349,6 +16008,20 @@ class AzureBackend(CloudBackend):
         for b in self.cc.list_blobs(name_starts_with=prefix or ""):
             out[b.name] = {"size": b.size}
         return out
+
+    def list_dir(self, prefix, limit=None, cancelled=None):
+        from azure.storage.blob import BlobPrefix
+        acc = [[], [], 0]
+        for i, b in enumerate(self.cc.walk_blobs(name_starts_with=prefix or "",
+                                                 delimiter="/")):
+            name = b.name[len(prefix):]
+            if isinstance(b, BlobPrefix):
+                self._level_add(acc, name.rstrip("/"), None, limit)
+            else:
+                self._level_add(acc, name, b.size or 0, limit)
+            if cancelled and i % 1000 == 999 and cancelled():
+                break
+        return tuple(acc)
 
     def head(self, key):
         try:
@@ -14434,6 +16107,20 @@ class GCSBackend(CloudBackend):
         for b in self.client.list_blobs(self.container, prefix=prefix or ""):
             out[b.name] = {"size": b.size or 0}
         return out
+
+    def list_dir(self, prefix, limit=None, cancelled=None):
+        acc = [[], [], 0]
+        it = self.client.list_blobs(self.container, prefix=prefix or "",
+                                    delimiter="/")
+        for page in it.pages:
+            # page.prefixes: the "subdirectories" this page reported
+            for p in sorted(getattr(page, "prefixes", ()) or ()):
+                self._level_add(acc, p[len(prefix):].rstrip("/"), None, limit)
+            for b in page:
+                self._level_add(acc, b.name[len(prefix):], b.size or 0, limit)
+            if cancelled and cancelled():
+                break
+        return tuple(acc)
 
     def head(self, key):
         b = self.bucket.get_blob(key)
@@ -14559,6 +16246,10 @@ class SMBBackend(CloudBackend):
         self._ck = dict(
             username=(f"{domain}\\{user}" if (domain and user) else user),
             password=password, port=self.port, encrypt=encrypt)
+        # A caller that must not wait smbclient's default 60 s for a host
+        # that never answers (the GUI's browser) sets smb_connect_timeout.
+        if getattr(args, "smb_connect_timeout", None):
+            self._ck["connection_timeout"] = args.smb_connect_timeout
         # The transfer drivers call upload/download/server_side_copy from a
         # thread pool, but concurrent operations on an SMB session corrupted
         # small files in testing (a parallel write/copy could land 0 bytes). SMB
@@ -14632,6 +16323,32 @@ class SMBBackend(CloudBackend):
             except self._smbexc.SMBOSError:
                 return out
         return out
+
+    def list_dir(self, prefix, limit=None, cancelled=None):
+        # One scandir of one directory: names, kinds and sizes all come from
+        # the directory-query response itself (smb_info), so there is no
+        # per-entry stat, and nothing below this level is touched.
+        acc = [[], [], 0]
+        with self._lock:
+            for i, e in enumerate(self._sc.scandir(self._unc(prefix), **self._ck)):
+                if e.name in (".", ".."):
+                    continue
+                if e.smb_info.file_attributes & 0x10:       # DIRECTORY
+                    self._level_add(acc, e.name, None, limit)
+                else:
+                    self._level_add(acc, e.name, e.smb_info.end_of_file, limit)
+                if cancelled and i % 1000 == 999 and cancelled():
+                    break
+        return tuple(acc)
+
+    def close(self):
+        """Drop this host's pooled SMB connection (the GUI's browser, on a
+        connection switch or exit). The transfer drivers never call it."""
+        with self._lock:
+            try:
+                self._sc.delete_session(self.host, port=self.port)
+            except Exception:
+                pass
 
     def head(self, key):
         with self._lock:
@@ -14791,6 +16508,23 @@ class SMBBackend(CloudBackend):
                 self._sc.utime(self._unc(key), (mtime, mtime), **self._ck)
             except Exception:
                 pass
+
+
+def _spec_location(spec, backend=None):
+    """scheme://container/prefix for a banner; SMB names its host (and a
+    non-default port) — smb://share/path alone reads as if the share were the
+    host. The backend's host/port are the resolved ones (saved connection,
+    --smb-port), so they win over the spec's."""
+    where = f"{spec.container}/{spec.prefix or ''}"
+    if spec.scheme == "smb":
+        host = getattr(backend, "host", None) or getattr(spec, "host", None) or ""
+        port = getattr(backend, "port", None) or getattr(spec, "port", None)
+        if ":" in host:
+            host = f"[{host}]"
+        if port and int(port) != 445:
+            host += f":{port}"
+        where = f"{host}/{where}"
+    return f"{spec.scheme}://{where}"
 
 
 def make_backend(spec, args):
@@ -16905,8 +18639,8 @@ def _upload_to_cloud(args, dst_spec):
     pretty = CLOUD_SCHEME_NAMES[dst_spec.scheme]
     banner(f"UPLOAD → {pretty}")
     print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{args.source}{C.RESET}")
-    print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{dst_spec.scheme}://{dst_spec.container}/"
-          f"{dst_spec.prefix}{C.RESET}")
+    print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{_spec_location(dst_spec, backend)}"
+          f"{C.RESET}")
 
     src = os.path.abspath(args.source)
     if not os.path.exists(src):
@@ -17226,8 +18960,8 @@ def _download_from_cloud(args, src_spec):
     backend = make_backend(src_spec, args)
     pretty = CLOUD_SCHEME_NAMES[src_spec.scheme]
     banner(f"DOWNLOAD ← {pretty}")
-    print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{src_spec.scheme}://{src_spec.container}/"
-          f"{src_spec.prefix}{C.RESET}")
+    print(f"  {_pad(_tr('Source:'), 11)}{C.BOLD}{_spec_location(src_spec, backend)}"
+          f"{C.RESET}")
     print(f"  {_pad(_tr('Dest:'), 11)}{C.BOLD}{args.destination}{C.RESET}")
 
     objects = backend.list_objects(src_spec.prefix)
@@ -18053,10 +19787,7 @@ def cloud_ls(argv):
         return 1
     # Hide blitcp's own manifest sidecar from the listing.
     keys = sorted(k for k in objs if not k.endswith((REMOTE_MANIFEST_NAME, LEGACY_REMOTE_MANIFEST_NAME)))
-    if spec.scheme == "smb":
-        where = f"smb://{getattr(spec, 'host', '')}/{spec.container}/{spec.prefix or ''}"
-    else:
-        where = f"{spec.scheme}://{spec.container}/{spec.prefix or ''}"
+    where = _spec_location(spec, backend)
     if not keys:
         print(f"  No objects in {where}")
         return 0
@@ -18248,7 +19979,7 @@ def _phase_emit(phase, done, total, bytes_done=None, bytes_total=None):
     bytes so the bar tracks real work — a few multi-GB files no longer sit at a
     frozen 0% just because the file COUNT barely moved. The N/total file count is
     still reported for the header label."""
-    now = time.time()
+    now = time.perf_counter()
     t0 = _PHASE_T0.setdefault(phase, now)
     el = now - t0
     rate = done / el if el > 0 else 0.0
@@ -18345,9 +20076,16 @@ def _tar_extract_stream(reader, dst):
     member was refused. That is the same defect as reporting "verified" for a
     check that did not run, rebuilt inside the fix for it.
     """
+    ctx = _ExtractCtx(dst)
+    try:
+        return _tar_extract_stream_inner(reader, dst, ctx)
+    finally:
+        ctx.close()
+
+
+def _tar_extract_stream_inner(reader, dst, ctx):
     done = 0
     errors = 0
-    ctx = _ExtractCtx(dst)
     with tarfile.open(fileobj=reader, mode="r|") as tf:
         for m in tf:
             result = _safe_tar_extract(tf, m, dst, trusted_source=False, ctx=ctx)
@@ -18651,7 +20389,8 @@ def _ssh_tar_send(cli, cwd, rels):
 
 _SummaryTotals = namedtuple(
     "_SummaryTotals",
-    "copied linked refused bytes_written bytes_refused bytes_deduped")
+    "copied linked refused bytes_written bytes_refused bytes_deduped "
+    "failed bytes_failed")
 
 
 def _refused_rel_size(rel, size_by_rel, link_map):
@@ -18694,16 +20433,22 @@ def _print_files_summary(total_files, copy_entries, link_map,
     THREE SELF-CHECKS, because numbers printed on the same screen are not
     compared by anyone:
 
-      copied + linked + refused + skipped == total
+      copied + linked + refused + failed + skipped == total
           Every file in the run is in exactly one of those buckets. If the
           arithmetic does not close, the summary says so instead of printing
-          a total it cannot justify.
+          a total it cannot justify. `failed` is a file the engine attempted
+          and broke on — a copy error, a source that would not read, a link
+          that could not be made. It used to be counted as copied, which is
+          how a run whose only large file failed and was removed printed
+          "140 GB written" over an empty destination.
 
-      written + refused + skipped + deduped == total bytes
+      written + refused + failed + skipped + deduped == total bytes
           The same closure over bytes, for the same reason: "Data: 17 B
           written" for a run that wrote 4 B is the file-count bug in another
-          unit. Pass byte_totals=(total, saved, skipped) to enable it;
-          it is skipped, not guessed, when a refused file's size is unknown.
+          unit. A failed file's bytes are not written bytes: the engine
+          removed what it had written. Pass byte_totals=(total, saved,
+          skipped) to enable it; it is skipped, not guessed, when a refused
+          file's size is unknown.
 
       forecast == refused
           Phase 3 predicts how many files the destination policy will refuse;
@@ -18713,56 +20458,71 @@ def _print_files_summary(total_files, copy_entries, link_map,
           notice. Pass forecast=None where no prediction was made.
     """
     refused = set(_REFUSED_PATHS)
+    # _COPY_ERRORS holds the refusals too (the verifier reads it to explain a
+    # missing file), so they come out first or every refusal is counted twice
+    # under two words.
+    failed = set(_COPY_ERRORS) - refused
     size_by_rel = {e.rel: e.size for e in copy_entries}
-    copied = linked = 0
-    bytes_written = bytes_refused_copies = 0
+    copied = linked = n_failed = 0
+    bytes_written = bytes_refused_copies = bytes_failed = 0
     for e in copy_entries:
         if e.rel in refused:
             bytes_refused_copies += e.size
+        elif e.rel in failed:
+            n_failed += 1
+            bytes_failed += e.size
         else:
             copied += 1
             bytes_written += e.size
-    bytes_refused_links = 0
+    bytes_refused_links = bytes_failed_links = 0
     unknown_size = False
     for rel in (link_map or {}):
-        if rel not in refused:
+        if rel not in refused and rel not in failed:
             linked += 1
             continue
         sz = _refused_rel_size(rel, size_by_rel, link_map)
         if sz is None:
             unknown_size = True
-        else:
+        elif rel in refused:
             bytes_refused_links += sz
+        else:
+            bytes_failed_links += sz
+        if rel in failed:
+            n_failed += 1
     n_refused = len(refused)
 
     bits = []
-    if link_map or n_refused:
+    if link_map or n_refused or n_failed:
         bits.append(f"{copied} copied + {linked} linked")
     if n_refused:
         bits.append(_tr("{n} refused").format(n=n_refused))
+    if n_failed:
+        bits.append(f"{n_failed} failed")
     print(f"  Files:   {C.BOLD}{total_files}{C.RESET} total"
           + (f" ({', '.join(bits)})" if bits else ""))
 
-    if copied + linked + n_refused + skipped_count != total_files:
+    if copied + linked + n_refused + n_failed + skipped_count != total_files:
         print(f"  {C.YELLOW}Note:    these numbers do not add up: "
               f"{copied} copied + {linked} linked + {n_refused} refused + "
-              f"{skipped_count} skipped = "
-              f"{copied + linked + n_refused + skipped_count}, "
+              f"{n_failed} failed + {skipped_count} skipped = "
+              f"{copied + linked + n_refused + n_failed + skipped_count}, "
               f"not {total_files}. One of them is wrong — treat the run as "
               f"unreported, not as done.{C.RESET}")
 
     bytes_refused = bytes_refused_copies + bytes_refused_links
+    bytes_failed += bytes_failed_links
     bytes_deduped = 0
     if byte_totals is not None:
         total_bytes, saved_bytes, skipped_bytes = byte_totals
-        bytes_deduped = saved_bytes - bytes_refused_links
+        bytes_deduped = saved_bytes - bytes_refused_links - bytes_failed_links
         if not unknown_size:
-            closed = (bytes_written + bytes_refused + bytes_deduped
-                      + skipped_bytes)
+            closed = (bytes_written + bytes_refused + bytes_failed
+                      + bytes_deduped + skipped_bytes)
             if closed != total_bytes:
                 print(f"  {C.YELLOW}Note:    the bytes do not add up: "
                       f"{fmt_size(bytes_written)} written + "
                       f"{fmt_size(bytes_refused)} refused + "
+                      f"{fmt_size(bytes_failed)} failed + "
                       f"{fmt_size(bytes_deduped)} deduped + "
                       f"{fmt_size(skipped_bytes)} skipped = "
                       f"{fmt_size(closed)}, not {fmt_size(total_bytes)}. "
@@ -18775,7 +20535,26 @@ def _print_files_summary(total_files, copy_entries, link_map,
               f"The prediction and the result disagree; one of them is "
               f"wrong.{C.RESET}")
     return _SummaryTotals(copied, linked, n_refused,
-                          bytes_written, bytes_refused, bytes_deduped)
+                          bytes_written, bytes_refused, bytes_deduped,
+                          n_failed, bytes_failed)
+
+
+# Below this average copied-file size the byte rate stops describing the
+# run: its cost is per-file operations, so the Speed line adds files/s.
+_SMALL_FILES_AVG = 64 * 1024
+
+
+def _print_speed_line(speed, elapsed, nbytes, copied, linked=0):
+    """The DONE summary's Speed line — the one writer every flow uses.
+
+    `copied` is None when the flow does not know its file count; the line is
+    then a byte rate only. files/s counts copied + linked files, because
+    `elapsed` covers creating the links too."""
+    line = f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}"
+    if copied and elapsed > 0 and nbytes / copied < _SMALL_FILES_AVG:
+        rate = (copied + (linked or 0)) / elapsed
+        line += f"  {C.DIM}({rate:.1f} files/s){C.RESET}"
+    print(line)
 
 
 def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
@@ -18832,7 +20611,7 @@ def _ssh_done_summary(source, dest, total_files, nbytes, elapsed, verb,
     sv = "  (" + _tr("{size} saved by dedup").format(size=fmt_size(saved)) + ")" if saved else ""
     print(f"  {_pad(_tr('Data:'), 11)}{C.BOLD}{fmt_size(nbytes)}{C.RESET} {verb}{sv}")
     print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
-    print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    _print_speed_line(speed, elapsed, nbytes, copied, linked)
     if verified is not None:
         print(f"  {_pad(_tr('Verify:'), 11)}{C.GREEN}✓ {_tr('passed')}{C.RESET}" if verified
               else f"  {_pad(_tr('Verify:'), 11)}{C.RED}✗ {_tr('FAILED')}{C.RESET}")
@@ -19399,6 +21178,8 @@ def _ssh_push_smart(dst_remote, dst, local_srcs, args, start):
               start, final=True)
     src_disp = (os.path.abspath(local_srcs[0]) if local_srcs and len(local_srcs) == 1
                 else f"{len(local_srcs or [])} sources")
+    # Stop the clock only once the data is durable — see _flush_remote_destination.
+    _flush_remote_destination(lambda c: _ssh_run(dcli, c), dst)
     _elapsed = time.time() - start
     _refused_now = set(_REFUSED_PATHS)
     _failed = set(_failed_adds)
@@ -19737,6 +21518,8 @@ def _ssh_pull_smart(src_remote, dst, args, start):
     # names are NOT in here — they are in _REFUSED_PATHS, which the summary
     # reads directly — so the two cannot double-count the same file.
     _undelivered = max(0, len(rels) - delivered - rejected)
+    # Stop the clock only once the data is durable — see _flush_destination.
+    _flush_destination(dst)
     _elapsed = time.time() - start
     _ssh_done_summary(
         f"{src_remote.user}@{src_remote.host}:{rpath}", os.path.abspath(dst),
@@ -19987,6 +21770,8 @@ def _ssh_r2r_smart(src_remote, dst_remote, dst, args, start):
 
     _tar_emit(total, total, len(send_rels) + len(send_links), len(src_files),
               start, final=True)
+    # Stop the clock only once the data is durable — see _flush_remote_destination.
+    _flush_remote_destination(lambda c: _ssh_run(dcli, c), dst)
     _elapsed = time.time() - start
     _refused_now = set(_REFUSED_PATHS)
     _sz = lambda r: src_files.get(r, (0, 0))[0]
@@ -20061,6 +21846,8 @@ def main():
     # string, and a second run against a recreated path must resolve it again.
     _reset_refused_paths()
     _REAL_ROOT_CACHE.clear()
+    _reset_map_failures()
+    _reset_preflight()
     parser = argparse.ArgumentParser(
         prog="blitcp",
         description=_tr("Block-order fast copy with dedup — reads files in physical "
@@ -20170,6 +21957,17 @@ def main():
                         help=_tr("node_modules is excluded by default from BOTH the copy and --index-existing (huge, regenerable, and full of tiny identical files). Pass this to include it."))
     copy_grp.add_argument("--no-cache", action="store_true",
                         help=_tr("Disable persistent hash cache (cross-run dedup database)"))
+    copy_grp.add_argument("--strict-integrity", action="store_true",
+                        dest="strict_integrity",
+                        help="Fail the run when a source file's content differs "
+                             "from the hash cache while its size and mtime did "
+                             "not (possible media corruption). The file is not "
+                             "kept at the destination. Default: warn and copy.")
+    copy_grp.add_argument("--strict-locks", action="store_true",
+                        dest="strict_locks",
+                        help="Fail the run when a large source file is open or "
+                             "locked by another process; the file is not copied. "
+                             "Default: warn and copy.")
     copy_grp.add_argument("--dedup-existing", action="store_true",
                         dest="dedup_existing", default=False,
                         help=_tr("While hashing the drive under --index-existing, reclaim space from files ALREADY on the drive that share content: reflink duplicates together via FIDEDUPERANGE (kernel-verified, CoW). Separate from copy-time dedup. Linux/btrfs/XFS only."))
@@ -20392,6 +22190,8 @@ def main():
         parser.error(str(e))
     _set_preserve_spec(spec)
     _set_trust_remote_modes(getattr(args, "trust_remote_modes", False))
+    _set_strict_flags(getattr(args, "strict_integrity", False),
+                      getattr(args, "strict_locks", False))
 
     src_arg = args.source
     buf_size = args.buffer * 1024 * 1024
@@ -20556,7 +22356,16 @@ def main():
     else:
         print(f"  Destination: {C.BOLD}{dst}{C.RESET}")
         _stype = _classify_storage(dst)
-        if _stype != "unknown":
+        if _stype == "network" and _dest_wsl_drvfs(dst):
+            # Not just any network mount: every file operation crosses
+            # drvfs/9p into Windows. Say so, and name the escapes.
+            print(f"               {C.DIM}disk: Windows drive via WSL "
+                  f"(drvfs — slow for many small files){C.RESET}")
+            print(f"               {C.YELLOW}"
+                  + _tr("hint: a WSL-native destination (e.g. ~/…) or the "
+                        "native Windows build is many times faster here")
+                  + C.RESET)
+        elif _stype != "unknown":
             _slabel = {"hdd": "HDD (rotating)", "ssd": "SSD / flash",
                        "network": "network (SMB / NFS / SSHFS)",
                        "other": "memory / other"}.get(_stype, _stype)
@@ -20951,6 +22760,11 @@ def main():
                 dedup_inplace=getattr(args, 'dedup_existing', False),
                 dry_run=getattr(args, 'dry_run', False),
                 selective=not dst_remote)
+    else:
+        # The phase keeps its number when it does nothing, so the ones after
+        # it do not shift or leave a gap.
+        banner("Phase 2 — Deduplication")
+        print(f"  {C.DIM}skipped (--no-dedup){C.RESET}")
 
     # SFTP-only destination: links need a shell on the server, so duplicates
     # can't be materialized as links — put them back and upload them in full.
@@ -21123,8 +22937,10 @@ def main():
                 dst_ssh.close()
                 sys.exit(0)
 
-            # ── Phase 5: Remote-to-remote copy ───────────────────────
-            banner("Phase 5 — Remote-to-remote copy (relay)")
+            # ── Phase 4: Remote-to-remote copy ───────────────────────
+            # 4, not 5: the local flow's Phase 4 maps the SOURCE's disk
+            # layout, and a relay has no local source to map.
+            banner("Phase 4 — Remote-to-remote copy")
 
             # Check if buffer fits in available RAM
             try:
@@ -21199,7 +23015,7 @@ def main():
                         dst_ssh.close()
                         sys.exit(1)
 
-            t0 = time.time()
+            t0 = time.perf_counter()
             # A refused destination is not created, not written into, and gets
             # no manifest: the mkdir, the sidecar and the verify pass would
             # each go through the symlink that was just refused.
@@ -21260,7 +23076,10 @@ def main():
             if link_map:
                 create_links_remote(dst_ssh, link_map, dst)
 
-            elapsed = time.time() - t0
+            # Stop the clock only once the data is durable — see _flush_remote_destination.
+            _flush_remote_destination(
+                lambda c: dst_ssh.exec_cmd(c, timeout=1800), dst)
+            elapsed = time.perf_counter() - t0
             speed = (unique_size / elapsed
                      if (elapsed > 0 and not _dst_escape) else 0)
 
@@ -21285,6 +23104,7 @@ def main():
                 skipped_count=skipped_count,
                 forecast=sum(e["count"] for e in _dst_found),
                 byte_totals=(total_size, saved_bytes, skipped_bytes))
+            speed = _totals.bytes_written / elapsed if elapsed > 0 else 0
             if _REFUSED_PATHS:
                 _n = len(_REFUSED_PATHS)
                 print("  " + C.RED
@@ -21301,7 +23121,7 @@ def main():
             print(f"  Data:    {C.BOLD}{fmt_size(_totals.bytes_written)}{C.RESET} relayed"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
-            print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_speed_line(speed, elapsed, _totals.bytes_written, _totals.copied, _totals.linked)
             _print_preserve_summary()
             _record = {
                 "source": f"{src_remote.user}@{src_remote.host}:{src}",
@@ -21433,12 +23253,14 @@ def main():
                 src_ssh.close()
                 sys.exit(0)
 
-            # ── Phase 5: Download from remote ────────────────────────
-            banner("Phase 5 — Remote-to-local copy")
+            # ── Phase 4: Download from remote ────────────────────────
+            # 4, not 5: the local flow's Phase 4 maps the SOURCE's disk
+            # layout, and a pull has no local source to map.
+            banner("Phase 4 — Remote-to-local copy")
             os.makedirs(dst, exist_ok=True)
 
             progress = Progress(unique_size, len(copy_entries))
-            t0 = time.time()
+            t0 = time.perf_counter()
             copy_hybrid_remote_to_local(copy_entries, src_ssh, src, dst, progress, buf_size,
                                         case_renames=case_renames)
             progress.finish()
@@ -21500,7 +23322,9 @@ def main():
                     _dirmeta = _remote_collect_dir_metadata(src_ssh, src, rel_dirs)
                     _apply_remote_dir_metadata_local(_dirmeta, dst)
 
-            elapsed = time.time() - t0
+            # Stop the clock only once the data is durable — see _flush_destination.
+            _flush_destination(dst)
+            elapsed = time.perf_counter() - t0
             speed = unique_size / elapsed if elapsed > 0 else 0
 
             # Verify (defer the exit until after summary + --log write)
@@ -21521,6 +23345,7 @@ def main():
                 total_files, copy_entries, link_map,
                 skipped_count=skipped_count,
                 byte_totals=(total_size, saved_bytes, skipped_bytes))
+            speed = _totals.bytes_written / elapsed if elapsed > 0 else 0
             if _REFUSED_PATHS:
                 _n = len(_REFUSED_PATHS)
                 print("  " + C.RED
@@ -21537,7 +23362,7 @@ def main():
             print(f"  Data:    {C.BOLD}{fmt_size(_totals.bytes_written)}{C.RESET} downloaded"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
-            print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_speed_line(speed, elapsed, _totals.bytes_written, _totals.copied, _totals.linked)
             _print_preserve_summary()
             _record = {
                 "source": f"{src_remote.user}@{src_remote.host}:{src}",
@@ -21721,7 +23546,7 @@ def main():
 
             # ── Phase 5: Remote copy ─────────────────────────────────
             banner("Phase 5 — Remote copy")
-            t0 = time.time()
+            t0 = time.perf_counter()
             # A refused destination is not copied into and is not CREATED
             # either: the mkdir, the manifest sidecar and the verify pass all
             # write, and every one of them would write through the symlink
@@ -21731,7 +23556,7 @@ def main():
                 print(f"  {C.RED}"
                       + _tr("Nothing was written: the destination path leads "
                             "outside itself.") + f"{C.RESET}")
-                elapsed = time.time() - t0
+                elapsed = time.perf_counter() - t0
                 speed = 0
             else:
                 if ssh.sftp_only:
@@ -21772,7 +23597,10 @@ def main():
                 if link_map:
                     create_links_remote(ssh, link_map, dst)
 
-                elapsed = time.time() - t0
+                # Stop the clock only once the data is durable — see _flush_remote_destination.
+                _flush_remote_destination(
+                    lambda c: ssh.exec_cmd(c, timeout=1800), dst)
+                elapsed = time.perf_counter() - t0
                 speed = unique_size / elapsed if elapsed > 0 else 0
 
                 # ── Save manifest on remote ──────────────────────────
@@ -21794,6 +23622,7 @@ def main():
                 skipped_count=skipped_count,
                 forecast=sum(e["count"] for e in _dst_found),
                 byte_totals=(total_size, saved_bytes, skipped_bytes))
+            speed = _totals.bytes_written / elapsed if elapsed > 0 else 0
             if _REFUSED_PATHS:
                 _n = len(_REFUSED_PATHS)
                 print("  " + C.RED
@@ -21818,10 +23647,10 @@ def main():
                 print(f"  {C.RED}Failed:  {C.BOLD}{_failed_files}{C.RESET}"
                       f"{C.RED} file{'' if _failed_files == 1 else 's'} did not "
                       f"reach the destination{C.RESET}")
-            print(f"  Data:    {C.BOLD}{fmt_size(unique_size)}{C.RESET} sent"
+            print(f"  Data:    {C.BOLD}{fmt_size(_totals.bytes_written)}{C.RESET} sent"
                   + (f" ({fmt_size(saved_bytes)} saved by dedup)" if saved_bytes > 0 else ""))
             print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
-            print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+            _print_speed_line(speed, elapsed, _totals.bytes_written, _totals.copied, _totals.linked)
             _print_preserve_summary()
             _record = {
                 "source": src_display,
@@ -21894,7 +23723,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     if not args.overwrite and os.path.isdir(dst):
         banner("Phase 2b — Incremental check")
         copy_entries, link_map, skipped_count, skipped_bytes = filter_unchanged(
-            copy_entries, link_map, dst, args.threads
+            copy_entries, link_map, dst, args.threads, dedup_db=dedup_db
         )
         unique_size = sum(e.size for e in copy_entries)
 
@@ -21992,6 +23821,10 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # ── Phase 4: Resolve physical layout ──────────────────────────────
     banner("Phase 4 — Mapping physical disk layout")
     copy_entries = resolve_physical_offsets(copy_entries, args.threads)
+    # Same phase, same device: the seek-penalty query above already asked the
+    # source volume what it is; this names it, warns about what cuts long
+    # reads short, and probes each large file the way the copy will open it.
+    _source_preflight(copy_entries)
 
     if args.dry_run:
         small, large = split_by_size(copy_entries)
@@ -22040,18 +23873,25 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         _SRC_DIGESTS.disarm()
     os.makedirs(dst, exist_ok=True)
 
-    progress = Progress(unique_size, len(copy_entries))
-    t0 = time.time()
+    # Files a pre-flight check refused (read probe, --strict-integrity in the
+    # incremental check) stay in copy_entries for the summary and the
+    # verifier; the engine never sees them.
+    _to_copy = [e for e in copy_entries if e.rel not in _PREFLIGHT["skip_rels"]]
+    progress = Progress(sum(e.size for e in _to_copy), len(_to_copy))
+    t0 = time.perf_counter()
     # Skip the copy engine and its bar when there is nothing to copy — every
     # file deduped to a link, or nothing changed. Driving a progress bar to
     # "100%  0.0 B  avg 0.0 B/s  0 files" reads like something went wrong on
     # a run that did exactly what it should.
-    if copy_entries:
-        copy_hybrid(copy_entries, dst, progress, buf_size, fs_strategy=fs_strategy,
+    if _to_copy:
+        copy_hybrid(_to_copy, dst, progress, buf_size, fs_strategy=fs_strategy,
                     threads=args.threads, small_mode=args.small_files)
         progress.finish()
     else:
         _QUIET_STATS.update(files=0, bytes=0, elapsed=0.0)
+    # Hash-cache drift: the digest captured during the copy against the
+    # cache's hash for the same (path, size, mtime). No extra read.
+    _check_stream_drift(_to_copy, dedup_db, dst)
 
     # Create links for duplicates
     if link_map:
@@ -22066,7 +23906,7 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
 
     # Stop the clock only once the data is durable — see _flush_destination.
     _flush_destination(dst)
-    elapsed = time.time() - t0
+    elapsed = time.perf_counter() - t0
     # Rate the bytes that were actually written. unique_size is the LOGICAL
     # total, so on a sparse tree it counts holes that never reached the disk:
     # a 1.2 GB logical / 193 MB real copy reported ~6x its true throughput.
@@ -22145,15 +23985,26 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
     # Refused files were never opened, so their bytes are not written bytes —
     # the same lie as counting them copied, in another unit.
     _refused_rels = set(_REFUSED_PATHS)
+    # A failed file was removed by the engine that failed on it: none of its
+    # bytes are on disk, so none of them are written bytes either.
+    _failed_rels = set(_COPY_ERRORS) - _refused_rels
     if _HAS_SEEK_HOLE and fs_strategy != "none":
         alloc_total = sum(_effective_alloc(e) for e in copy_entries
-                          if e.rel not in _refused_rels)
+                          if e.rel not in _refused_rels
+                          and e.rel not in _failed_rels)
     else:
         alloc_total = _totals.bytes_written
+    # The rate over the bytes that landed, not over the bytes the plan
+    # scheduled: unique_size counted the file the engine had just removed.
+    # alloc_total is that figure with sparse holes left out as well.
+    speed = alloc_total / elapsed if elapsed > 0 else 0
+    _QUIET_STATS.update(bytes=alloc_total)
     data_line = f"  Data:    {C.BOLD}{fmt_size(alloc_total)}{C.RESET} written"
     notes = []
     if _totals.bytes_refused:
         notes.append(f"{fmt_size(_totals.bytes_refused)} refused, not written")
+    if _totals.bytes_failed:
+        notes.append(f"{fmt_size(_totals.bytes_failed)} failed, not written")
     if _totals.bytes_deduped > 0:
         notes.append(f"{fmt_size(_totals.bytes_deduped)} saved by dedup")
     if alloc_total < _totals.bytes_written:
@@ -22163,9 +24014,10 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         data_line += f"  {C.DIM}(" + ", ".join(notes) + f"){C.RESET}"
     print(data_line)
     print(f"  {_pad(_tr('Time:'), 11)}{C.BOLD}{fmt_time(elapsed)}{C.RESET}")
-    print(f"  {_pad(_tr('Speed:'), 11)}{C.GREEN}{C.BOLD}{fmt_speed(speed)}{C.RESET}")
+    _print_speed_line(speed, elapsed, _totals.bytes_written, _totals.copied, _totals.linked)
     _print_phase_timings()
     _print_preserve_summary()
+    _print_preflight_summary()
     # Hidden audit file when running under sudo — written BEFORE write_log_file
     # since the latter clears _log_entries.
     # The record of a privileged copy, so it reports the run that happened:
@@ -22177,11 +24029,12 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
         "linked": _totals.linked, "refused": _totals.refused,
         "refused_paths": sorted(_REFUSED_PATHS)[:100],
         "skipped": skipped_count,
-        "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+        "errors": _totals.failed,
         "total_bytes": total_bytes, "bytes_written": _totals.bytes_written,
         "bytes_refused": _totals.bytes_refused,
         "dedup_saved": _totals.bytes_deduped, "elapsed_sec": round(elapsed, 2),
         "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+        "preflight": _preflight_record(),
     })
     if args.log_file:
         write_log_file(args.log_file, {
@@ -22191,13 +24044,14 @@ def _run_local_flow(args, dst, copy_entries, link_map, total_bytes, dedup_db,
             "linked": _totals.linked, "refused": _totals.refused,
             "refused_paths": sorted(_REFUSED_PATHS)[:100],
             "skipped": skipped_count,
-            "errors": sum(1 for e in _log_entries if e["action"] == "error"),
+            "errors": _totals.failed,
             "total_bytes": total_bytes,
             "bytes_written": _totals.bytes_written,
             "bytes_refused": _totals.bytes_refused,
             "dedup_saved": _totals.bytes_deduped,
             "elapsed_sec": round(elapsed, 2),
             "avg_speed_bps": round(speed), "hash_algo": _hash_name,
+            "preflight": _preflight_record(),
         })
     print()
     _exit_for_verify(_verify_status)   # exit AFTER summary/audit/log were written

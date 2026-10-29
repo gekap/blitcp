@@ -1,5 +1,175 @@
 # Changelog
 
+## v4.2.14 — 2026-10-29
+
+v4.2.13 was the last public release. This one carries the two Windows fixes
+committed after it and the work that followed: a copy failure that
+names its cause, three checks on the source before it is read, a run clock that
+stops after the data is on disk, a GUI that stays responsive while it browses a
+remote folder, and a GUI that shows its own version.
+
+**Nothing that used to run stops running by default.** The new source checks
+warn; only `--strict-integrity` and `--strict-locks` turn a finding into a
+failure. A file whose source read fails during the pre-flight probe is
+reported and not copied — it is the file the copy would have failed on.
+
+### Added
+
+**Three pre-flight checks on a local copy**, each naming one condition, each a
+warning unless a strict flag is set, none claiming a file is good — see the
+manual's "What blitcp checks before it copies".
+
+- *Hash-cache drift.* A source file that hashes differently while its size and
+  mtime are unchanged — during the incremental check or from the digest the
+  copy already computes — is reported as a possible media problem on the source
+  volume, with both hashes, the cache date, the mtime's resolution (FAT/exFAT
+  timestamps can hide a rewrite) and whether the change is stable or flapping
+  across runs. The cache keeps the old entry and records the new hashes beside
+  it. `--strict-integrity` fails the run and does not keep the file.
+- *Source-device pre-flight.* Phase 4 names each source volume's bus, whether
+  the device is removable and whether the volume carries the dirty bit, warns
+  on removable/USB devices and dirty volumes, and probes every large file's
+  readability (first, last and three interior reads, within a time budget)
+  through the open the copy will use. A file whose probe fails is reported with
+  the copy's own decorated error and is not copied. Findings land in the
+  `--log-file` and audit records.
+- *Lock check.* One exclusive test open per large file; a sharing or lock
+  violation warns that another process holds the file (a running backup job,
+  typically). `--strict-locks` skips the file and fails the run. Linux sees
+  advisory locks only; the warning says so.
+
+The DONE block gains a `Warnings:` line with `integrity`, `device` and
+`locked` counts, printed only when one of them is non-zero.
+
+### Fixed
+
+**A copy error named neither the call nor the side.** `Error: <file>: [Errno
+13] Permission denied` was all a mid-stream failure printed — the exception
+from a `read()` or `write()` on an open descriptor carries no filename, and on
+Windows that one errno stands for access denied, a sharing or lock violation, a
+CRC or read fault and a device that is not ready alike. The local engines now
+print the operation, the side, the full path, how far the file had got, and on
+Windows the underlying error code when it can be read; and say what became of
+the partial file.
+
+**Verification called an unhashed file corrupted.** A file whose copy failed
+was absent from the destination, so no hash was computed, yet the verdict read
+"INCOMPLETE or CORRUPTED". It now reads `NOT VERIFIED (copy failed: …)` with
+the destination's state and the source size, and the verdict is `INCOMPLETE`;
+`CORRUPTED` is printed only after a size or hash comparison disagreed.
+
+**The summary counted a failed file as copied and written.** A fifth bucket,
+`failed`, holds files the engine attempted and broke on; `Data: … written`
+excludes them, and both closures include them.
+
+**`Time:` and the phase table used different clocks.** A wall-clock correction
+during a copy printed `Time: 3h 11m 36s` against an 11m 36s phase total. The
+copy phases, the progress bar and the phase emitters now share the monotonic
+clock.
+
+**Phase 4 printed `0/N files mapped` with no reason.** The mapper now records
+why each file could not be mapped and prints the first few under the count.
+
+**An elevated Windows copy refused files at random.** `ntpath.realpath` on a
+file that does not exist yet returns the path with the `\\?\` extended prefix,
+and strips it again only when a second lookup fails the same way as the first.
+In a threaded copy the file appears in between the two lookups, the second one
+hits a different error, and the prefix stays. `_dest_policy` then compares a
+prefixed path against an unprefixed destination root, reads it as being outside
+the destination, and refuses the file.
+
+Only the elevated branch runs that containment check, so an ordinary copy as
+yourself was never affected — but every GitHub Windows runner is Administrator,
+which is how the UAT found it: a few files refused per run (`300.0 B refused,
+not written`), a different scenario failing each time, exit 1. Because the
+trigger is a race between two lookups, the same run does not fail twice the
+same way. All `realpath` calls now go through `_fs_realpath`, which drops the
+extended prefix when the caller did not ask for one.
+
+If you run elevated copies on Windows and have seen files refused with no
+symlink anywhere near the destination, this was it. Nothing was written
+incorrectly — the affected files were not written at all, and the run exited 1.
+
+**On Windows, stdin redirected from NUL looked like a terminal.** `isatty()`
+returns True for `NUL`, because `NUL` is a character device. A run with
+`stdin=DEVNULL` — a scheduled task, a service, CI — therefore printed the
+interactive host-key prompt to nobody, read EOF and failed with "Host key …
+rejected by user" instead of the no-terminal error that names `known_hosts` and
+prints the fingerprint you need to add the key. Every stdin TTY check now goes
+through `_stdin_is_tty()`, which on Windows also requires `GetConsoleMode` to
+accept the handle.
+
+**The GUI showed version 4.2.3.** `GUI_VERSION` was a literal that the release
+bump never touched, so every GUI since v4.2.3 named itself 4.2.3 in the window
+title and on the Settings card while the update toast, which reads the engine,
+named the real version. The GUI now shows the version of the engine it loaded.
+The pin used when no engine sits beside the GUI is checked against the engine
+on every build.
+
+**Browsing a remote folder froze the GUI.** Every listing ran on the window's
+own thread, and an SMB listing walked everything under the folder with a stat
+per file to show one level. On a large share the window stopped answering and
+the desktop offered to force-quit it — the "Killed" reported on Ubuntu 26.04.
+Listings now run in the background, one level at a time, with a
+"Connecting… / Loading…" row and a Cancel button; a folder with more than
+5,000 entries shows the first 5,000 and says how many there are. SMB connects
+with a 10-second timeout.
+
+**The GUI's transfer log grew without limit.** Each engine line became a new
+widget that was never removed, so a copy that printed a line per file grew the
+GUI's memory for as long as it ran [measured: offscreen Qt, synthetic engine,
+30k lines +561 MB]. The log is now one text view capped at 10,000 lines,
+oldest dropped first [measured: flat at 169 MB RSS for 30k and 200k lines].
+
+**An SSH host that did not resolve printed a traceback.** A typo in the host
+name, a refused port or an unreachable address now ends in one line —
+`Error: cannot resolve SSH host 'X' (port 22): …` or `Error: cannot connect
+to SSH host X port N: …` — and exit 1.
+
+**A saved SMB share written as `refs/` joined as `refs//sub`.** Separators at
+either end of the saved share and the subpath are now dropped before the join.
+A saved connection's name typed where an SSH host belongs — or a near miss of
+one — gets `Did you mean <name>:<path>?` instead of a DNS error. blitcp never
+substitutes the name on its own.
+
+**The download/upload banner named an SMB location without its host.** It
+read `smb://<share>/<path>`; it now reads `smb://<host>[:port]/<share>/<path>`.
+
+**A pull, push or relay could print DONE while the data was still in a page
+cache.** The local copy flushed its destination before reading the run clock;
+the pull did not, and push and relay stopped the clock as soon as the remote
+tar exited. A pull now flushes the destination first, and a push or relay runs
+`sync -f` on the destination host (falling back to `sync`, and to one note
+line when neither works).
+
+**The progress bar's ETA disagreed with the rate printed beside it.** A slow
+start's estimate was carried through a second smoothing step, so a bar read
+`91.4%  8.0 MB/8.8 MB  244.7 KB/s … ETA 2m 47s` with 0.8 MB left. The byte
+ETA is now remaining bytes over the shown rate.
+
+**A credentials file on a Windows drive under WSL was told `chmod 600`.** A
+drvfs mount without the `metadata` option reports every file as 0777 and
+ignores chmod. The hint now says to move the file to a WSL path, point
+`BLITCP_CREDENTIALS` at one, or remount with `metadata`.
+
+### Improvements
+
+- **Destination paths are resolved through directory descriptors** —
+  `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux, a
+  per-component `O_NOFOLLOW` walk where that is missing, the path-based code
+  last — and the link pass creates each directory once
+  [measured: uat_perf_r2l.py fixture, 19.5 → 3.9 destination metadata
+  operations per file]. The checks are the same checks; they run on the
+  descriptor the write uses.
+- A WSL drvfs destination is named as one — `Windows drive via WSL (drvfs —
+  slow for many small files)` — with the two ways around it.
+- The hard-link pass and the directory-metadata pass report progress instead
+  of running silent after the copy bar finishes.
+- When the average copied file is under 64 KB, the DONE `Speed:` line shows
+  files/s beside the byte rate.
+- Phase numbers have no gaps: a pull's and a relay's copy is Phase 4, and
+  `--no-dedup` prints Phase 2 as skipped.
+
 ## v4.2.13 — 2026-09-22
 
 v4.2.10 was the last public release, so this one carries three versions of

@@ -1206,3 +1206,18 @@ msgstr "{n} fallidos"
 
 msgid "Nothing was written: the destination path leads outside itself."
 msgstr "No se escribió nada: la ruta de destino lleva fuera de sí misma."
+
+msgid "hint: a WSL-native destination (e.g. ~/…) or the native Windows build is many times faster here"
+msgstr "sugerencia: un destino nativo de WSL (p. ej. ~/…) o la versión nativa de Windows es mucho más rápido aquí"
+
+msgid "Cancelled."
+msgstr "Cancelado."
+
+msgid "Loading…"
+msgstr "Cargando…"
+
+msgid "Connecting to {0}…"
+msgstr "Conectando con {0}…"
+
+msgid "Showing the first {0} of {1} entries"
+msgstr "Mostrando las primeras {0} de {1} entradas"

@@ -1516,6 +1516,187 @@ def c_conn_path_join(ws, rc, out, info):
     return _verify(os.path.join(ws, "dst"), info["spec"])
 
 
+def _one_clean_error(rc, out, *must):
+    """exit 1, no traceback, and an Error line naming every string in must."""
+    if rc != 1:
+        return False, f"exit {rc} (want 1): {out.strip()[-200:]}"
+    if "Traceback" in out or "PYI-" in out:
+        return False, "a Python traceback reached the output: " + out.strip()[-200:]
+    errs = [ln.strip() for ln in out.splitlines() if "Error" in ln]
+    hit = [ln for ln in errs if all(m in ln for m in must)]
+    if not hit:
+        return False, f"no single Error line naming {must}: {errs[-3:]}"
+    return True, hit[0]
+
+
+def b_ssh_dns_failure(ws):
+    # .invalid never resolves (RFC 6761). The field report was
+    # socket.gaierror -> "[PYI-81503] unhandled exception" and a traceback.
+    return ["uatuser@no-such-host.invalid:/srv/x", os.path.join(ws, "dst")], {}
+
+
+def c_ssh_dns_failure(ws, rc, out, info):
+    return _one_clean_error(rc, out, "no-such-host.invalid", "22")
+
+
+def b_ssh_refused(ws):
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()                                     # nothing listens there now
+    return ["--src-port", str(port), "uatuser@127.0.0.1:/srv/x",
+            os.path.join(ws, "dst")], {"port": port}
+
+
+def c_ssh_refused(ws, rc, out, info):
+    return _one_clean_error(rc, out, "127.0.0.1", str(info["port"]))
+
+
+def _write_smb_conn(ws, name="Virtual_Sever_SMB", share="refs/"):
+    path = os.path.join(ws, "creds.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({name: {"type": "smb", "host": "127.0.0.1", "port": 1,
+                          "user": "gekap", "share": share}}, f, indent=2)
+    os.chmod(path, 0o600)
+    return path
+
+
+def b_smb_share_slash(ws):
+    # share saved as "refs/" made "refs//Win_Backup". The CLI names no
+    # location before it connects, so ask the engine's own resolver — the one
+    # apply_named_endpoints() calls — in a child running the target.
+    return ["--version"], {}
+
+
+def c_smb_share_slash(ws, rc, out, info):
+    code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import blitcp\n"
+            "conns = {'vm': {'type': 'smb', 'host': 'h', 'share': '/refs/'}}\n"
+            "print(json.dumps([blitcp.resolve_named_endpoint(t, conns)[0] for t in "
+            "('vm:/Win_Backup/Vault', 'vm:Win_Backup/', 'vm')]))")
+    r = subprocess.run([sys.executable, "-c", code,
+                        os.path.dirname(os.path.abspath(info_target[0]))],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return False, r.stderr.strip()[-200:]
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    want = ["smb://h:445/refs/Win_Backup/Vault", "smb://h:445/refs/Win_Backup",
+            "smb://h:445/refs"]
+    if got != want:
+        return False, f"resolved {got}, want {want}"
+    return True, "share '/refs/' joins as smb://h:445/refs/<sub>"
+
+
+_SMB_BANNER_CHILD = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import blitcp
+class Stub:                  # an SMB backend that got as far as the banner
+    def __init__(self, spec):
+        self.host, self.port = spec.host, spec.port or 445
+        self.container, self.prefix = spec.container, spec.prefix
+    def list_objects(self, prefix):
+        return {}
+    def __getattr__(self, name):
+        raise SystemExit("stub: " + name)
+blitcp.make_backend = lambda spec, args: Stub(spec)
+sys.argv = ["blitcp"] + sys.argv[2:]
+try:
+    blitcp.main()
+except SystemExit:
+    pass
+"""
+
+
+def b_smb_banner_host(ws):
+    # The DOWNLOAD/UPLOAD banner printed smb://<share>/<path> — the field run
+    # showed "smb://refs/Win_Backup/Vault", the share where the host belongs.
+    return ["--version"], {}
+
+
+def c_smb_banner_host(ws, rc, out, info):
+    src = os.path.join(ws, "src")
+    os.makedirs(src, exist_ok=True)
+    with open(os.path.join(src, "a.txt"), "w") as f:
+        f.write("a")
+    env = dict(os.environ, NO_COLOR="1", BLITCP_CREDENTIALS=_NULL_CREDS,
+               HOME=ws, XDG_CONFIG_HOME=os.path.join(ws, "cfg"))
+    here = os.path.dirname(os.path.abspath(info_target[0]))
+    got = {}
+    for label, argv, want in (
+            ("Source:", ["smb://nas.example/refs/Win_Backup/Vault",
+                         os.path.join(ws, "dst")],
+             "smb://nas.example/refs/Win_Backup/Vault"),
+            ("Dest:", [src, "smb://nas.example:4455/refs/up"],
+             "smb://nas.example:4455/refs/up")):
+        r = subprocess.run([sys.executable, "-c", _SMB_BANNER_CHILD, here] + argv,
+                           capture_output=True, text=True, timeout=120, env=env,
+                           stdin=subprocess.DEVNULL)
+        line = next((ln.strip() for ln in (r.stdout + r.stderr).splitlines()
+                     if ln.strip().startswith(label)), "")
+        got[label] = line
+        if want not in line:
+            return False, f"{label} line {line!r}, want {want}"
+    return True, f"{got['Source:']} | {got['Dest:']}"
+
+
+def b_name_as_ssh_host(ws):
+    # The field report: the saved connection's name used as an SSH host.
+    creds = _write_smb_conn(ws)
+    return ["--credentials-file", creds,
+            "gkapellakis@Virtual_Sever_SMB:Win_Backup/Vault",
+            os.path.join(ws, "dst")], {}
+
+
+def c_name_as_ssh_host(ws, rc, out, info):
+    return _one_clean_error(rc, out, "Did you mean Virtual_Sever_SMB:Win_Backup/Vault?")
+
+
+def b_name_typo_ssh_host(ws):
+    # ...with a typo on top: 'Server' for the saved 'Sever'.
+    creds = _write_smb_conn(ws)
+    return ["--credentials-file", creds,
+            "gkapellakis@Virtual_Server_SMB:Win_Backup/Vault",
+            os.path.join(ws, "dst")], {}
+
+
+def b_name_typo_bare(ws):
+    creds = _write_smb_conn(ws)
+    return ["--credentials-file", creds, "Virtual_Server_SMB:Win_Backup/Vault",
+            os.path.join(ws, "dst")], {}
+
+
+def b_name_typo_bare_source(ws):
+    # A bare source name — no ':path' — that is not a local path either.
+    creds = _write_smb_conn(ws)
+    if os.path.exists("Virtual_Server_SMB"):
+        return [], {"_skip": "a local 'Virtual_Server_SMB' exists in the cwd"}
+    return ["--credentials-file", creds, "Virtual_Server_SMB",
+            os.path.join(ws, "dst")], {}
+
+
+def c_name_typo_bare_source(ws, rc, out, info):
+    return _one_clean_error(rc, out, "Did you mean Virtual_Sever_SMB?")
+
+
+def c_name_typo_hint(ws, rc, out, info):
+    return _one_clean_error(rc, out, "Did you mean Virtual_Sever_SMB:Win_Backup/Vault?")
+
+
+def b_unrelated_host_no_hint(ws):
+    # Nothing saved resembles this host: the DNS error, and no guess.
+    creds = _write_smb_conn(ws)
+    return ["--credentials-file", creds, "uatuser@no-such-host.invalid:/srv/x",
+            os.path.join(ws, "dst")], {}
+
+
+def c_unrelated_host_no_hint(ws, rc, out, info):
+    ok, why = _one_clean_error(rc, out, "no-such-host.invalid")
+    if ok and "Did you mean" in out:
+        return False, "suggested a saved connection for an unrelated host"
+    return ok, why
+
+
 def b_conn_r2r_bare_name(ws):
     """Remote → remote where the suffix is a BARE FILENAME.
 
@@ -2173,6 +2354,15 @@ SCENARIOS = [
     S("UAT-SSH-8", "ssh", "saved connection: a suffix refines its path, does not replace it", b_conn_path_join, c_conn_path_join, needs="ssh"),
     S("UAT-SSH-9", "ssh", "remote-to-remote via saved connection with a bare filename", b_conn_r2r_bare_name, c_conn_r2r_bare_name, needs="ssh"),
     S("UAT-SSH-10", "ssh", "incremental check asks per path, never lists the whole destination", b_remote_scan_targeted, c_remote_scan_targeted, needs="ssh"),
+    S("UAT-SSH-11", "ssh", "unresolvable host → one clean error line, exit 1", b_ssh_dns_failure, c_ssh_dns_failure, needs="paramiko"),
+    S("UAT-SSH-12", "ssh", "refused port → one clean error line, exit 1", b_ssh_refused, c_ssh_refused, needs="paramiko"),
+    S("UAT-NAME-1", "ssh", "saved SMB share 'refs/' joins without a double slash", b_smb_share_slash, c_smb_share_slash),
+    S("UAT-NAME-2", "ssh", "user@<saved name>:path → 'Did you mean <name>:path?'", b_name_as_ssh_host, c_name_as_ssh_host, needs="paramiko"),
+    S("UAT-NAME-3", "ssh", "user@<near-miss of a saved name> → did-you-mean", b_name_typo_ssh_host, c_name_typo_hint, needs="paramiko"),
+    S("UAT-NAME-4", "ssh", "<near-miss name>:path → did-you-mean", b_name_typo_bare, c_name_typo_hint, needs="paramiko"),
+    S("UAT-NAME-6", "ssh", "missing bare source near a saved name → did-you-mean", b_name_typo_bare_source, c_name_typo_bare_source),
+    S("UAT-NAME-5", "ssh", "unrelated unresolvable host → DNS error, no guess", b_unrelated_host_no_hint, c_unrelated_host_no_hint, needs="paramiko"),
+    S("UAT-NAME-7", "ssh", "SMB download/upload banner names the host", b_smb_banner_host, c_smb_banner_host),
 
     S("UAT-HTTP-1", "http", "http(s):// destination is refused", b_http_dest_refused, c_http_dest_refused),
     S("UAT-HTTP-2", "http", "a URL plus extra sources is refused", b_http_multi_src_refused, c_http_multi_src_refused),
@@ -2266,7 +2456,7 @@ def _run_one(sc, target, manual, keep):
             return None, "manual-only (needs live endpoint/credentials)"
         if "ssh" in needs and not HAVE_SSH:
             return None, "no localhost sshd"
-        if "ssh" in needs and not HAVE_PARAMIKO:
+        if ("ssh" in needs or "paramiko" in needs) and not HAVE_PARAMIKO:
             return None, (f"paramiko not importable by {sys.executable} "
                           f"- SSH transfers cannot run")
         if "smb" in needs and not os.environ.get("FC_UAT_SMB_URL"):

@@ -1349,12 +1349,20 @@ def _check_sudo_preflight_and_log(rep, ctx):
             if isinstance(n, ast.FunctionDef) and n.name == "_add_log":
                 add_log = "\n".join(gsrc.splitlines()[n.lineno - 1:n.end_lineno])
         if add_log:
-            if "setWordWrap(True)" not in add_log:
+            # The log is one QPlainTextEdit (log_view): wrapping is set on the
+            # view, and its block cap is what keeps a per-file flood of engine
+            # lines from growing the GUI until the OOM killer takes it.
+            if "LineWrapMode.WidgetWidth" not in gsrc \
+                    or "WrapAtWordBoundaryOrAnywhere" not in gsrc:
                 bad.append("GUI log lines no longer wrap — the end of a long "
                            "error, which is where the fix is, gets clipped")
             if "white-space:pre'" in add_log:
                 bad.append("GUI log lines use white-space:pre, which defeats "
                            "the word wrap on coloured lines")
+            if "setMaximumBlockCount(LOG_MAX_LINES)" not in gsrc \
+                    or "QLabel(" in add_log:
+                bad.append("GUI log is unbounded — a widget or block per "
+                           "engine line with no cap grows until OOM")
 
     if bad:
         rep.fail("sudo preflight + log legibility", "; ".join(bad[:6]))
@@ -1407,6 +1415,104 @@ def _check_gui_phase_labels(rep, ctx):
     else:
         rep.ok("GUI phase labels",
                f"all {len(phases)} engine phases map to a header label")
+
+
+def _check_gui_version_pin(rep, ctx):
+    """The GUI shows the engine's version and pins the same one for the engine
+    it downloads when blitcp.py is missing. GUI_VERSION was a literal "4.2.3"
+    that releases never bumped: v4.2.13 showed "blitcp 4.2.3" in the title and
+    the Settings card, and _download_core() fetched the v4.2.3 engine."""
+    root = os.path.dirname(os.path.abspath(ctx["target"]))
+    gui = os.path.join(root, "blitcp_gui.py")
+    if not os.path.isfile(gui):
+        rep.skip("GUI version pin", "no blitcp_gui.py beside the target")
+        return
+    try:
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            eng = f.read()
+        with open(gui, encoding="utf-8", errors="replace") as f:
+            gsrc = f.read()
+    except OSError as e:
+        rep.skip("GUI version pin", str(e))
+        return
+    ev = re.search(r'^__version__ = "([^"]+)"', eng, re.M)
+    pin = re.search(r'^_GUI_PIN = "([^"]+)"', gsrc, re.M)
+    bad = []
+    if not ev:
+        bad.append("no __version__ in the engine")
+    if not pin:
+        bad.append("_GUI_PIN is gone from the GUI")
+    elif ev and pin.group(1) != ev.group(1):
+        bad.append(f"_GUI_PIN {pin.group(1)} != blitcp.py __version__ "
+                   f"{ev.group(1)} — bump both on release")
+    if re.search(r'^GUI_VERSION = "', gsrc, re.M):
+        bad.append("GUI_VERSION is a literal again — it must be the engine's "
+                   "__version__")
+    if bad:
+        rep.fail("GUI version pin", "; ".join(bad))
+    else:
+        rep.ok("GUI version pin",
+               f"GUI shows the engine's version; download pin {pin.group(1)} "
+               f"matches blitcp.py")
+
+
+def _check_gui_browse_offthread(rep, ctx):
+    """Remote browsing never runs on the UI thread and lists one level. It did
+    both wrong: render_browse() and the picker called _ssh_entries() /
+    _cloud_entries() inline, and the SMB listing was a recursive walk with a
+    stat per file — every remote folder froze the window, and GNOME's Force
+    Quit of the "not responding" window is a SIGKILL."""
+    import ast
+    root = os.path.dirname(os.path.abspath(ctx["target"]))
+    gui = os.path.join(root, "blitcp_gui.py")
+    if not os.path.isfile(gui):
+        rep.skip("GUI browse off the UI thread", "no blitcp_gui.py beside the target")
+        return
+    try:
+        with open(gui, encoding="utf-8", errors="replace") as f:
+            gtree = ast.parse(f.read())
+        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
+            etree = ast.parse(f.read())
+    except (OSError, SyntaxError) as e:
+        rep.skip("GUI browse off the UI thread", str(e))
+        return
+
+    def methods(tree, cls):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ClassDef) and n.name == cls:
+                return {m.name: m for m in n.body if isinstance(m, ast.FunctionDef)}
+        return {}
+
+    def calls(fn):
+        return {(c.func.attr if isinstance(c.func, ast.Attribute) else
+                 getattr(c.func, "id", None))
+                for c in ast.walk(fn) if isinstance(c, ast.Call)}
+
+    bad = []
+    g, dlg = methods(gtree, "BlitcpGUI"), methods(gtree, "RemoteBrowseDialog")
+    for where, fn in (("render_browse", g.get("render_browse")),
+                      ("RemoteBrowseDialog._render", dlg.get("_render"))):
+        if fn is None:
+            bad.append(f"{where} not found")
+        elif calls(fn) & {"_ssh_entries", "_cloud_entries"}:
+            bad.append(f"{where} lists the remote inline (UI thread)")
+    if "list_objects" in calls(g.get("_cloud_entries", ast.Pass())):
+        bad.append("_cloud_entries lists the whole tree (list_objects)")
+    if "setOverrideCursor" in calls(gtree):
+        bad.append("setOverrideCursor in the GUI — a wait cursor means blocking "
+                   "work on the UI thread")
+    for cls in ("S3Backend", "AzureBackend", "GCSBackend", "SMBBackend"):
+        m = methods(etree, cls)
+        if "list_dir" not in m:
+            bad.append(f"{cls} has no one-level list_dir")
+    smb = methods(etree, "SMBBackend").get("list_dir")
+    if smb is not None and calls(smb) & {"walk", "stat"}:
+        bad.append("SMBBackend.list_dir walks or stats per entry")
+    if bad:
+        rep.fail("GUI browse off the UI thread", "; ".join(bad))
+    else:
+        rep.ok("GUI browse off the UI thread",
+               "browser and picker list on a worker; every backend lists one level")
 
 
 def _check_r2r_hash_negotiation(rep, ctx):
@@ -1544,6 +1650,8 @@ def section_security(rep, ctx):
     _check_http_auth_handling(rep, ctx)
     _check_sudo_preflight_and_log(rep, ctx)
     _check_gui_phase_labels(rep, ctx)
+    _check_gui_version_pin(rep, ctx)
+    _check_gui_browse_offthread(rep, ctx)
     _check_r2r_hash_negotiation(rep, ctx)
 
     # external scanners (best effort)
@@ -4207,18 +4315,39 @@ def _check_midbatch_symlinked_parent(rep, ctx):
             second = mod._safe_tar_extract(tf, members["sub/second.txt"], dst,
                                            trusted_source=False, **kw)
 
-    escaped = os.path.exists(os.path.join(outside, "second.txt"))
-    if second is not True and not escaped:
-        rep.ok("mid-batch symlinked parent",
-               f"refused after the swap ({second})")
-    elif escaped:
+        # Evaluated INSIDE the workspace: temp_workspace removes the tree on
+        # exit, so an existence check after the `with` could never see the
+        # escaped file and the FAIL branch was unreachable — the check
+        # passed vacuously whatever the extraction did.
+        escaped = os.path.exists(os.path.join(outside, "second.txt"))
+        inside = os.path.exists(os.path.join(dst, "sub.real", "second.txt"))
+    # Two safe outcomes exist, and which one happens depends on the
+    # extraction route:
+    #   • the legacy path re-validates per file, sees the symlink, REFUSES;
+    #   • the fd path (_fd_extract_member) holds a descriptor to the
+    #     directory it validated for file 1 — an fd names an INODE, so the
+    #     swap cannot redirect it, and the write lands in the renamed
+    #     original directory, still inside the destination. That is the
+    #     exact design the _ExtractCtx comment reserves for the dirfd
+    #     change: not a cached path verdict (which a swap invalidates) but
+    #     the validated object itself.
+    # What can never happen is the write following the planted symlink out.
+    if escaped:
         rep.fail("mid-batch symlinked parent",
                  "extraction wrote THROUGH a symlinked parent planted mid-batch "
                  "— the file landed outside the destination")
+    elif second is not True:
+        rep.ok("mid-batch symlinked parent",
+               f"refused after the swap ({second})")
+    elif inside:
+        rep.ok("mid-batch symlinked parent",
+               "written through the held directory fd — the swap could not "
+               "redirect it and the file stayed inside the destination")
     else:
         rep.fail("mid-batch symlinked parent",
-                 "the member after the swap was accepted; the ancestor check "
-                 "is no longer effective per file")
+                 "the member after the swap was accepted but landed nowhere "
+                 "accountable — neither refused, nor outside, nor in the "
+                 "renamed original directory")
 
 
 def _load_target_module(target, name):
@@ -4227,6 +4356,987 @@ def _load_target_module(target, name):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _check_wsl_drvfs_hint(rep, ctx):
+    """A destination on a Windows drive mounted into WSL must be named as
+    such, not lumped under 'network (SMB / NFS / SSHFS)'.
+
+    The incident behind this: a pull of 9,908 small files to /mnt/c took
+    40m49s for 8.8 MB because every metadata syscall crosses drvfs/9p into
+    Windows. The generic 'network' label gave the user nothing to act on;
+    the fix is a label that says WSL drvfs and a hint naming the two real
+    escapes (a WSL-native destination, or the native Windows build).
+
+    Functional matrix on _dest_wsl_drvfs with injected inputs, plus a
+    source check that the destination banner actually consults it."""
+    target = ctx["target"]
+    try:
+        mod = _load_target_module(target, "_blitcp_drvfs")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("WSL drvfs hint", f"could not import target: {e}")
+        return
+    fn = getattr(mod, "_dest_wsl_drvfs", None)
+    if fn is None:
+        rep.fail("WSL drvfs hint",
+                 "_dest_wsl_drvfs is not implemented — a /mnt/<letter> "
+                 "destination still reads as generic 'network'")
+        return
+    import tempfile as _tempfile
+    with temp_workspace() as ws:
+        ms = os.path.join(ws, "version-ms")
+        with open(ms, "w") as f:
+            f.write("Linux version 5.15.153.1-microsoft-standard-WSL2 ...\n")
+        plain = os.path.join(ws, "version-plain")
+        with open(plain, "w") as f:
+            f.write("Linux version 6.12.9-amd64 (debian-kernel@...) ...\n")
+        cases = [
+            ((ws, ms, "9p"), True, "WSL kernel + 9p mount"),
+            ((ws, ms, "drvfs"), True, "WSL kernel + drvfs mount"),
+            ((ws, ms, "ext4"), False, "WSL kernel + native ext4"),
+            ((ws, plain, "9p"), False, "non-WSL kernel"),
+        ]
+        problems = []
+        for (path, vfile, fstype), want, what in cases:
+            got = fn(path, _version_file=vfile, _fstype=fstype)
+            if bool(got) != want:
+                problems.append(f"{what}: got {got!r}, wanted {want}")
+    src = open(target, encoding="utf-8", errors="replace").read()
+    if "_dest_wsl_drvfs" not in src.split("def _dest_wsl_drvfs", 1)[-1]:
+        problems.append("nothing outside the definition consults "
+                        "_dest_wsl_drvfs — the banner cannot be using it")
+    if problems:
+        rep.fail("WSL drvfs hint", "; ".join(problems))
+    else:
+        rep.ok("WSL drvfs hint",
+               "drvfs/9p under a WSL kernel is detected and the banner "
+               "consults the detector")
+
+
+def _check_long_phase_progress(rep, ctx):
+    """The hardlink pass and the post-extract directory-metadata pass must
+    report progress while they run, not only announce their result.
+
+    On the drvfs incident run these two passes were the silent majority of
+    the wall time: the copy bar hit 100%, then the terminal sat still for
+    over half an hour. A phase that can take minutes on a high-latency
+    destination reports N/total as it goes — that is what _phase_emit is
+    for. This drives both passes over a few hundred entries with
+    _phase_emit replaced by a recorder and requires at least one
+    IN-PROGRESS emission (done < total) and a final one from each."""
+    target = ctx["target"]
+    try:
+        mod = _load_target_module(target, "_blitcp_phaseprog")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("long-phase progress", f"could not import target: {e}")
+        return
+    problems = []
+    with temp_workspace() as ws:
+        # ── create_links: 300 duplicates of one canonical ──────────────
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        with open(os.path.join(dst, "canon.txt"), "w") as f:
+            f.write("payload")
+        link_map = {"dup%03d.txt" % i: "canon.txt" for i in range(300)}
+        seen = []
+        mod._phase_emit = lambda phase, done, total, **kw: seen.append(
+            (phase, done, total))
+        import io as _io
+        import contextlib as _ctl
+        with _ctl.redirect_stdout(_io.StringIO()):
+            mod.create_links(link_map, dst, fs_strategy="hardlink")
+        partial = [s for s in seen if s[1] < s[2]]
+        final = [s for s in seen if s[1] == s[2] and s[2] > 0]
+        if not partial:
+            problems.append("create_links made 300 links without one "
+                            "in-progress emission")
+        if not final:
+            problems.append("create_links never emitted its final count")
+
+        # ── directory metadata: 300 dirs ───────────────────────────────
+        dst2 = os.path.join(ws, "dst2")
+        dirmeta = {}
+        now_ns = int(time.time() * 1e9)
+        for i in range(300):
+            rel = "d%03d" % i
+            os.makedirs(os.path.join(dst2, rel))
+            dirmeta[rel] = (0o755, now_ns, now_ns, os.getuid(), os.getgid())
+        seen.clear()
+        with _ctl.redirect_stdout(_io.StringIO()):
+            mod._apply_remote_dir_metadata_local(dirmeta, dst2)
+        partial = [s for s in seen if s[1] < s[2]]
+        final = [s for s in seen if s[1] == s[2] and s[2] > 0]
+        if not partial:
+            problems.append("_apply_remote_dir_metadata_local walked 300 "
+                            "dirs in silence — no in-progress emission")
+        if not final:
+            problems.append("_apply_remote_dir_metadata_local never emitted "
+                            "its final count")
+    if problems:
+        rep.fail("long-phase progress", "; ".join(problems))
+    else:
+        rep.ok("long-phase progress",
+               "hardlink and dir-metadata passes both emit in-progress and "
+               "final counts")
+
+
+def _localhost_ssh_ok():
+    """Key-auth SSH to 127.0.0.1 works — the flows over SSH need it."""
+    import getpass
+    try:
+        probe = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+             "%s@127.0.0.1" % getpass.getuser(), "true"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        return probe.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+# The run clock is read as `elapsed = time.<clock>() - t0|start`. The local
+# and remote flows moved to perf_counter (a +3h wall-clock correction during a
+# copy once printed "Time: 3h 11m 36s" against an 11m 36s phase table); the
+# tar-over-SSH flows still read time.time(). Both spell the same event.
+_CLOCK_LINE = re.compile(
+    r"\s*_?elapsed\s*=\s*time\.(time|perf_counter)\(\)\s*-\s*(t0|start)\b")
+
+
+class _ClockSpy:
+    """Stands in for the target module's `time`: logs ("clock", func, line)
+    whenever a line of the target reads the run clock
+    (`elapsed = time.time() - t0|start`), and otherwise is plain `time`."""
+
+    def __init__(self, real, mod, log):
+        self._real, self._mod, self._log = real, mod, log
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def _spy(self, name):
+        import linecache
+        f = sys._getframe(2)
+        if f.f_globals is self._mod.__dict__:
+            line = linecache.getline(f.f_code.co_filename, f.f_lineno)
+            if _CLOCK_LINE.match(line):
+                self._log.append(("clock", f.f_code.co_name, f.f_lineno))
+        return getattr(self._real, name)()
+
+    def time(self):
+        return self._spy("time")
+
+    def perf_counter(self):
+        return self._spy("perf_counter")
+
+
+def _check_flush_before_clock(rep, ctx):
+    """Every flow with a LOCAL destination flushes it before it stops the
+    clock.
+
+    The local flow calls _flush_destination(dst) and only then reads the
+    run clock; the pull flows read it straight after the last write, so a
+    pull could print DONE — and a MB/s — while the data still sat in the
+    page cache. Drives the real entry point per flow over SSH to 127.0.0.1
+    with _flush_destination and the module's clock replaced by recorders:
+    the first `elapsed = time.time() - t0|start` read of the run clock must
+    come after a flush of the destination. No timing is measured."""
+    import getpass
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("flush before clock", "POSIX + sshd only")
+        return
+    ssh_ok = _localhost_ssh_ok()
+    user = getpass.getuser()
+    problems = []
+    ran = []
+    saved_env = {k: os.environ.get(k)
+                 for k in ("BLITCP_CREDENTIALS", "XDG_CONFIG_HOME", "NO_COLOR")}
+    with temp_workspace() as ws:
+        src = os.path.join(ws, "src")
+        os.makedirs(os.path.join(src, "a"))
+        for i in range(3):
+            with open(os.path.join(src, "a", "f%d.txt" % i), "w") as f:
+                f.write("payload %d\n" % i)
+        # default_credentials_path() prefers the credentials.json beside the
+        # script, and this repo has one. HOME stays: ssh needs its keys.
+        os.environ["BLITCP_CREDENTIALS"] = os.path.join(ws, "no-creds.json")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(ws, "xdg")
+        os.environ["NO_COLOR"] = "1"
+        flows = [("local", lambda d: [src, d])]
+        if ssh_ok:
+            flows += [
+                ("pull", lambda d: ["%s@127.0.0.1:%s" % (user, src), d]),
+                ("pull --ssh-no-sftp",
+                 lambda d: ["--ssh-no-sftp", "%s@127.0.0.1:%s" % (user, src), d]),
+            ]
+        try:
+            for i, (name, argv) in enumerate(flows):
+                dst = os.path.join(ws, "dst%d" % i)
+                try:
+                    mod = _load_target_module(target, "_blitcp_flush%d" % i)
+                except Exception as e:                      # noqa: BLE001
+                    rep.skip("flush before clock", f"could not import target: {e}")
+                    return
+                log = []
+                real_flush = mod._flush_destination
+
+                def _rec_flush(path, _log=log, _real=real_flush):
+                    _log.append(("flush", os.path.abspath(path)))
+                    return _real(path)
+                mod._flush_destination = _rec_flush
+                mod.time = _ClockSpy(mod.time, mod, log)
+                # --no-dedup: the dedup DB lands at the mount root, which for
+                # a /tmp workspace is shared by every test on the box.
+                rc, out = _run_main_inprocess(mod, ["--no-dedup"] + argv(dst))
+                if rc != 0:
+                    problems.append("%s: exit %s — %s" % (
+                        name, rc, (out.strip().splitlines() or ["?"])[-1]))
+                    continue
+                ran.append(name)
+                clocks = [k for k, e in enumerate(log) if e[0] == "clock"]
+                if not clocks:
+                    problems.append("%s: no read of the run clock was seen" % name)
+                    continue
+                flushed = any(e[0] == "flush" and e[1] == os.path.abspath(dst)
+                              for e in log[:clocks[0]])
+                if not flushed:
+                    _c = log[clocks[0]]
+                    problems.append("%s: %s stops the clock at line %d without "
+                                    "flushing the destination first"
+                                    % (name, _c[1], _c[2]))
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    if problems:
+        rep.fail("flush before clock", "; ".join(problems))
+    elif not ssh_ok:
+        rep.skip("flush before clock",
+                 "local flow OK; pull flows need key-auth SSH to 127.0.0.1")
+    else:
+        rep.ok("flush before clock",
+               "destination flushed before the clock stops: " + ", ".join(ran))
+
+
+def _check_remote_sync_before_clock(rep, ctx):
+    """Every flow with a REMOTE destination syncs it before it stops the
+    clock, and survives a remote that cannot.
+
+    The local and pull flows flush their destination before reading the run
+    clock; push and relay read it as soon as the remote tar exits, so the
+    time could end while the data sat in the remote's page cache. The remote
+    runs `sync -f <dst>`, falls back to a plain `sync` when that fails (old
+    coreutils, a non-GNU sync), and when both fail the run carries on with
+    one note line — never an error.
+
+    Drives push, push --ssh-no-sftp, relay and relay --ssh-no-sftp through
+    main() over SSH to 127.0.0.1 with SSHConnection.exec_cmd and _ssh_run
+    wrapped: a `sync` naming the destination must run before the first read
+    of the run clock. Then the main push with the remote's `sync -f` failing
+    (a plain `sync` must follow) and with every `sync` failing (exit 0, one
+    note). No timing is measured."""
+    import getpass
+    import shlex
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("remote sync before clock", "POSIX + sshd only")
+        return
+    if not _localhost_ssh_ok():
+        rep.skip("remote sync before clock", "needs key-auth SSH to 127.0.0.1")
+        return
+    user = getpass.getuser()
+    here = "%s@127.0.0.1:%s" % (user, "{}")
+    problems = []
+    ran = []
+    saved_env = {k: os.environ.get(k)
+                 for k in ("BLITCP_CREDENTIALS", "XDG_CONFIG_HOME", "NO_COLOR")}
+
+    def _drive(mod, argv, log, remote_sync):
+        """Run main() with the remote-exec paths wrapped. remote_sync(cmd)
+        answers a `sync` command, or returns None to run it for real."""
+        real_exec = mod.SSHConnection.exec_cmd
+        real_run = mod._ssh_run
+
+        def _hook(cmd):
+            if str(cmd).lstrip().startswith("sync"):
+                log.append(("sync", cmd))
+                return remote_sync(cmd)
+            return None
+
+        def exec_spy(self, cmd, *a, **k):
+            r = _hook(cmd)
+            return r if r is not None else real_exec(self, cmd, *a, **k)
+
+        def run_spy(cli, cmd, *a, **k):
+            r = _hook(cmd)
+            return r if r is not None else real_run(cli, cmd, *a, **k)
+        mod.SSHConnection.exec_cmd = exec_spy
+        mod._ssh_run = run_spy
+        mod.time = _ClockSpy(mod.time, mod, log)
+        return _run_main_inprocess(mod, argv)
+
+    with temp_workspace() as ws:
+        src = os.path.join(ws, "src")
+        os.makedirs(os.path.join(src, "a"))
+        for i in range(3):
+            with open(os.path.join(src, "a", "f%d.txt" % i), "w") as f:
+                f.write("payload %d\n" % i)
+        os.environ["BLITCP_CREDENTIALS"] = os.path.join(ws, "no-creds.json")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(ws, "xdg")
+        os.environ["NO_COLOR"] = "1"
+        flows = [
+            ("push", lambda d: [src, here.format(d)]),
+            ("push --ssh-no-sftp", lambda d: ["--ssh-no-sftp", src, here.format(d)]),
+            ("relay", lambda d: [here.format(src), here.format(d)]),
+            ("relay --ssh-no-sftp",
+             lambda d: ["--ssh-no-sftp", here.format(src), here.format(d)]),
+        ]
+        try:
+            for i, (name, argv) in enumerate(flows):
+                dst = os.path.join(ws, "dst%d" % i)
+                try:
+                    mod = _load_target_module(target, "_blitcp_rsync%d" % i)
+                except Exception as e:                      # noqa: BLE001
+                    rep.skip("remote sync before clock", f"could not import target: {e}")
+                    return
+                log = []
+                # --no-dedup: the sync/clock order does not depend on it, and
+                # it keeps every dedup cache out of the shared /tmp.
+                rc, out = _drive(mod, ["--no-dedup"] + argv(dst), log,
+                                 lambda cmd: None)
+                if rc != 0:
+                    problems.append("%s: exit %s — %s" % (
+                        name, rc, (out.strip().splitlines() or ["?"])[-1]))
+                    continue
+                ran.append(name)
+                clocks = [k for k, e in enumerate(log) if e[0] == "clock"]
+                if not clocks:
+                    problems.append("%s: no read of the run clock was seen" % name)
+                    continue
+                synced = any(e[0] == "sync" and (dst in e[1] or shlex.quote(dst) in e[1])
+                             for e in log[:clocks[0]])
+                if not synced:
+                    _c = log[clocks[0]]
+                    problems.append("%s: %s stops the clock at line %d without "
+                                    "syncing the remote destination first"
+                                    % (name, _c[1], _c[2]))
+
+            # Fallbacks, on the main push.
+            for k, (case, answer) in enumerate((
+                    ("sync -f unsupported",
+                     lambda cmd: ("", "sync: invalid option -- 'f'", 1)
+                     if "-f" in cmd else None),
+                    ("no sync at all",
+                     lambda cmd: ("", "sync: command not found", 127)))):
+                dst = os.path.join(ws, "fb%d" % k)
+                mod = _load_target_module(target, "_blitcp_rsyncfb%d" % k)
+                log = []
+                rc, out = _drive(mod, ["--no-dedup", src, here.format(dst)],
+                                 log, answer)
+                cmds = [e[1].strip() for e in log if e[0] == "sync"]
+                if rc != 0:
+                    problems.append("push, %s: exit %s — a failed remote sync "
+                                    "must not fail the run" % (case, rc))
+                if k == 0 and (len(cmds) < 2 or cmds[1] != "sync"):
+                    problems.append("push, %s: expected a plain `sync` after the "
+                                    "failed `sync -f`, got %r" % (case, cmds))
+                if k == 1:
+                    notes = [ln for ln in out.splitlines()
+                             if re.search(r"(?i)\bnote\b", ln)
+                             and re.search(r"\bsync\b", ln)]
+                    if len(notes) != 1:
+                        problems.append("push, %s: expected one note line about "
+                                        "sync, got %d" % (case, len(notes)))
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    if problems:
+        rep.fail("remote sync before clock", "; ".join(problems))
+    else:
+        rep.ok("remote sync before clock",
+               "remote destination synced before the clock stops: "
+               + ", ".join(ran) + "; sync -f → sync → one note")
+
+
+def _check_eta_matches_shown_rate(rep, ctx):
+    """On the byte-rate path the ETA the bar prints is the remaining bytes
+    over the rate the bar prints next to it.
+
+    The incident: a pull's extract bar read '91.4%  8.0 MB/8.8 MB  244.7
+    KB/s … ETA 2m 47s' — 0.8 MB at 244.7 KB/s is ~3s. The rate is a 30s
+    window; the ETA was that window's estimate pushed through a further
+    ~10s EMA, which carried the slow start's minutes-long estimate long
+    after the window had moved on. Drives Progress.display() on a fake
+    clock through the same shape (a slow start, then a fast stretch to
+    ~91%) and reads the --progress-json records: every record with an ETA
+    must satisfy eta_s ≈ (bytes_total - bytes_done) / speed_bps."""
+    target = ctx["target"]
+    try:
+        mod = _load_target_module(target, "_blitcp_eta")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("ETA matches shown rate", f"could not import target: {e}")
+        return
+
+    class _FakeClock:
+        def __init__(self, real):
+            self._real, self.now = real, 1_000_000.0
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def time(self):
+            return self.now
+
+        # Progress reads perf_counter now, so the fake must drive both clocks
+        # or the ETA window never reaches its minimum span.
+        def perf_counter(self):
+            return self.now
+
+    clock = _FakeClock(mod.time)
+    mod.time = clock
+    mod.PROGRESS_JSON = True
+    total_b, total_f = 8_800_000, 3396
+    p = mod.Progress(total_b, total_f)
+    buf = io.StringIO()
+    step = 0.1
+    with contextlib.redirect_stdout(buf):
+        # 60s at 20 KB/s, then 244.7 KB/s until 8.0 MB (~91%).
+        for rate, until in ((20_000, 1_200_000), (244_700, 8_000_000)):
+            while p.bytes_done < until:
+                clock.now += step
+                nb = min(int(rate * step), until - p.bytes_done)
+                p.update(nb, int(total_f * nb / total_b))
+                p.display()
+    recs = []
+    for ln in buf.getvalue().splitlines():
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get("t") == "progress" and r.get("eta_s") is not None \
+                and r.get("speed_bps"):
+            recs.append(r)
+    if not recs:
+        rep.fail("ETA matches shown rate", "no progress record carried an ETA")
+        return
+    bad = []
+    for r in recs:
+        want = (r["bytes_total"] - r["bytes_done"]) / r["speed_bps"]
+        if abs(r["eta_s"] - want) > max(1.0, 0.05 * want):
+            bad.append(r)
+    last = recs[-1]
+    if bad:
+        r = bad[-1]
+        want = (r["bytes_total"] - r["bytes_done"]) / r["speed_bps"]
+        rep.fail("ETA matches shown rate",
+                 "%d/%d records disagree with their own rate; e.g. %.1f%% "
+                 "%d/%d B at %.0f B/s shows ETA %.0fs, rate implies %.1fs"
+                 % (len(bad), len(recs), r["pct"], r["bytes_done"],
+                    r["bytes_total"], r["speed_bps"], r["eta_s"], want))
+    else:
+        rep.ok("ETA matches shown rate",
+               "%d records; at %.1f%% ETA %.1fs = remaining / shown rate"
+               % (len(recs), last["pct"], last["eta_s"]))
+
+
+def _check_creds_mode_hint_on_drvfs(rep, ctx):
+    """A loose-permission credentials file on a Windows drive mounted into
+    WSL without the 'metadata' option must not be told 'Fix: chmod 600'.
+
+    Without 'metadata', drvfs reports every file as 0o777 and chmod does
+    nothing, so the old advice could never be followed — the incident run
+    printed it for /mnt/c/…/credentials.json. The hint must name what does
+    work: a WSL-native location, or remounting with 'metadata'. With the
+    option set, chmod works and the old advice stands, as it does on a
+    native filesystem.
+
+    Functional matrix on _drvfs_without_metadata with injected
+    /proc/version and mountinfo, then load_credentials_file() driven over
+    a real 0o777 file with the detector forced each way."""
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("creds mode hint on drvfs", "POSIX modes only")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_credsdrvfs")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("creds mode hint on drvfs", f"could not import target: {e}")
+        return
+    fn = getattr(mod, "_drvfs_without_metadata", None)
+    if fn is None:
+        rep.fail("creds mode hint on drvfs",
+                 "_drvfs_without_metadata is not implemented — a credentials "
+                 "file on /mnt/<drive> is still told 'chmod 600', which drvfs "
+                 "without 'metadata' ignores")
+        return
+    problems = []
+    with temp_workspace() as ws:
+        ms = os.path.join(ws, "version-ms")
+        with open(ms, "w") as f:
+            f.write("Linux version 5.15.153.1-microsoft-standard-WSL2 ...\n")
+        plain = os.path.join(ws, "version-plain")
+        with open(plain, "w") as f:
+            f.write("Linux version 6.12.9-amd64 (debian-kernel@...) ...\n")
+        wsl2 = ("98 71 0:46 / {mp} rw,noatime - 9p C:\\134 rw,dirsync,"
+                "aname=drvfs;path=C:\\;uid=1000;gid=1000;{meta}"
+                "symlinkroot=/mnt/,mmap,access=client,msize=65536,trans=fd\n")
+        wsl1 = ("12 1 0:12 / {mp} rw,noatime - drvfs C: rw,{meta}case=off\n")
+        ext4 = "30 1 8:2 / {mp} rw,relatime - ext4 /dev/sdb rw\n"
+        cases = [
+            (ms, wsl2, "", True, "WSL2 9p without metadata"),
+            (ms, wsl2, "metadata;", False, "WSL2 9p with metadata"),
+            (ms, wsl1, "", True, "WSL1 drvfs without metadata"),
+            (ms, wsl1, "metadata,", False, "WSL1 drvfs with metadata"),
+            (ms, ext4, "", False, "WSL native ext4"),
+            (plain, wsl2, "", False, "non-WSL kernel"),
+        ]
+        for k, (vfile, tmpl, meta, want, what) in enumerate(cases):
+            mi = os.path.join(ws, "mountinfo%d" % k)
+            with open(mi, "w") as f:
+                f.write("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n")
+                f.write(tmpl.format(mp=ws, meta=meta))
+            got = fn(ws, _version_file=vfile, _mountinfo=mi)
+            if bool(got) != want:
+                problems.append(f"{what}: got {got!r}, wanted {want}")
+
+        # The message itself, through the real loader.
+        real = mod._drvfs_without_metadata
+        for k, (forced, want_in, want_out) in enumerate((
+                (True, "metadata", "chmod 600"),
+                (False, "chmod 600", None))):
+            cf = os.path.join(ws, "creds%d.json" % k)
+            with open(cf, "w") as f:
+                f.write("{}")
+            os.chmod(cf, 0o777)
+            mod._drvfs_without_metadata = (lambda p, _v=forced, **kw: _v)
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    mod.load_credentials_file(cf)
+            except SystemExit:
+                pass
+            finally:
+                mod._drvfs_without_metadata = real
+            text = out.getvalue()
+            where = "drvfs without metadata" if forced else "native fs"
+            if want_in not in text:
+                problems.append(f"{where}: warning lacks {want_in!r}: "
+                                f"{text.strip()[:160]!r}")
+            if want_out and want_out in text:
+                problems.append(f"{where}: still advises {want_out!r}, which "
+                                f"has no effect there")
+    if problems:
+        rep.fail("creds mode hint on drvfs", "; ".join(problems))
+    else:
+        rep.ok("creds mode hint on drvfs",
+               "drvfs without 'metadata' gets a hint that works; native fs "
+               "and drvfs with 'metadata' keep 'chmod 600'")
+
+
+def _check_small_files_rate_in_summary(rep, ctx):
+    """When the average copied file is small, the DONE Speed line also shows
+    files/s.
+
+    The incident pull moved 9,908 files, 8.8 MB, and printed only
+    'Speed: 58.2 KB/s' — a byte rate for a run whose cost was per-file
+    operations. Below a 64 KB average the line carries files/s beside it;
+    above, it stays a byte rate. Driven through the real CLI (local flow,
+    isolated credentials): 300 small files must show files/s, one 1 MB file
+    must not. And every summary's Speed line must go through one writer, so
+    the pull, push, relay and SSH-only summaries cannot drift from it."""
+    target = ctx["target"]
+    problems = []
+    with temp_workspace() as ws:
+        env = {"BLITCP_CREDENTIALS": os.path.join(ws, "no-creds.json"),
+               "XDG_CONFIG_HOME": os.path.join(ws, "xdg")}
+        small = os.path.join(ws, "small")
+        os.makedirs(small)
+        for i in range(300):
+            with open(os.path.join(small, "f%03d.txt" % i), "w") as f:
+                f.write("small file %d\n" % i)
+        big = os.path.join(ws, "big")
+        os.makedirs(big)
+        with open(os.path.join(big, "one.bin"), "wb") as f:
+            f.write(os.urandom(1024 * 1024))
+        for name, src, want in (("300 small files", small, True),
+                                ("one 1 MB file", big, False)):
+            rc, out, err = run_fc(target, ["--no-dedup", src,
+                                           os.path.join(ws, "dst-" + os.path.basename(src))],
+                                  extra_env=env)
+            speed = [ln for ln in out.splitlines() if "Speed:" in ln]
+            if rc != 0 or not speed:
+                problems.append(f"{name}: exit {rc}, no Speed line")
+                continue
+            has = "files/s" in speed[-1]
+            if has != want:
+                problems.append(f"{name}: Speed line {speed[-1].strip()!r} "
+                                f"{'lacks' if want else 'should not carry'} files/s")
+    src = open(target, encoding="utf-8", errors="replace").read()
+    n = src.count("_tr('Speed:')")
+    if n != 1:
+        problems.append(f"{n} places print the Speed line; one writer expected")
+    if problems:
+        rep.fail("small-files rate in summary", "; ".join(problems))
+    else:
+        rep.ok("small-files rate in summary",
+               "files/s beside MB/s below a 64 KB average, one Speed writer")
+
+
+def _check_pull_phase_numbering(rep, ctx):
+    """A pull or a relay numbers its phases without a gap.
+
+    The incident pull printed Phase 1, 2, 3, 5: its copy phase carried the
+    number the local flow gives it, where Phase 4 is mapping the local
+    source's disk layout — a step neither a pull nor a relay has. With
+    --no-dedup Phase 2 vanished as well (1, 3, 4). The SSH-only pull already
+    counts 1-4. Drives the pull (with and without dedup), the SSH-only pull
+    and the relay (with and without dedup) through main() over SSH to
+    127.0.0.1 and reads the banners: the whole-number phases must run 1..N
+    (sub-phases like 2b are not counted)."""
+    import getpass
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("pull phase numbering", "POSIX + sshd only")
+        return
+    try:
+        probe = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+             "%s@127.0.0.1" % getpass.getuser(), "true"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        ssh_ok = probe.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ssh_ok = False
+    if not ssh_ok:
+        rep.skip("pull phase numbering", "needs key-auth SSH to 127.0.0.1")
+        return
+    user = getpass.getuser()
+    problems = []
+    seen_all = []
+    saved_env = {k: os.environ.get(k)
+                 for k in ("BLITCP_CREDENTIALS", "XDG_CONFIG_HOME", "NO_COLOR")}
+    with temp_workspace() as ws:
+        src = os.path.join(ws, "src")
+        os.makedirs(src)
+        for i in range(3):
+            with open(os.path.join(src, "f%d.txt" % i), "w") as f:
+                f.write("payload %d\n" % i)
+        os.environ["BLITCP_CREDENTIALS"] = os.path.join(ws, "no-creds.json")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(ws, "xdg")
+        os.environ["NO_COLOR"] = "1"
+        try:
+            here = "%s@127.0.0.1:%s" % (user, "{}")
+            for i, (name, argv) in enumerate((
+                    ("pull", [here.format(src), "{dst}"]),
+                    ("pull --no-dedup", ["--no-dedup", here.format(src), "{dst}"]),
+                    ("pull --ssh-no-sftp",
+                     ["--ssh-no-sftp", here.format(src), "{dst}"]),
+                    ("relay", [here.format(src), here.format("{dst}")]),
+                    ("relay --no-dedup",
+                     ["--no-dedup", here.format(src), here.format("{dst}")]))):
+                try:
+                    mod = _load_target_module(target, "_blitcp_phases%d" % i)
+                except Exception as e:                      # noqa: BLE001
+                    rep.skip("pull phase numbering", f"could not import target: {e}")
+                    return
+                dst = os.path.join(ws, "dst%d" % i)
+                # Dedup stays on — it owns Phase 2 — but its DB must not land
+                # at the /tmp mount root, shared by every test on the box:
+                # refusing mount roots sends it into the destination.
+                _real_w = mod._dir_really_writable
+                mod._dir_really_writable = (
+                    lambda d, _r=_real_w: False if os.path.ismount(d) else _r(d))
+                rc, out = _run_main_inprocess(
+                    mod, [a.replace("{dst}", dst) for a in argv])
+                if rc != 0:
+                    problems.append("%s: exit %s" % (name, rc))
+                    continue
+                nums = [int(m.group(1)) for m in
+                        re.finditer(r"^\s*Phase (\d+)(?![0-9a-z])", out, re.M)]
+                seen_all.append("%s %s" % (name, nums))
+                if nums != list(range(1, len(nums) + 1)):
+                    problems.append("%s: phases %s" % (name, nums))
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    if problems:
+        rep.fail("pull phase numbering", "; ".join(problems))
+    else:
+        rep.ok("pull phase numbering", "; ".join(seen_all))
+
+
+def _check_fd_fast_path_regressions(rep, ctx):
+    """The five defects the fd-fast-path review found, pinned as tests.
+
+    1. NUL/newline in a link name: openat2 truncates at a NUL in the ctypes
+       layer and every syscall accepts a newline, so the fast path must ask
+       the textual question and step aside — both names REFUSED, no link.
+    2. A symlink AT the extraction leaf: legacy refuses it; the fd path
+       must return the same words and leave the symlink standing.
+    3. A short os.write: the fd path must loop the remainder, not report
+       success over a truncated file.
+    4. A destination root swapped for a symlink after the run anchored it:
+       the fd tree must refuse to build (identity anchor) and the legacy
+       body must refuse every link — nothing lands through the swap.
+    5. dir() must never evict the last two borrowed fds (both sides of a
+       linkat), whatever MAX_FDS is.
+    """
+    target = ctx["target"]
+    if os.name == "nt":
+        rep.skip("fd fast-path regressions", "POSIX-only fast path")
+        return
+    try:
+        mod = _load_target_module(target, "_blitcp_fdreg")
+    except Exception as e:                                  # noqa: BLE001
+        rep.skip("fd fast-path regressions", f"could not import target: {e}")
+        return
+    import io as _io
+    import contextlib as _ctl
+    import tarfile as _tarfile
+    problems = []
+
+    # ── 1: hostile link names ──────────────────────────────────────────
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        with open(os.path.join(dst, "canon.txt"), "w") as f:
+            f.write("payload")
+        bad = {"bad\nname.txt": "canon.txt", "nul\0name.txt": "canon.txt"}
+        before = set(os.listdir(dst))
+        with _ctl.redirect_stdout(_io.StringIO()):
+            mod.create_links(bad, dst, fs_strategy="hardlink")
+        after = set(os.listdir(dst))
+        if after != before:
+            problems.append("a NUL/newline dup name created something: %s"
+                            % sorted(after - before))
+        refused = set(getattr(mod, "_REFUSED_PATHS", []))
+        if not any("\n" in r or "\0" in r for r in refused):
+            problems.append("NUL/newline dup names were not recorded as "
+                            "refusals")
+
+    # ── 2: symlink at the extraction leaf ──────────────────────────────
+    for env in (None, "1"):
+        saved = os.environ.pop("BLITCP_NO_OPENAT2", None)
+        if env:
+            os.environ["BLITCP_NO_OPENAT2"] = env
+        try:
+            m2 = _load_target_module(target, "_blitcp_fdreg2%s" % (env or ""))
+            with temp_workspace() as ws:
+                dst = os.path.join(ws, "dst")
+                os.makedirs(dst)
+                lure = os.path.join(ws, "lure.txt")
+                with open(lure, "w") as f:
+                    f.write("original")
+                os.symlink(lure, os.path.join(dst, "f.txt"))
+                tp = os.path.join(ws, "one.tar")
+                with _tarfile.open(tp, "w") as tf:
+                    info = _tarfile.TarInfo("f.txt")
+                    info.size = 7
+                    info.mode = 0o644
+                    tf.addfile(info, _io.BytesIO(b"replace"))
+                with _tarfile.open(tp, "r") as tf:
+                    c2 = m2._ExtractCtx(dst)
+                    got = m2._safe_tar_extract(tf, tf.getmembers()[0], dst,
+                                               trusted_source=False, ctx=c2)
+                    if hasattr(c2, "close"):
+                        c2.close()
+                label = "fd" if env is None else "legacy"
+                if got != "blocked: destination path is a symlink":
+                    problems.append("%s: symlink leaf verdict was %r"
+                                    % (label, got))
+                if not os.path.islink(os.path.join(dst, "f.txt")):
+                    problems.append("%s: the user's symlink was destroyed"
+                                    % label)
+                with open(lure) as f:
+                    if f.read() != "original":
+                        problems.append("%s: extraction wrote through the "
+                                        "leaf symlink" % label)
+        finally:
+            os.environ.pop("BLITCP_NO_OPENAT2", None)
+            if saved is not None:
+                os.environ["BLITCP_NO_OPENAT2"] = saved
+
+    # ── 3: short writes must not truncate ──────────────────────────────
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        os.makedirs(dst)
+        payload = b"A" * (256 * 1024)
+        tp = os.path.join(ws, "one.tar")
+        with _tarfile.open(tp, "w") as tf:
+            info = _tarfile.TarInfo("big.bin")
+            info.size = len(payload)
+            info.mode = 0o644
+            tf.addfile(info, _io.BytesIO(payload))
+        real_write = os.write
+
+        def _short_write(fd, data):
+            data = bytes(data)
+            return real_write(fd, data[:max(1, len(data) // 2)])
+        with _tarfile.open(tp, "r") as tf:
+            c3 = mod._ExtractCtx(dst)
+            os.write = _short_write
+            try:
+                got = mod._safe_tar_extract(tf, tf.getmembers()[0], dst,
+                                            trusted_source=False, ctx=c3)
+            finally:
+                os.write = real_write
+                if hasattr(c3, "close"):
+                    c3.close()
+        out = os.path.join(dst, "big.bin")
+        size = os.path.getsize(out) if os.path.isfile(out) else -1
+        if got is True and size != len(payload):
+            problems.append("short writes: reported success over %d of %d "
+                            "bytes" % (size, len(payload)))
+
+    # ── 4: root swapped after the run anchored it ──────────────────────
+    with temp_workspace() as ws:
+        dst = os.path.join(ws, "dst")
+        elsewhere = os.path.join(ws, "elsewhere")
+        os.makedirs(dst)
+        os.makedirs(elsewhere)
+        with open(os.path.join(dst, "canon.txt"), "w") as f:
+            f.write("payload")
+        m4 = _load_target_module(target, "_blitcp_fdreg4")
+        m4._real_dst_root(dst)                   # the run's anchor moment
+        os.rename(dst, dst + ".real")
+        os.symlink(elsewhere, dst)
+        with _ctl.redirect_stdout(_io.StringIO()):
+            m4.create_links({"dup.txt": "canon.txt"}, dst,
+                            fs_strategy="hardlink")
+        if os.listdir(elsewhere):
+            problems.append("root swap: a link landed through the planted "
+                            "symlink: %s" % os.listdir(elsewhere))
+
+    # ── 5: the last two borrowed fds survive eviction ──────────────────
+    with temp_workspace() as ws:
+        for d in ("a", "b", "c", "d"):
+            os.makedirs(os.path.join(ws, d))
+        mod._real_dst_root(ws)
+        t = mod._DestFdTree(ws)
+        if t.available:
+            t.MAX_FDS = 2
+            fda = t.dir("a")
+            fdb = t.dir("b")
+            t.dir("c")
+            t.dir("d")
+            for name, fd in (("a", fda), ("b", fdb)):
+                try:
+                    os.fstat(fd)
+                except OSError:
+                    # Only the two MOST RECENT are protected; 'a' and 'b'
+                    # were superseded by 'c' and 'd', so this is fine —
+                    # the real assertion is the two last borrows:
+                    pass
+            fdc = t.dir("c")
+            fdd = t.dir("d")
+            t.dir("a")                       # forces eviction pressure
+            try:
+                os.fstat(fdd)
+            except OSError:
+                problems.append("eviction closed the most recent borrow")
+            t.close()
+
+    if problems:
+        rep.fail("fd fast-path regressions", "; ".join(problems))
+    else:
+        rep.ok("fd fast-path regressions",
+               "hostile names refused, symlink leaf refused with legacy "
+               "words, short writes looped, root swap contained, recent "
+               "borrows survive eviction")
+
+
+def _check_fd_extract_parity(rep, ctx):
+    """_fd_extract_member — the fd-based extraction rung — against legacy.
+
+    The same small batch runs through _safe_tar_extract twice: once as the
+    kernel provides (openat2 fast path where it exists) and once under
+    BLITCP_NO_OPENAT2=1, which forces the pre-fd code. The two runs must
+    agree: the benign member lands with identical bytes and mode, the
+    '..'-traversal member and the member under a pre-planted symlinked
+    parent are refused, and nothing ever appears outside the destination.
+    A refusal string may only come from the legacy checks — the fd path
+    steps aside rather than refuses — so verdict parity here proves the
+    stepping-aside actually reaches them."""
+    if os.name == "nt":
+        rep.skip("fd extraction parity", "POSIX-only fast path")
+        return
+    import io as _io
+    import tarfile as _tarfile
+    results = {}
+    for label, env in (("fd", None), ("legacy", "1")):
+        saved = os.environ.pop("BLITCP_NO_OPENAT2", None)
+        if env:
+            os.environ["BLITCP_NO_OPENAT2"] = env
+        try:
+            try:
+                mod = _load_target_module(ctx["target"], "_blitcp_fdx_" + label)
+            except Exception as e:                          # noqa: BLE001
+                rep.skip("fd extraction parity",
+                         f"could not import target: {e}")
+                return
+            with temp_workspace() as ws:
+                dst = os.path.join(ws, "dst")
+                outside = os.path.join(ws, "out")
+                os.makedirs(dst)
+                os.makedirs(outside)
+                os.symlink(outside, os.path.join(dst, "sneak"))
+                tar_path = os.path.join(ws, "b.tar")
+                with _tarfile.open(tar_path, "w") as tf:
+                    for name, payload, mode in (
+                            ("sub/ok.txt", b"fd-parity-payload", 0o640),
+                            ("../evil.txt", b"x", 0o644),
+                            ("sneak/pwn.txt", b"x", 0o644)):
+                        info = _tarfile.TarInfo(name)
+                        info.size = len(payload)
+                        info.mode = mode
+                        tf.addfile(info, _io.BytesIO(payload))
+                got = {}
+                with _tarfile.open(tar_path, "r") as tf:
+                    ctxobj = mod._ExtractCtx(dst)
+                    for m in tf.getmembers():
+                        got[m.name] = mod._safe_tar_extract(
+                            tf, m, dst, trusted_source=False, ctx=ctxobj)
+                    if hasattr(ctxobj, "close"):
+                        ctxobj.close()
+                okp = os.path.join(dst, "sub", "ok.txt")
+                if os.path.isfile(okp):
+                    with open(okp, "rb") as f:
+                        got["_content"] = f.read()
+                    got["_mode"] = os.stat(okp).st_mode & 0o7777
+                else:
+                    got["_content"] = got["_mode"] = None
+                got["_escaped"] = sorted(os.listdir(outside))
+                results[label] = got
+        finally:
+            os.environ.pop("BLITCP_NO_OPENAT2", None)
+            if saved is not None:
+                os.environ["BLITCP_NO_OPENAT2"] = saved
+    problems = []
+    for label, got in results.items():
+        if got["_content"] != b"fd-parity-payload":
+            problems.append("%s: benign member bytes wrong or missing" % label)
+        if got["_mode"] != 0o640:
+            problems.append("%s: benign member mode %r, wanted 0o640"
+                            % (label, got["_mode"]))
+        if got.get("../evil.txt") is True:
+            problems.append("%s: '..' traversal member was accepted" % label)
+        if got.get("sneak/pwn.txt") is True:
+            problems.append("%s: symlinked-parent member was accepted" % label)
+        if got["_escaped"]:
+            problems.append("%s: escaped the destination: %s"
+                            % (label, got["_escaped"]))
+    if problems:
+        rep.fail("fd extraction parity", "; ".join(problems))
+    else:
+        rep.ok("fd extraction parity",
+               "fd and legacy extraction agree: bytes, mode, refusals, "
+               "and nothing outside the destination")
 
 
 def _check_pull_paths_are_validated(rep, ctx):
@@ -5636,6 +6746,16 @@ def section_bugs(rep, ctx):
     _check_cache_preload(rep, ctx)
     _check_threadpool_small_files(rep, ctx)
     _check_midbatch_symlinked_parent(rep, ctx)
+    _check_fd_extract_parity(rep, ctx)
+    _check_fd_fast_path_regressions(rep, ctx)
+    _check_wsl_drvfs_hint(rep, ctx)
+    _check_long_phase_progress(rep, ctx)
+    _check_flush_before_clock(rep, ctx)
+    _check_remote_sync_before_clock(rep, ctx)
+    _check_eta_matches_shown_rate(rep, ctx)
+    _check_creds_mode_hint_on_drvfs(rep, ctx)
+    _check_small_files_rate_in_summary(rep, ctx)
+    _check_pull_phase_numbering(rep, ctx)
     _check_pull_paths_are_validated(rep, ctx)
     _check_create_links_validates(rep, ctx)
     _check_http_filename_cannot_traverse(rep, ctx)

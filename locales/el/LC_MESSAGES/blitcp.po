@@ -1206,3 +1206,18 @@ msgstr "{n} απέτυχαν"
 
 msgid "Nothing was written: the destination path leads outside itself."
 msgstr "Δεν γράφτηκε τίποτα: η διαδρομή προορισμού οδηγεί έξω από τον εαυτό της."
+
+msgid "hint: a WSL-native destination (e.g. ~/…) or the native Windows build is many times faster here"
+msgstr "υπόδειξη: ένας εγγενής προορισμός WSL (π.χ. ~/…) ή η εγγενής έκδοση για Windows είναι πολλαπλάσια ταχύτερη εδώ"
+
+msgid "Cancelled."
+msgstr "Ακυρώθηκε."
+
+msgid "Loading…"
+msgstr "Φόρτωση…"
+
+msgid "Connecting to {0}…"
+msgstr "Σύνδεση με {0}…"
+
+msgid "Showing the first {0} of {1} entries"
+msgstr "Εμφανίζονται οι πρώτες {0} από {1} καταχωρίσεις"

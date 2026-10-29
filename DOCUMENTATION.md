@@ -514,6 +514,60 @@ Files are copied in 5 phases:
 
 After copying, all files are verified against source hashes.
 
+### What blitcp checks before it copies
+
+Three checks run on a local copy before, or alongside, the first byte of a
+large file. Each detects one named condition and prints one named warning.
+None of them says a file is good, and a clean run prints nothing extra.
+
+**1. Hash-cache drift (integrity warning).** The hash cache stores one hash
+per source file keyed on path, size and mtime. When a file is hashed again —
+during the incremental check, or as its bytes stream through the copy — and
+the hash differs while size and mtime are unchanged, the bytes changed
+without a write: bit rot, a bad sector, or a USB/SATA bridge returning wrong
+data. The warning names the file, both hashes and when the cached one was
+recorded, says what the mtime's resolution allows (a FAT/exFAT 2-second
+timestamp can hide a rewrite), and whether this is the first time, a stable
+change (the same new hash again) or a flapping one (a different hash on each
+read). The cache keeps the old entry; the new hashes are recorded beside it.
+Counted as `N integrity` on the DONE block's `Warnings:` line.
+`--strict-integrity` makes it a failure: the file is not kept at the
+destination and the run exits non-zero. Needs the cache (not `--no-cache`)
+and verification (not `--no-verify`), because the digest comes from the copy.
+
+**2. Source-device pre-flight (Phase 4, `Source pre-flight`).** Once per
+source volume: the bus (USB, SATA, NVMe…), whether the device is removable,
+and whether the volume carries the dirty bit (Windows `FSCTL_IS_VOLUME_DIRTY`;
+on Linux ext4's error count since mount — other filesystems are reported as
+not checked). A removable or USB device gets a warning, because sustained
+reads on it are cut short by selective suspend, power limits and hubs; a dirty
+volume gets one that says to run `chkdsk`/`fsck` first. Unknown is printed as
+unknown. Then every large file (≥ 1 MB) is probed: the first and last 1 MB
+and three interior points are read through the same open the copy loop will
+use, within a 10-second budget for the whole pass. A read that fails here is
+the failure the copy would have hit at minute ten; that file is reported with
+the same decorated line (`read src <path>: [Errno 13] … (probe read at offset
+…)`), counted as failed, and not copied. The findings go into the `--log-file`
+and sudo-audit records under `preflight`.
+
+**3. In-use / lock check (per large file).** One short exclusive open
+(`CreateFile` with no sharing, closed at once) before each large file. A
+sharing or lock violation means another process holds the file — on a backup
+repository, usually a running job (Veeam and the like) — and the copy may fail
+mid-stream or land an inconsistent file. Warn and copy; `--strict-locks` skips
+the file and fails the run. On Linux the check asks for advisory OFD locks
+only, so a process that simply has the file open is not seen; elsewhere it is
+not run. Small files are never probed.
+
+**What these do not detect.** None of them reads a whole file before the copy,
+so a bad sector outside the probed points is found by the copy, not before it.
+None of them knows whether a file's *contents* are valid for the program that
+wrote them — a Veeam backup that is internally inconsistent, a database file
+with a torn page. Use the producing application's own validator for that
+(Veeam's health check, `pg_checksums`, and so on). The lock check does not see
+a process that reads the file without holding it. Drift is only visible for a
+file the cache has already seen once with the same size and mtime.
+
 ### SSH Remote Transfers
 
 Three remote copy modes are supported:

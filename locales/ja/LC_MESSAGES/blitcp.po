@@ -1206,3 +1206,18 @@ msgstr "{n} 件失敗"
 
 msgid "Nothing was written: the destination path leads outside itself."
 msgstr "何も書き込まれていません: 宛先パスは自分自身の外を指しています。"
+
+msgid "hint: a WSL-native destination (e.g. ~/…) or the native Windows build is many times faster here"
+msgstr "ヒント: WSL ネイティブの宛先（例: ~/…）またはネイティブ Windows 版の方がここでははるかに高速です"
+
+msgid "Cancelled."
+msgstr "キャンセルしました。"
+
+msgid "Loading…"
+msgstr "読み込み中…"
+
+msgid "Connecting to {0}…"
+msgstr "{0} に接続中…"
+
+msgid "Showing the first {0} of {1} entries"
+msgstr "{1} 件中、最初の {0} 件を表示しています"

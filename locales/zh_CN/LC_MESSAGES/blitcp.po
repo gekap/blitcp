@@ -1206,3 +1206,18 @@ msgstr "{n} 个失败"
 
 msgid "Nothing was written: the destination path leads outside itself."
 msgstr "未写入任何内容：目标路径指向其自身之外。"
+
+msgid "hint: a WSL-native destination (e.g. ~/…) or the native Windows build is many times faster here"
+msgstr "提示：WSL 原生目标（如 ~/…）或原生 Windows 版本在此快得多"
+
+msgid "Cancelled."
+msgstr "已取消。"
+
+msgid "Loading…"
+msgstr "正在加载…"
+
+msgid "Connecting to {0}…"
+msgstr "正在连接 {0}…"
+
+msgid "Showing the first {0} of {1} entries"
+msgstr "显示 {1} 项中的前 {0} 项"

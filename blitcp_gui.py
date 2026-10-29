@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import sys
+import threading
 import time
 from collections import deque
 
@@ -91,9 +92,11 @@ _ensure_std_streams()
 
 # Reuse the real blitcp engine for credentials + remote listing when it sits
 # next to this file. Optional: the GUI still runs (with demo data) without it.
-# Released in lockstep with blitcp.py — used to fetch the MATCHING core engine
-# if someone runs the GUI without it next to them.
-GUI_VERSION = "4.2.3"
+# The engine version the GUI fetches when it runs WITHOUT blitcp.py next to it
+# (_download_core). Nothing else reads it: with the engine loaded, GUI_VERSION
+# below is the engine's own __version__. Bump together with blitcp.py's
+# __version__ on release — uat_gui GUI-VER-1 and the auditor fail otherwise.
+_GUI_PIN = "4.2.14"
 GUI_REPO = "gekap/blitcp"
 # Shown only on the Settings version card, which the user opened on
 # purpose. Static URL — nothing is fetched, nothing is tracked.
@@ -115,6 +118,10 @@ except Exception:
     except Exception:
         fc = None
         FC_OK = False
+
+# One version for the window title, the Settings card and the update check: the
+# engine's. A literal here drifted — v4.2.13 showed "blitcp 4.2.3".
+GUI_VERSION = (getattr(fc, "__version__", None) if FC_OK else None) or _GUI_PIN
 
 # ── i18n (see I18N_DESIGN.md) ───────────────────────────────────────────────
 # The GUI shares the engine's gettext domain. Without the engine (demo mode)
@@ -171,16 +178,52 @@ def _early_gui_language():
         pass
 
 from PySide6.QtCore import (
-    Qt, QTimer, Signal, QThread, QPropertyAnimation, QEasingCurve, QProcess,
-    QProcessEnvironment,
+    Qt, QTimer, Signal, Slot, QThread, QObject, QPropertyAnimation, QEasingCurve,
+    QProcess, QProcessEnvironment,
 )
-from PySide6.QtGui import QFontDatabase, QFont, QColor, QPixmap, QPainter, QIcon
+from PySide6.QtGui import (
+    QFontDatabase, QFont, QColor, QPixmap, QPainter, QIcon, QTextCharFormat,
+    QTextCursor, QTextOption,
+)
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QScrollArea,
     QDialog, QGraphicsOpacityEffect, QSizePolicy, QFrame, QFormLayout,
-    QFileDialog, QMessageBox, QCheckBox, QTextBrowser,
+    QFileDialog, QMessageBox, QCheckBox, QTextBrowser, QPlainTextEdit,
 )
+
+def _host_env():
+    """The environment of the user's session, for programs the GUI launches
+    (file manager, browser). The frozen Linux build's
+    runtime hook points GIO at an empty module directory so its bundled libgio
+    leaves the host's newer gio modules alone (build.py, GIO_HOOK); a browser
+    or file manager started from here must get the host's GIO back, with the
+    host's libraries — so PyInstaller's LD_LIBRARY_PATH is undone too."""
+    import json
+    env = dict(os.environ)
+    saved = env.pop("_BLITCP_GIO_SAVED", None)
+    if saved:
+        try:
+            for k, v in json.loads(saved).items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = v
+        except (ValueError, AttributeError):
+            pass
+    if getattr(sys, "frozen", False) and "LD_LIBRARY_PATH" in env:
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH")
+    return env
+
+
+# Lines the visible transfer log keeps; older ones drop off the top. The full
+# diagnostic transcript is _BoundedLog's job — this is only what is on screen.
+LOG_MAX_LINES = 10000
+
 
 class _BoundedLog:
     """Memory-bounded transcript for the on-failure diagnostic log.
@@ -630,7 +673,8 @@ def stylesheet(v):
     QLabel#statv {{ font-size: 17px; font-weight: 600; }}
     QLabel#statvok {{ font-size: 17px; font-weight: 600; color: {v['ok']}; }}
     QFrame#logbox {{ background: {v['bg']}; border: 1px solid {v['line']}; border-radius: 9px; }}
-    QLabel#logline {{ font-family: {MONO}; font-size: 12.5px; color: {v['muted']}; }}
+    QPlainTextEdit#logview {{ font-family: {MONO}; font-size: 12.5px; color: {v['muted']};
+        background: transparent; border: none; padding: 7px 9px; }}
 
     /* connection cards */
     QFrame#conn {{ background: {v['panel']}; border: 1px solid {v['line']}; border-radius: 8px; }}
@@ -1468,6 +1512,8 @@ class RemoteBrowseDialog(QDialog):
         self.conn = None
         self.cwd = "/"
         self.selected = None
+        self._want_req = None             # listing request this dialog waits for
+        self._shown = None                # ((name, cwd), entries, err, total)
         self.setModal(True)
         self.setWindowTitle(_tr("Browse SSH") if kind == "ssh" else _tr("Browse cloud"))
         self.resize(580, 580)
@@ -1541,10 +1587,13 @@ class RemoteBrowseDialog(QDialog):
         self._set_conn()
         self._render()
 
-    def _render(self):
+    def done(self, r):
+        self.gui._cancel_listing(self)        # a late answer finds nobody waiting
+        super().done(r)
+
+    def _render(self, refresh=True):
+        """refresh=False re-draws from the last listing (picking a file)."""
         is_ssh = self.conn["type"] == "ssh"
-        entries, err = (self.gui._ssh_entries(self.conn, self.cwd) if is_ssh
-                        else self.gui._cloud_entries(self.conn, self.cwd))
         # breadcrumb
         while self.crumb_lay.count():
             it = self.crumb_lay.takeAt(0)
@@ -1578,14 +1627,30 @@ class RemoteBrowseDialog(QDialog):
                 it.widget().deleteLater()
         if self.cwd != "/":
             self._add_item(self._mk_item("..", "up", up=True))
-        if err:
-            self._add_msg(ic("alert-triangle") + "  " + err)
-        elif not entries:
-            self._add_msg("— empty —")
+        key = (self.conn["name"], self.cwd)
+        if not refresh and self._shown and self._shown[0] == key:
+            for row in self.gui._listing_rows(*self._shown[1:]):
+                if row[0] == "msg":
+                    self._add_msg(row[1])
+                else:
+                    self._add_item(self._mk_item(row[1], row[2]))
         else:
-            for name, meta in entries:
-                self._add_item(self._mk_item(name, meta))
+            self._shown = None
+            self._add_item(self.gui._loading_row(self.gui._list_label(self.conn),
+                                                 self._cancel))
+            self.gui._start_listing(self, self.conn, self.cwd,
+                                    lambda e, er, t, k=key: self._listed(k, e, er, t))
         self.pathlbl.setText(self.gui._compose_path(self.conn, self.cwd, self.selected))
+
+    def _listed(self, key, entries, err, total):
+        self._shown = (key, entries, err, total)
+        if (self.conn["name"], self.cwd) == key:
+            self._render(refresh=False)
+
+    def _cancel(self):
+        self.gui._cancel_listing(self)
+        self._shown = ((self.conn["name"], self.cwd), None, _tr("Cancelled."), None)
+        self._render(refresh=False)
 
     def _add_item(self, w):
         self.files_lay.insertWidget(self.files_lay.count() - 1, w)
@@ -1641,7 +1706,7 @@ class RemoteBrowseDialog(QDialog):
 
     def _pick(self, name):
         self.selected = name
-        self._render()
+        self._render(refresh=False)
 
     def _accept_file(self, name):
         self.selected = name
@@ -1723,6 +1788,56 @@ class _UpdateCheckWorker(QThread):
         except Exception as e:
             msg = str(e).strip().splitlines()[0] if str(e).strip() else e.__class__.__name__
             self.done.emit({"err": msg})
+
+
+BROWSE_MAX_ENTRIES = 5000   # rows a remote listing shows; the rest are counted
+SSH_BROWSE_TIMEOUT = 8      # s, each of connect / banner / auth
+SMB_BROWSE_TIMEOUT = 10     # s, SMB connection set-up
+
+
+class _ListWorker(QThread):
+    """One remote directory listing, off the UI thread. fn(cancelled) returns
+    (entries, err, total); done(req, entries, err, total) carries it back with
+    the request id, so the browser can drop an answer it no longer wants."""
+    done = Signal(int, object, object, object)
+
+    def __init__(self, req, fn):
+        super().__init__()
+        self.req, self.fn = req, fn
+        self.cancel = threading.Event()
+
+    def run(self):
+        try:
+            entries, err, total = self.fn(self.cancel.is_set)
+        except Exception as e:                  # the browser waits for an answer
+            entries, err, total = None, BlitcpGUI._clean_err(e), None
+        self.done.emit(self.req, entries, err, total)
+
+
+class _OnUIThread(QObject):
+    """Run a callable on the UI thread and wait for its result: the one dialog a
+    listing worker can need is the unknown-SSH-host-key prompt."""
+    _call = Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self._call.connect(self._run, Qt.BlockingQueuedConnection)
+
+    @Slot(object)
+    def _run(self, box):
+        try:
+            box[1] = box[0]()
+        except BaseException as e:              # re-raised in the worker
+            box[2] = e
+
+    def __call__(self, fn):
+        if QThread.currentThread() == self.thread():
+            return fn()
+        box = [fn, None, None]
+        self._call.emit(box)
+        if box[2] is not None:
+            raise box[2]
+        return box[1]
 
 
 class _DownloadWorker(QThread):
@@ -1874,8 +1989,9 @@ class _ConfirmHostKeyPolicy:
     """paramiko host-key policy: instead of silently auto-adding an unknown host
     key (a MITM risk), prompt the user to verify the fingerprint — OpenSSH-style
     TOFU. Known hosts are checked by paramiko before this runs, so a CHANGED key
-    raises BadHostKeyException (rejected). SSH browsing runs on the main thread,
-    so a modal dialog here is safe. Declining raises SSHException (connection
+    raises BadHostKeyException (rejected). SSH browsing connects on a listing
+    worker, so the dialog is handed to the UI thread (parent._on_ui) and the
+    worker waits for the answer. Declining raises SSHException (connection
     rejected)."""
 
     def __init__(self, parent, known_hosts_path):
@@ -1887,10 +2003,8 @@ class _ConfirmHostKeyPolicy:
         import hashlib
         fp = "SHA256:" + base64.b64encode(
             hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
-        had_cursor = QApplication.overrideCursor() is not None
-        if had_cursor:
-            QApplication.restoreOverrideCursor()
-        try:
+
+        def ask():
             m = QMessageBox(self.parent)
             m.setWindowTitle(_tr("Unknown SSH host"))
             m.setIcon(QMessageBox.Warning)
@@ -1901,12 +2015,12 @@ class _ConfirmHostKeyPolicy:
             trust = m.addButton("Trust", QMessageBox.AcceptRole)
             m.addButton("Cancel", QMessageBox.RejectRole)
             m.exec()
-            if m.clickedButton() is not trust:
-                raise paramiko.SSHException(
-                    f"Host key for {hostname} was not trusted by the user")
-        finally:
-            if had_cursor:
-                QApplication.setOverrideCursor(Qt.WaitCursor)
+            return m.clickedButton() is trust
+
+        on_ui = getattr(self.parent, "_on_ui", None)
+        if not (on_ui(ask) if on_ui else ask()):
+            raise paramiko.SSHException(
+                f"Host key for {hostname} was not trusted by the user")
         # Trusted: accept for this session and append a single entry to known_hosts.
         client.get_host_keys().add(hostname, key.get_name(), key)
         try:
@@ -1966,6 +2080,15 @@ class BlitcpGUI(QWidget):
         self.local_home = os.path.expanduser("~")
         self._ssh_clients = {}           # name -> [SSHClient, SFTPClient|None]
         self._ssh_no_sftp = set()        # conns whose server has no SFTP subsystem
+        # remote listings run on _ListWorker threads (never on the UI thread)
+        self._on_ui = _OnUIThread()
+        self._browse_seq = 0             # last listing request id handed out
+        self._want_req = None            # the request the main browser waits for
+        self._list_waiters = {}          # req -> (owner, callback)
+        self._browse_workers = set()     # running _ListWorker threads
+        self._browse_backends = {}       # name -> (fingerprint, backend, its lock)
+        self._browse_locks = {}          # one listing per connection (SMB: per host)
+        self._shown = None               # ((name, cwd), entries, err, total)
         self._sudo_pw = None             # cached sudo password for this session
         self._build_trees()
 
@@ -2615,16 +2738,28 @@ class BlitcpGUI(QWidget):
         self.log_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         logwrap = QVBoxLayout(self.log_box)
         logwrap.setContentsMargins(0, 0, 0, 0)
-        self.log_scroll = QScrollArea()
-        self.log_scroll.setWidgetResizable(True)
-        self.log_scroll.setFrameShape(QFrame.NoFrame)
-        log_inner = QWidget()
-        self.log_lay = QVBoxLayout(log_inner)
-        self.log_lay.setContentsMargins(11, 9, 11, 9)
-        self.log_lay.setSpacing(2)
-        self.log_lay.addStretch(1)
-        self.log_scroll.setWidget(log_inner)
-        logwrap.addWidget(self.log_scroll)
+        # One text view with a block cap, not a QLabel per line: an engine
+        # that prints a line per file (refusals, unreadable names) grew the
+        # GUI by ~20 KB a line until the OOM killer took it.
+        self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("logview")
+        self.log_view.setReadOnly(True)
+        self.log_view.setFrameShape(QFrame.NoFrame)
+        self.log_view.setMaximumBlockCount(LOG_MAX_LINES)
+        # Wrap instead of running off the panel. An engine error puts what to
+        # do at the END of the line ("Fix: chmod go-w …"), and without this the
+        # log showed the complaint and clipped the remedy.
+        self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.log_view.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # A burst of lines arms one scroll-to-bottom, not one timer per line.
+        self._log_scroll_timer = QTimer(self)
+        self._log_scroll_timer.setSingleShot(True)
+        self._log_scroll_timer.setInterval(0)
+        self._log_scroll_timer.timeout.connect(
+            lambda: self.log_view.verticalScrollBar().setValue(
+                self.log_view.verticalScrollBar().maximum()))
+        logwrap.addWidget(self.log_view)
         lay.addWidget(self.log_box)
         return prog
 
@@ -2883,8 +3018,8 @@ class BlitcpGUI(QWidget):
         m.setText(_tr("blitcp.py (the copy engine) was not found next to the GUI."))
         m.setInformativeText(
             f"The GUI needs it to run transfers. Download the matching "
-            f"version (v{GUI_VERSION}) from {GUI_REPO}?")
-        dl = m.addButton("Download v" + GUI_VERSION, QMessageBox.AcceptRole)
+            f"version (v{_GUI_PIN}) from {GUI_REPO}?")
+        dl = m.addButton("Download v" + _GUI_PIN, QMessageBox.AcceptRole)
         m.addButton("Not now", QMessageBox.RejectRole)
         m.exec()
         if m.clickedButton() is dl:
@@ -2892,14 +3027,14 @@ class BlitcpGUI(QWidget):
 
     def _download_core(self):
         import urllib.request
-        self.show_toast(_tr("Downloading blitcp.py") + " v" + GUI_VERSION + " …")
+        self.show_toast(_tr("Downloading blitcp.py") + " v" + _GUI_PIN + " …")
         QApplication.processEvents()
         base = "https://raw.githubusercontent.com/" + GUI_REPO
         # blitcp.py on current tags; blitcp.py covers pre-rename tags.
-        urls = [base + "/v" + GUI_VERSION + "/blitcp.py",
-                base + "/" + GUI_VERSION + "/blitcp.py",
+        urls = [base + "/v" + _GUI_PIN + "/blitcp.py",
+                base + "/" + _GUI_PIN + "/blitcp.py",
                 base + "/main/blitcp.py",
-                base + "/v" + GUI_VERSION + "/fast_copy.py",
+                base + "/v" + _GUI_PIN + "/fast_copy.py",
                 base + "/main/fast_copy.py"]
         dest = os.path.join(HERE, "blitcp.py")
         err = "no source reachable"
@@ -3007,7 +3142,16 @@ class BlitcpGUI(QWidget):
 
     def open_docs(self):
         import webbrowser
-        webbrowser.open("https://blitcp.dev/#docs")
+        # webbrowser takes no env; it spawns from os.environ, so swap it in
+        # for the call (_host_env: the browser must not inherit our GIO hook).
+        saved = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(_host_env())
+        try:
+            webbrowser.open("https://blitcp.dev/#docs")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
 
     # ─────────────────────────────────────────────────────── sources ──
     def add_source(self):
@@ -3690,11 +3834,22 @@ class BlitcpGUI(QWidget):
     def _strip_ansi(s):
         return re.sub(r"\x1b\[[0-9;]*m", "", s)
 
+    @staticmethod
+    def _last_cr_segment(partial):
+        """An unterminated line keeps only what a terminal would still show:
+        the text after its last \\r. Engine progress such as 'Hashing existing
+        [N]: <path>' rewrites one line with \\r per file and sends the \\n
+        only when the phase ends, so the raw buffer grew by a path per file and
+        was re-copied on every read. A trailing \\r is kept as is — it can be
+        the first half of a CRLF split across two reads."""
+        cut = partial.rstrip("\r").rfind("\r")
+        return partial[cut:] if cut > 0 else partial
+
     def _on_proc_stdout(self):
         data = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
         buf = self._run_meta["outbuf"] + data
         parts = buf.split("\n")
-        self._run_meta["outbuf"] = parts.pop()
+        self._run_meta["outbuf"] = self._last_cr_segment(parts.pop())
         self._run_meta["fulllog"].extend(parts)   # raw, for the diagnostic log file
         for line in parts:
             self._handle_out_line(line)
@@ -3923,7 +4078,7 @@ class BlitcpGUI(QWidget):
         if tail:
             buf = self._run_meta["outbuf"] + tail
             parts = buf.split("\n")
-            self._run_meta["outbuf"] = parts.pop()
+            self._run_meta["outbuf"] = self._last_cr_segment(parts.pop())
             for line in parts:
                 self._handle_out_line(line)
         err = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
@@ -4014,22 +4169,14 @@ class BlitcpGUI(QWidget):
             return None
 
     def _clear_log(self):
-        while self.log_lay.count() > 1:
-            item = self.log_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self.log_view.clear()
 
     def _add_log(self, text, link=False):
-        l = QLabel(text)
-        l.setObjectName("logline")
-        # Wrap instead of running off the panel. An engine error puts what to
-        # do at the END of the line ("Fix: chmod go-w …"), and without this the
-        # log showed the complaint and clipped the remedy.
-        l.setWordWrap(True)
         v = DARK if self.dark else LIGHT
+        fmt = QTextCharFormat()     # no foreground → the stylesheet's colour
         if link:
-            l.setTextFormat(Qt.RichText)
-            l.setText(f"<span style='color:{v['ok']}'>linked</span> 312 duplicates (8.3 GB saved)")
+            text = "linked 312 duplicates (8.3 GB saved)"
+            fmt.setForeground(QColor(v["ok"]))
         else:
             # Colour like the terminal: dim rules, cyan phase banners, green ✓,
             # red errors — so the GUI log reads like the CLI output, not flat grey.
@@ -4044,15 +4191,19 @@ class BlitcpGUI(QWidget):
             elif re.search(r"✗|\bError\b|\bFailed\b|FAILED|mismatch", text):
                 color = v["danger"]
             if color:
-                from html import escape
-                l.setTextFormat(Qt.RichText)
-                # pre-wrap, not pre: keeps the column alignment of progress
-                # and summary lines while still letting a long line wrap.
-                l.setText(f"<span style='color:{color}; white-space:pre-wrap'>"
-                          f"{escape(text)}</span>")
-        self.log_lay.insertWidget(self.log_lay.count() - 1, l)
-        QTimer.singleShot(0, lambda: self.log_scroll.verticalScrollBar().setValue(
-            self.log_scroll.verticalScrollBar().maximum()))
+                fmt.setForeground(QColor(color))
+        # Plain text with its own format per block: leading spaces keep the
+        # column alignment of progress and summary lines, and nothing is parsed
+        # as markup. setMaximumBlockCount drops the oldest blocks.
+        doc = self.log_view.document()
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.End)
+        if not doc.isEmpty():
+            cur.insertBlock()
+        cur.setCharFormat(fmt)
+        cur.insertText(text, fmt)
+        if not self._log_scroll_timer.isActive():
+            self._log_scroll_timer.start()
 
     # ───────────────────────────────────────────────── connections ──
     def _conn_summary(self, c):
@@ -4386,6 +4537,10 @@ class BlitcpGUI(QWidget):
         self._set_browse_conn(self.conn_sel.currentData())
 
     def _set_browse_conn(self, val):
+        prev = (self.browse_conn or {}).get("name")
+        if prev and prev != val and prev in self._browse_backends:
+            self._browse_close(prev)          # don't keep the old SMB session open
+        self._shown = None
         if val == "__local" or val not in self.conns:
             self.browse_conn = {"name": "local", "type": "local"}
             # start in the user's home folder, browsing the real filesystem
@@ -4401,7 +4556,7 @@ class BlitcpGUI(QWidget):
 
     def on_conn_sel(self):
         self._set_browse_conn(self.conn_sel.currentData())
-        self.render_browse()
+        self.render_browse(refresh=True)
 
     def _local_entries(self, path):
         """Real directory listing. Returns (entries, denied):
@@ -4548,7 +4703,8 @@ class BlitcpGUI(QWidget):
             _port = 22
         kw = dict(hostname=conn.get("host"), port=_port,
                   username=conn.get("user") or None,
-                  timeout=8, banner_timeout=8, auth_timeout=8)
+                  timeout=SSH_BROWSE_TIMEOUT, banner_timeout=SSH_BROWSE_TIMEOUT,
+                  auth_timeout=SSH_BROWSE_TIMEOUT)
         if conn.get("key"):
             kw["key_filename"] = os.path.expanduser(conn["key"])
         if conn.get("password"):
@@ -4571,55 +4727,64 @@ class BlitcpGUI(QWidget):
                     "service”.")
         return msg
 
-    def _ssh_entries(self, conn, path):
+    def _ssh_entries(self, conn, path, cancelled=None):
         """List a remote dir. Tries SFTP; if the server has no SFTP subsystem,
-        falls back to listing over the shell (`ls`). Returns (entries, error)."""
+        falls back to listing over the shell (`ls`). Runs on a _ListWorker.
+        Returns (entries, error, total) — entries capped at BROWSE_MAX_ENTRIES."""
+        entries, err = self._ssh_entries_all(conn, path)
+        if err:
+            return None, err, None
+        return entries[:BROWSE_MAX_ENTRIES], None, len(entries)
+
+    def _ssh_entries_all(self, conn, path):
         import stat as statmod
         try:
             import paramiko  # noqa: F401
         except ImportError:
             return None, "paramiko is not installed"
         name = conn["name"]
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            try:
-                cli = self._ssh_client(conn)
-            except Exception as e:
-                self._ssh_close(name)
-                return None, self._clean_err(e)
+            cli = self._ssh_client(conn)
+        except Exception as e:
+            self._ssh_close(name)
+            msg = self._clean_err(e)
+            # paramiko, no banner in time: which of the two a silent host
+            # produces depends on which thread notices first.
+            if msg in ("No existing session", "Error reading SSH protocol banner"):
+                msg = (f"{conn.get('host')} port {conn.get('port') or 22}: no SSH "
+                       f"answer within {SSH_BROWSE_TIMEOUT} s")
+            return None, msg
 
-            sftp_err = None
-            if name not in self._ssh_no_sftp:
-                try:
-                    pair = self._ssh_clients.get(name)
-                    sftp = pair[1] if pair and pair[1] else cli.open_sftp()
-                    if pair:
-                        pair[1] = sftp
-                    attrs = sftp.listdir_attr(path or "/")
-                    dirs, files = [], []
-                    for a in attrs:
-                        if statmod.S_ISDIR(a.st_mode):
-                            dirs.append((a.filename, "dir"))
-                        else:
-                            files.append((a.filename, fmt_size(a.st_size or 0)))
-                    dirs.sort(key=lambda x: x[0].lower())
-                    files.sort(key=lambda x: x[0].lower())
-                    return dirs + files, None
-                except Exception as e:
-                    sftp_err = e
-                    if self._ssh_clients.get(name):
-                        self._ssh_clients[name][1] = None   # drop dead SFTP
-                    # remember SFTP is unavailable → skip straight to shell next time
-                    self._ssh_no_sftp.add(name)
-
-            # shell fallback
+        sftp_err = None
+        if name not in self._ssh_no_sftp:
             try:
-                return self._ssh_ls(cli, path), None
+                pair = self._ssh_clients.get(name)
+                sftp = pair[1] if pair and pair[1] else cli.open_sftp()
+                if pair:
+                    pair[1] = sftp
+                attrs = sftp.listdir_attr(path or "/")
+                dirs, files = [], []
+                for a in attrs:
+                    if statmod.S_ISDIR(a.st_mode):
+                        dirs.append((a.filename, "dir"))
+                    else:
+                        files.append((a.filename, fmt_size(a.st_size or 0)))
+                dirs.sort(key=lambda x: x[0].lower())
+                files.sort(key=lambda x: x[0].lower())
+                return dirs + files, None
             except Exception as e:
-                base = sftp_err if sftp_err is not None else e
-                return None, self._sftp_hint(self._clean_err(base))
-        finally:
-            QApplication.restoreOverrideCursor()
+                sftp_err = e
+                if self._ssh_clients.get(name):
+                    self._ssh_clients[name][1] = None   # drop dead SFTP
+                # remember SFTP is unavailable → skip straight to shell next time
+                self._ssh_no_sftp.add(name)
+
+        # shell fallback
+        try:
+            return self._ssh_ls(cli, path), None
+        except Exception as e:
+            base = sftp_err if sftp_err is not None else e
+            return None, self._sftp_hint(self._clean_err(base))
 
     def _ssh_ls(self, cli, path):
         """List a remote directory via `ls` (works without an SFTP subsystem).
@@ -4645,53 +4810,180 @@ class BlitcpGUI(QWidget):
         files.sort(key=lambda x: x[0].lower())
         return dirs + files
 
-    def _cloud_entries(self, conn, cwd):
-        """List objects under the current prefix. Returns (entries, error)."""
-        import types
-        ctype = conn.get("type")
+    def _cloud_entries(self, conn, cwd, cancelled=None):
+        """One level of a bucket / share under cwd — never the whole tree under
+        it (list_dir, not list_objects). Runs on a _ListWorker; the backend is
+        reused while browsing. Returns (entries, error, total)."""
         if not FC_OK:
-            return None, "blitcp.py is required for cloud browsing"
-        is_smb = ctype == "smb"
-        bucket = (conn.get("share") if is_smb
-                  else conn.get("container") or conn.get("bucket"))
-        if not bucket:
+            return None, "blitcp.py is required for cloud browsing", None
+        is_smb = conn.get("type") == "smb"
+        if not (conn.get("share") if is_smb
+                else conn.get("container") or conn.get("bucket")):
             kind = "share" if is_smb else "bucket/container"
-            return None, f"no default {kind} set on this connection"
+            return None, f"no default {kind} set on this connection", None
+        prefix = "" if cwd in ("/", "") else cwd.strip("/") + "/"
+        try:
+            backend = self._browse_backend(conn)
+            dirs, files, total = backend.list_dir(
+                prefix, limit=BROWSE_MAX_ENTRIES, cancelled=cancelled)
+        except (Exception, SystemExit) as e:  # backends SystemExit on bad creds
+            self._browse_close(conn["name"])  # reconnect on the next try
+            return None, self._clean_err(e), None
+        entries = [(d, "dir") for d in sorted(dirs)] + \
+            [(f, fmt_size(sz or 0)) for f, sz in sorted(files, key=lambda x: x[0].lower())]
+        return entries, None, total
+
+    def _browse_backend(self, conn):
+        """The cached backend for a cloud/SMB connection, built on first use
+        (and again if the saved connection changed)."""
+        import types
+        name, ctype = conn["name"], conn.get("type")
+        fp = repr(sorted((k, str(v)) for k, v in conn.items()))
+        hit = self._browse_backends.get(name)
+        if hit and hit[0] == fp:
+            return hit[1]
+        if hit:
+            self._browse_close(name)
         backend_cls = {"s3": fc.S3Backend, "az": fc.AzureBackend,
                        "gs": fc.GCSBackend, "smb": fc.SMBBackend}.get(ctype)
         if not backend_cls:
-            return None, f"unsupported connection type {ctype!r}"
-        prefix = "" if cwd in ("/", "") else cwd.strip("/") + "/"
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            creds = {k: v for k, v in conn.items() if k not in ("type", "name")}
-            if is_smb:
-                spec = fc.SMBSpec(scheme="smb", container=bucket, prefix="",
-                                  connection=conn["name"], host=conn.get("host"),
-                                  port=int(conn.get("port", 445)),
-                                  user=conn.get("user"))
-            else:
-                spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
-                                    connection=conn["name"])
-            backend = backend_cls(spec, types.SimpleNamespace(), creds=creds)
-            objs = backend.list_objects(prefix)
-        except SystemExit as e:
-            return None, self._clean_err(e)
-        except Exception as e:
-            return None, self._clean_err(e)
-        finally:
-            QApplication.restoreOverrideCursor()
-        dirs, files = set(), []
-        for key, meta in (objs or {}).items():
-            rest = key[len(prefix):] if key.startswith(prefix) else key
-            if not rest:
-                continue
-            if "/" in rest:
-                dirs.add(rest.split("/", 1)[0])
-            else:
-                files.append((rest, fmt_size((meta or {}).get("size", 0))))
-        entries = [(d, "dir") for d in sorted(dirs)] + sorted(files, key=lambda x: x[0].lower())
-        return entries, None
+            raise ValueError(f"unsupported connection type {ctype!r}")
+        bucket = conn.get("share") if ctype == "smb" \
+            else conn.get("container") or conn.get("bucket")
+        creds = {k: v for k, v in conn.items() if k not in ("type", "name")}
+        if ctype == "smb":
+            spec = fc.SMBSpec(scheme="smb", container=bucket, prefix="",
+                              connection=name, host=conn.get("host"),
+                              port=int(conn.get("port", 445)),
+                              user=conn.get("user"))
+        else:
+            spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
+                                connection=name)
+        args = types.SimpleNamespace(smb_connect_timeout=SMB_BROWSE_TIMEOUT)
+        backend = backend_cls(spec, args, creds=creds)
+        self._browse_backends[name] = (fp, backend, self._browse_lock(conn))
+        return backend
+
+    def _browse_lock(self, conn):
+        """One listing at a time per connection. SMB sessions are pooled per
+        host:port by smbclient, so SMB connections lock per host:port."""
+        key = conn["name"]
+        if conn.get("type") == "smb":
+            key = ("smb", str(conn.get("host", "")).lower(), str(conn.get("port", 445)))
+        return self._browse_locks.setdefault(key, threading.Lock())
+
+    def _browse_close(self, name):
+        """Forget a cached cloud/SMB backend and close it in the background —
+        close() waits for the backend's own lock, never on the UI thread."""
+        hit = self._browse_backends.pop(name, None)
+        close = getattr(hit[1], "close", None) if hit else None
+        if close:
+            lock = hit[2]
+
+            def _bg():
+                with lock:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            threading.Thread(target=_bg, daemon=True).start()
+
+    def _list_job(self, conn, cwd):
+        conn = dict(conn)
+        lock = self._browse_lock(conn)
+        lister = self._ssh_entries if conn["type"] == "ssh" else self._cloud_entries
+
+        def job(cancelled):
+            with lock:
+                if cancelled():
+                    return None, _tr("Cancelled."), None
+                return lister(conn, cwd, cancelled)
+        return job
+
+    def _start_listing(self, owner, conn, cwd, on_done):
+        """List conn:cwd on a _ListWorker. on_done(entries, err, total) runs on
+        the UI thread, and only if `owner` (the main browser or a picker
+        dialog) still wants this request — navigating on drops it."""
+        prev = getattr(owner, "_list_worker", None)
+        if prev is not None:
+            prev.cancel.set()
+        self._browse_seq += 1
+        req = owner._want_req = self._browse_seq
+        w = _ListWorker(req, self._list_job(conn, cwd))
+        w.done.connect(self._on_listing)
+        w.finished.connect(self._on_list_finished)
+        self._list_waiters[req] = (owner, on_done)
+        self._browse_workers.add(w)
+        owner._list_worker = w
+        w.start()
+
+    def _cancel_listing(self, owner):
+        owner._want_req = None
+        w = getattr(owner, "_list_worker", None)
+        if w is not None:
+            w.cancel.set()
+
+    def _on_listing(self, req, entries, err, total):
+        owner, cb = self._list_waiters.pop(req, (None, None))
+        if cb is not None and getattr(owner, "_want_req", None) == req:
+            owner._want_req = None
+            cb(entries, err, total)
+
+    def _on_list_finished(self):
+        w = self.sender()
+        self._browse_workers.discard(w)
+        if w is not None:
+            w.deleteLater()
+
+    def _list_label(self, conn):
+        live = (conn["name"] in self._ssh_clients if conn["type"] == "ssh"
+                else conn["name"] in self._browse_backends)
+        return _tr("Loading…") if live else \
+            _tr("Connecting to {0}…").format(conn.get("host") or conn["name"])
+
+    def _loading_row(self, text, on_cancel):
+        row = QFrame()
+        row.setObjectName("fitem")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(10, 8, 10, 8)
+        rl.setSpacing(11)
+        lbl = QLabel(text)
+        lbl.setObjectName("sub")
+        rl.addWidget(lbl, 1)
+        cancel = textbtn(_tr("Cancel"), oid="btn")
+        cancel.clicked.connect(on_cancel)
+        rl.addWidget(cancel)
+        return row
+
+    @staticmethod
+    def _listing_rows(entries, err, total):
+        """What a finished listing shows: ('msg', text) / ('item', name, meta)."""
+        if err:
+            return [("msg", ic("alert-triangle") + "  " + err)]
+        if not entries:
+            return [("msg", "— empty —")]
+        rows = []
+        if total and total > len(entries):
+            rows.append(("msg", _tr("Showing the first {0} of {1} entries").format(
+                f"{len(entries):,}", f"{total:,}")))
+        return rows + [("item", n, m) for n, m in entries]
+
+    def _browse_shutdown(self, wait_s=2.0):
+        """App exit: close the browse connections (which also ends a listing
+        that is reading from one) and give running workers wait_s to finish.
+        False if one is still stuck — the caller then exits without letting Qt
+        destroy a running QThread, which aborts the process."""
+        self._want_req = None
+        for w in list(self._browse_workers):
+            w.cancel.set()
+        for name in list(self._ssh_clients):
+            self._ssh_close(name)
+        for name in list(self._browse_backends):
+            self._browse_close(name)
+        deadline = time.monotonic() + wait_s
+        for w in list(self._browse_workers):
+            w.wait(max(0, int((deadline - time.monotonic()) * 1000)))
+        return not any(w.isRunning() for w in list(self._browse_workers))
 
     def _src_type(self):
         t = self.browse_conn["type"]
@@ -4725,7 +5017,9 @@ class BlitcpGUI(QWidget):
     def _cur_path(self):
         return self._compose_path(self.browse_conn, self.cwd, self.selected_file)
 
-    def render_browse(self):
+    def render_browse(self, refresh=False):
+        """refresh=False re-draws a remote folder from its last listing (a click
+        that only selects a file); a new folder is always listed afresh."""
         if not self.browse_conn:
             self.fill_conn_sel()
         bc = self.browse_conn
@@ -4786,15 +5080,31 @@ class BlitcpGUI(QWidget):
         else:
             if self.cwd != "/":
                 self.files_box.addWidget(self._file_item("..", "up", up=True))
-            entries, err = (self._ssh_entries(bc, self.cwd) if is_ssh
-                            else self._cloud_entries(bc, self.cwd))
-            if err:
-                self._files_message(ic("alert-triangle") + "  " + err)
-            elif not entries:
-                self._files_message("— empty —")
+            key = (bc["name"], self.cwd)
+            if not refresh and self._shown and self._shown[0] == key:
+                for row in self._listing_rows(*self._shown[1:]):
+                    if row[0] == "msg":
+                        self._files_message(row[1])
+                    else:
+                        self.files_box.addWidget(self._file_item(row[1], row[2]))
             else:
-                for name, meta in entries:
-                    self.files_box.addWidget(self._file_item(name, meta))
+                self._shown = None
+                self.files_box.addWidget(self._loading_row(
+                    self._list_label(bc), self._cancel_browse))
+                self._start_listing(self, bc, self.cwd,
+                                    lambda e, er, t, k=key: self._browse_listed(k, e, er, t))
+
+    def _browse_listed(self, key, entries, err, total):
+        self._shown = (key, entries, err, total)
+        if self.browse_conn and (self.browse_conn["name"], self.cwd) == key:
+            self.render_browse()
+
+    def _cancel_browse(self):
+        self._cancel_listing(self)
+        if self.browse_conn and self.browse_conn["type"] != "local":
+            self._shown = ((self.browse_conn["name"], self.cwd), None,
+                           _tr("Cancelled."), None)
+            self.render_browse()
 
     def _files_message(self, text):
         l = QLabel(text)
@@ -4876,7 +5186,7 @@ class BlitcpGUI(QWidget):
     def _crumb_to(self, path):
         self.cwd = path
         self.selected_file = None
-        self.render_browse()
+        self.render_browse(refresh=True)       # a crumb click re-lists
 
     def _go_up(self):
         if self.browse_conn["type"] == "local":
@@ -5484,7 +5794,7 @@ class BlitcpGUI(QWidget):
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", "-R", path])
             else:
-                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+                subprocess.Popen(["xdg-open", os.path.dirname(path)], env=_host_env())
         except Exception:
             pass
 
@@ -5557,7 +5867,14 @@ def main():
     # Quietly check for a new release shortly after launch; pops a popup with the
     # release notes + Download only / Download & install if one is available.
     QTimer.singleShot(1800, w._startup_update_check)
-    sys.exit(app.exec())
+    rc = app.exec()
+    if not w._browse_shutdown():
+        # A listing is still stuck in a connect: Qt aborts the process if a
+        # running QThread is destroyed, so leave without destroying it.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
