@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.2.15 — 2026-10-29
+
+### Fixed
+
+**On Windows, a local copy refused every binary file of 1 MB or more.**
+v4.2.14's source pre-flight reads five regions of each large file before the
+copy starts. It read them with `os.read()` on a descriptor from `os.open()`,
+which on Windows is a text-mode descriptor: CR LF came back as LF and the byte
+0x1A ended the read. Almost every binary file has one of those in its first
+megabyte, so the probe reported `short read: 5 of 1048576 bytes`, counted the
+file as failed and did not copy it; the run printed `failed, not written` and
+exited 1. Nothing was written incorrectly — the affected files were not
+written at all. The probe now reads through the same binary file object the
+copy loop uses. Linux and macOS were not affected.
+
+If you installed 4.2.14 on Windows, upgrade.
+
 ## v4.2.14 — 2026-10-29
 
 v4.2.13 was the last public release. This one carries the two Windows fixes

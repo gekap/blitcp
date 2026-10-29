@@ -176,7 +176,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ════════════════════════════════════════════════════════════════════════════
 # VERSION
 # ════════════════════════════════════════════════════════════════════════════
-__version__ = "4.2.14"
+__version__ = "4.2.15"
 # Shown only where the user explicitly asked for it (--version, GUI
 # About/Settings). A plain static URL: no redirect, no tracking, no
 # network call of any kind is made on our side.
@@ -8617,13 +8617,6 @@ def _source_volumes(entries):
             for dev, (d, s) in sorted(out.items())]
 
 
-def _read_at(fd, n, off):
-    if hasattr(os, "pread"):
-        return os.pread(fd, n, off)
-    os.lseek(fd, off, os.SEEK_SET)
-    return os.read(fd, n)
-
-
 def _probe_source_reads(entry):
     """Read the first and last _PROBE_CHUNK and three interior points of a
     large file through the same open the copy loop uses. Returns None when
@@ -8638,24 +8631,32 @@ def _probe_source_reads(entry):
     except OSError as e:
         return _describe_copy_error(e, ["open", "src", entry.src], 0, size,
                                     src=entry.src, where="")
-    try:
+    # Read through a binary file object, as the copy loop does. A raw
+    # os.read() on this fd is a text-mode read on Windows (os.open sets no
+    # O_BINARY): CR LF comes back as LF and 0x1A ends the read, so every
+    # binary file failed the probe with "short read: 5 of 1048576 bytes".
+    with os.fdopen(fd, "rb", buffering=0) as fin:
         try:
-            size = os.fstat(fd).st_size
+            size = os.fstat(fin.fileno()).st_size
             chunk = min(_PROBE_CHUNK, size)
             offsets = sorted({0, size // 4, size // 2, (3 * size) // 4,
                               max(0, size - chunk)})
             for off in offsets:
                 want = min(chunk, size - off)
-                got = _read_at(fd, want, off)
-                if len(got) < want:
+                fin.seek(off)
+                got = 0
+                while got < want:
+                    n = len(fin.read(want - got) or b"")
+                    if n == 0:
+                        break
+                    got += n
+                if got < want:
                     raise OSError(errno.EIO, "short read: %d of %d bytes"
-                                  % (len(got), want))
+                                  % (got, want))
         except OSError as e:
             return _describe_copy_error(
                 e, ["read", "src", entry.src], off, size, src=entry.src,
                 where=f" (probe read at offset {fmt_size(off)} of {fmt_size(size)})")
-    finally:
-        os.close(fd)
     return None
 
 

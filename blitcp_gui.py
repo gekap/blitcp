@@ -96,7 +96,7 @@ _ensure_std_streams()
 # (_download_core). Nothing else reads it: with the engine loaded, GUI_VERSION
 # below is the engine's own __version__. Bump together with blitcp.py's
 # __version__ on release — uat_gui GUI-VER-1 and the auditor fail otherwise.
-_GUI_PIN = "4.2.14"
+_GUI_PIN = "4.2.15"
 GUI_REPO = "gekap/blitcp"
 # Shown only on the Settings version card, which the user opened on
 # purpose. Static URL — nothing is fetched, nothing is tracked.
