@@ -1,0 +1,5 @@
+User-Agent: *
+Allow: /
+Disallow: /dl/
+
+Sitemap: https://blitcp.dev/sitemap.xml
