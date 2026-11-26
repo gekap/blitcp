@@ -1933,16 +1933,31 @@ def s_xn_real_engine_rows(w):
         rows = dict(w.sink_rows)
         there = all(os.path.isfile(os.path.join(base, d, "sub", "b.bin"))
                     for d in ("A", "B"))
+        # The engine's own verdict per destination. On APFS (macOS CI) the
+        # source and both destinations share a volume, so every file is
+        # cloned and checked by existence + size: no content compared, and
+        # the GUI must then say so instead of "Verified".
+        sinks = (w._run_meta.get("fanout_result") or {}).get("sinks") or []
+        clones = len(sinks) == 2 and all(
+            sk.get("levels") == {"links": 2} for sk in sinks)
+        if clones:
+            said = (all("content not compared" in rows[k]["verdict"].text()
+                        for k in rows)
+                    and not any("verified" in t for t in toasts))
+        else:
+            said = (all("Verified" in rows[k]["verdict"].text() for k in rows)
+                    and any("verified" in t for t in toasts))
         ok = (sorted(rows) == [1, 2] and not w.running and len(history) == 1
-              and all("Verified" in rows[k]["verdict"].text() for k in rows)
-              and all(rows[k].get("pct") == 100.0 for k in rows)
-              and any("verified" in t for t in toasts) and there)
+              and said and all(rows[k].get("pct") == 100.0 for k in rows)
+              and there)
         what = (f"rows={[(k, r['verdict'].text(), r.get('pct')) for k, r in rows.items()]} "
-                f"history={len(history)} toasts={toasts} there={there}")
+                f"history={len(history)} toasts={toasts} there={there} "
+                f"levels={[sk.get('levels') for sk in sinks]}")
     finally:
         _fan_reset(w)
         shutil.rmtree(base, ignore_errors=True)
-    return ok, "two rows filled by the real engine, verified, one finish" \
+    how = "cloned, size-checked, not claimed verified" if clones else "verified"
+    return ok, f"two rows filled by the real engine, {how}, one finish" \
         if ok else what
 
 

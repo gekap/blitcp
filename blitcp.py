@@ -37499,6 +37499,8 @@ def _parent_disk(path):
     except OSError:
         return "path:" + os.path.abspath(path)
     dev = st.st_dev
+    if not hasattr(os, "major"):        # Windows: no device numbers
+        return "dev:%d" % st.st_dev
     if os.major(dev) == 0:
         src = _mount_source(at)
         try:
