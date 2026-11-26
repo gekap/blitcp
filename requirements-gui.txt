@@ -4,3 +4,5 @@
 # refuses to start on it — _PYSIDE_BROKEN). build.py and release.yml install
 # from this file, so this line is the one pin.
 PySide6>=6.6,!=6.12.0
+# The GUI's default hash is xxh128, which needs xxhash: without it every copy fails.
+xxhash

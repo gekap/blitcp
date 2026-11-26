@@ -607,8 +607,23 @@ def s_one_destination_on_the_unified_engine(w):
     st = rec.get("stats") or {}
     if rec.get("status") != "ok":
         return False, f"status {rec.get('status')!r}: {rec.get('error')!r}"
-    if st.get("verified") is not True:
-        return False, f"verified {st.get('verified')!r}"
+    # The engine's own verdict, from the transcript. On APFS (macOS CI) the
+    # source and the destination share a volume, so the files are cloned
+    # (clonefile) and verified by existence + size: content false, and the
+    # GUI must then leave "verified" unset rather than claim it.
+    import json as _json
+    vr = None
+    for ln in w._run_meta["fulllog"].lines():
+        ln = ln.strip()
+        if ln.startswith('{"t": "verify_result"'):
+            vr = _json.loads(ln)
+    if vr is None:
+        return False, "the engine sent no verify_result"
+    clones = vr.get("levels") == {"links": 3}
+    want = None if clones else True
+    if st.get("verified") is not want:
+        return False, (f"verified {st.get('verified')!r} for verify_result "
+                       f"{vr.get('content')!r} {vr.get('levels')!r}")
     if st.get("files") != 3 or not st.get("bytes"):
         return False, f"history stats {st!r} (expected 3 files and their bytes)"
     if w.stat_vals["Progress"].text() != "100%":
@@ -621,7 +636,8 @@ def s_one_destination_on_the_unified_engine(w):
     if [n for n in got if n.startswith("f")] != ["f0.bin", "f1.bin", "f2.bin"]:
         return False, f"destination holds {got!r}"
     shutil.rmtree(dbdir, ignore_errors=True)
-    return True, f"done, verified, 3 files in history, {elapsed:.1f}s"
+    how = "cloned, size-checked, not claimed verified" if clones else "verified"
+    return True, f"done, {how}, 3 files in history, {elapsed:.1f}s"
 
 
 def s_pyside_known_bad_refused(w):
@@ -1653,12 +1669,15 @@ def s_fanout_presets(w):
         w.__dict__.pop("_load_gui_settings", None)
         w.__dict__.pop("_save_gui_settings", None)
     got = [(d["t"], d["p"], d["deep"]) for d in w.extra_dests]
-    ok = (w.dst_input.text() == "/mnt/a"
+    # A local path is saved in the native form (_normalize_local): on
+    # Windows "/mnt/a" comes back as "\\mnt\\a".
+    dst = w.dst_input.text()
+    ok = (dst == "/mnt/a".replace("/", os.sep)
           and got == [("SSH", "nas:/backup", False),
                       ("Cloud", "az://media/x", True)]
           and "password" not in repr(store).lower())
     _fan_reset(w)
-    return ok, "preset round-trips" if ok else f"dst={w.dst_input.text()} extras={got}"
+    return ok, "preset round-trips" if ok else f"dst={dst} extras={got}"
 
 
 def s_fanout_history(w):
