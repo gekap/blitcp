@@ -143,9 +143,6 @@ msgstr "SMB3 転送暗号化を無効化（既定で有効）"
 msgid "Disable deduplication"
 msgstr "重複排除を無効化"
 
-msgid "Disable persistent hash cache (cross-run dedup database)"
-msgstr "永続ハッシュキャッシュを無効化（実行間の重複排除 DB）"
-
 msgid "Disk layout resolved: {n}/{total} files mapped"
 msgstr "ディスクレイアウト解決：{n}/{total} ファイルをマッピング"
 
@@ -437,14 +434,14 @@ msgstr "ソースに設定"
 msgid "Show available updates and release notes"
 msgstr "利用可能な更新とリリースノートを表示"
 
-msgid "Show copy plan without copying"
-msgstr "コピーせずにコピープランを表示"
+msgid "Show the copy plan without copying. Reads every source file, and each file of the same size already at a destination; writes nothing there"
+msgstr "コピーせずにコピー計画を表示します。すべてのソースファイルと、コピー先にすでにある同じサイズの各ファイルを読み取り、そこには何も書き込みません"
 
 msgid "Show version and exit"
 msgstr "バージョンを表示して終了"
 
-msgid "Skip post-copy verification"
-msgstr "コピー後の検証をスキップ"
+msgid "Skip post-copy verification. A file cloned from the source (reflink) is still read back once: that read gives it the hash its records keep"
+msgstr "コピー後の検証を省略します。ソースからクローンされたファイル (reflink) は引き続き一度読み戻されます: その読み取りが、記録に残すハッシュを与えます"
 
 msgid "Skip space check, copy even if not enough space"
 msgstr "空き容量チェックをスキップし、不足していてもコピー"
@@ -655,7 +652,6 @@ msgstr "subcommands:\n  creds <sub>      credentials ファイルに保存され
 
 msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
 msgstr "メッセージの言語：{langs}。BLITCP_LANG とシステム locale より優先。マシン出力（--log-file）は英語のまま。"
-
 
 # GUI deep-path strings + Settings/language section (2026-08-06)
 msgid "Access denied — run as Administrator to browse this folder"
@@ -949,7 +945,6 @@ msgstr "タイムスタンプ"
 msgid "xattr"
 msgstr "xattr"
 
-
 msgid "Small files"
 msgstr "小さいファイル"
 
@@ -964,9 +959,6 @@ msgstr "ローカル転送で1MB未満のファイルをコピーする方法：
 
 msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
 msgstr "ローカルコピーの小ファイルエンジン：'parallel' = ワーカープール（スレッド x4、デフォルト）、'stream' = シングルスレッド tar ブロックストリーム"
-
-msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
-msgstr "サブコマンド:\n  creds <sub>      認証情報ファイルに保存された cloud/SSH 接続プロファイルの\n                   管理: add, list, edit, remove, test, encrypt/decrypt,\n                   lock。ヘルプは 'blitcp creds' を実行。\n  ls <target>      クラウドの場所（保存済み接続名または s3:// / az:// / gs://\n                   URL）またはリモート SSH ディレクトリ（保存済み ssh 接続\n                   または user@host:/path、SFTP 経由）を一覧表示。\n                   別名: list-objects。ヘルプは 'blitcp ls -h' を実行。\n\n使用例:\n  blitcp /data /media/usb/data           ローカル → ローカル\n  blitcp /data user@host:/backup         ローカル → リモート (SSH)\n  blitcp user@host:/data /local/backup   リモート → ローカル\n  blitcp /data s3://bucket/backup        ローカル → クラウド\n  blitcp creds add aws-dev               接続プロファイルを保存\n  blitcp ls aws-dev                      保存済みクラウド接続を一覧表示\n  blitcp ls user@host:/var/log           リモート SSH ディレクトリを一覧表示\n"
 
 msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
 msgstr "純粋なSFTPで転送 — サーバー上でコマンドを一切実行しません。execチャネルを閉じるSFTP専用エンドポイント（マネージドゲートウェイ、制限付きアカウント）向け。増分転送と検証は機能します。重複排除リンクとリモート空き容量チェックはスキップされます。"
@@ -1024,8 +1016,6 @@ msgstr "{n} 件は存在とサイズのみ: リンクとクローン"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} 件は内容未検証: 転送元を読み取れません"
-
-
 
 msgid "Checked {n} remote path(s)"
 msgstr "リモートの {n} 個のパスを確認しました"
@@ -1221,3 +1211,2489 @@ msgstr "{0} に接続中…"
 
 msgid "Showing the first {0} of {1} entries"
 msgstr "{1} 件中、最初の {0} 件を表示しています"
+
+msgid "Not verified: the destination has no hash tool (xxh128sum / sha256sum / md5sum)."
+msgstr "未検証: 宛先にハッシュツール (xxh128sum / sha256sum / md5sum) がありません。"
+
+msgid "Verification failed: {n} of {t} objects"
+msgstr "検証失敗: {t} 個中 {n} 個のオブジェクト"
+
+msgid "Verifying {n} objects against the store's checksums..."
+msgstr "{n} 個のオブジェクトをストレージのチェックサムと照合中..."
+
+msgid "content differs from the source (store MD5)"
+msgstr "内容が転送元と異なります (ストレージの MD5)"
+
+msgid "content differs from the source (store SHA-256)"
+msgstr "内容が転送元と異なります (ストレージの SHA-256)"
+
+msgid "could not be checked ({err})"
+msgstr "確認できませんでした ({err})"
+
+msgid "no hash returned by the destination: {name}"
+msgstr "宛先からハッシュが返されませんでした: {name}"
+
+msgid "not found on the destination"
+msgstr "宛先に見つかりません"
+
+msgid "on remote"
+msgstr "（リモート）"
+
+msgid "size differs on the destination"
+msgstr "宛先でサイズが異なります"
+
+msgid "{n} by existence + size only"
+msgstr "{n} 件は存在とサイズのみ"
+
+msgid "{n} by existence + size only (the store keeps no checksum for it)"
+msgstr "{n} 件は存在とサイズのみ（ストレージがチェックサムを保持していません）"
+
+msgid "{n} hashed on the remote host"
+msgstr "{n} 件はリモートホストでハッシュ照合"
+
+msgid "{n} hashed on the remote host (random sample)"
+msgstr "{n} 件はリモートホストでハッシュ照合 (ランダムサンプル)"
+
+msgid "{n} matched the hash recorded at upload"
+msgstr "{n} 件はアップロード時に記録されたハッシュと一致"
+
+msgid "{n} matched the store's own MD5"
+msgstr "{n} 件はストレージの MD5 と一致"
+
+msgid "{n} matched the store's own SHA-256"
+msgstr "{n} 件はストレージの SHA-256 と一致"
+
+msgid "{n} read back from the disk (O_DIRECT)"
+msgstr "{n} 件はディスクから読み戻し (O_DIRECT)"
+
+msgid "{n} read back over the network"
+msgstr "{n} 件はネットワーク経由で読み戻し"
+
+msgid "{n} read back through the OS cache (may not reflect the disk)"
+msgstr "{n} 件は OS キャッシュ経由で読み戻し（ディスクの内容を反映していない可能性があります）"
+
+msgid "✓ All {n} files present{where}, sizes match — content not compared"
+msgstr "✓ 全 {n} 個のファイルが存在{where}、サイズ一致 — 内容は未比較"
+
+msgid "✓ All {n} objects present{where}, sizes match — content not compared"
+msgstr "✓ 全 {n} 個のオブジェクトが存在{where}、サイズ一致 — 内容は未比較"
+
+msgid "✓ Verified: all {n} files OK{where}"
+msgstr "✓ 検証済み: 全 {n} 個のファイル OK{where}"
+
+msgid "✓ Verified: all {n} objects OK{where}"
+msgstr "✓ 検証済み: 全 {n} 個のオブジェクト OK{where}"
+
+msgid "cannot create the destination: {err}"
+msgstr "宛先を作成できません: {err}"
+
+msgid "content differs from the source"
+msgstr "内容が転送元と異なります"
+
+msgid "could not be read back from the destination"
+msgstr "宛先から読み戻せませんでした"
+
+msgid "destination is not writable: {err}"
+msgstr "宛先に書き込めません: {err}"
+
+msgid "not enough free space: {need} needed, {free} free"
+msgstr "空き容量が不足しています: 必要 {need}、空き {free}"
+
+msgid "--dest needs at least one source."
+msgstr "--dest には少なくとも 1 つの転送元が必要です。"
+
+msgid "--dest {dest} is given twice."
+msgstr "--dest {dest} が 2 回指定されています。"
+
+msgid "--dest {dest} is inside the source {src}."
+msgstr "--dest {dest} は転送元 {src} の中にあります。"
+
+msgid "--dest {dest}: only local destinations are supported with --dest in this version."
+msgstr "--dest {dest}: このバージョンの --dest はローカルの宛先のみ対応しています。"
+
+msgid "--fanout-buffer must be at least 1 MB."
+msgstr "--fanout-buffer は 1 MB 以上にしてください。"
+
+msgid "--stall-timeout must be at least 1 second."
+msgstr "--stall-timeout は 1 秒以上にしてください。"
+
+msgid "A destination that makes no progress for this long is marked FAILED and the others carry on (default: {n})"
+msgstr "この時間進捗のない宛先は「失敗」となり、他の宛先は続行します（既定：{n}）"
+
+msgid "A destination; repeat for several. The source is read once and written to every destination at the same time. With --dest, every positional argument is a source. A destination is a local folder, an SSH folder (user@host:/path, or a saved connection NAME:path), an SMB share (smb://server/share/path) or an object store (s3://, az://, gs://)."
+msgstr "コピー先。複数指定するには繰り返します。コピー元は一度だけ読み込まれ、すべてのコピー先に同時に書き込まれます。--dest を使うと、位置引数はすべてコピー元になります。コピー先はローカルフォルダ、SSH フォルダ (user@host:/path、または保存済み接続 NAME:path)、SMB 共有 (smb://server/share/path)、オブジェクトストレージ (s3://、az://、gs://) のいずれかです。"
+
+msgid "An unfinished file was left behind: {path}"
+msgstr "未完了のファイルが残っています: {path}"
+
+msgid "Destinations"
+msgstr "宛先"
+
+msgid "FAILED: {reason}"
+msgstr "失敗: {reason}"
+
+msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
+msgstr "読み込み済みで、まだすべての宛先に書き込まれていないデータ用のメモリ。いっぱいになると最も遅い宛先のペースに合わせます（既定：{n}）"
+
+msgid "Pre-flight failed; no file was written."
+msgstr "事前チェックに失敗しました。ファイルは 1 つも書き込まれていません。"
+
+msgid "These counts do not add up to {n} files; treat this destination as unverified."
+msgstr "これらの件数の合計が {n} 件になりません。この宛先は未検証として扱ってください。"
+
+msgid "Two sources are both named {name}; they would land on top of each other."
+msgstr "2 つの転送元がどちらも {name} という名前です。互いに上書きしてしまいます。"
+
+msgid "copied"
+msgstr "コピー済み"
+
+msgid "copying"
+msgstr "コピー中"
+
+msgid "done"
+msgstr "完了"
+
+msgid "one read, {n} destinations"
+msgstr "1 回の読み込みで {n} 件の宛先"
+
+msgid "refused: {why}"
+msgstr "拒否: {why}"
+
+msgid "several destinations"
+msgstr "複数の宛先"
+
+msgid "source: {rel}: {why}"
+msgstr "転送元: {rel}: {why}"
+
+msgid "stalled: no progress for {n} s"
+msgstr "停止: {n} 秒間進捗なし"
+
+msgid "verifying"
+msgstr "検証中"
+
+msgid "waiting"
+msgstr "待機中"
+
+msgid "{bad} of {n} files failed verification"
+msgstr "{n} 件中 {bad} 件のファイルが検証に失敗しました"
+
+msgid "{copied} written · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "書き込み {copied} · 拒否 {refused} · 失敗 {failed} · 転送元で読み取り不可 {src}"
+
+msgid "{dests} are on the same device — this reduces redundancy and throughput."
+msgstr "{dests} は同じデバイス上にあります。冗長性とスループットが低下します。"
+
+msgid "{n} files written, not verified (--no-verify)"
+msgstr "{n} 件のファイルを書き込みました。未検証です（--no-verify）"
+
+msgid "{n} files, {size}"
+msgstr "{n} 件のファイル、{size}"
+
+msgid "{n} not written (the destination failed)"
+msgstr "未書き込み {n}（宛先が失敗）"
+
+msgid "{opt} is not supported with --dest yet."
+msgstr "{opt} は --dest とはまだ併用できません。"
+
+msgid "{path}: no such source. With --dest, every positional argument is a source; give each destination with --dest."
+msgstr "{path}: そのような転送元はありません。--dest を使うと位置引数はすべて転送元になります。各宛先は --dest で指定してください。"
+
+msgid "{src}: only local sources are supported with --dest in this version."
+msgstr "{src}: このバージョンの --dest はローカルの転送元のみ対応しています。"
+
+msgid "--dest is empty. Give a path (an empty one would mean the current directory)."
+msgstr "--dest が空です。パスを指定してください（空の場合は現在のディレクトリを意味してしまいます）。"
+
+msgid "--dest {dest} contains the source {src}."
+msgstr "--dest {dest} は転送元 {src} を含んでいます。"
+
+msgid "--dest {inner} is inside --dest {outer}; the two copies would write the same files."
+msgstr "--dest {inner} は --dest {outer} の中にあります。2 つのコピーが同じファイルを書き込んでしまいます。"
+
+msgid "{rel}: would be written into the source {src}"
+msgstr "{rel}: 転送元 {src} の中に書き込まれてしまいます"
+
+msgid "Incomplete: {n} of {total} files are not at this destination"
+msgstr "不完全: {total} 件中 {n} 件のファイルがこの宛先にありません"
+
+msgid "this destination path is a source file (the same file on disk); it was not replaced"
+msgstr "この宛先パスは転送元のファイルです（ディスク上の同一ファイル）。置き換えていません"
+
+msgid "this destination path already holds another file from this run (on a case-insensitive destination two names can be one); it was not replaced"
+msgstr "この宛先パスには今回の実行で書き込んだ別のファイルが既にあります（大文字小文字を区別しない宛先では 2 つの名前が 1 つになることがあります）。置き換えていません"
+
+msgid "Not verified: the source changed during the run"
+msgstr "未検証: 実行中に転送元が変更されました"
+
+msgid "{n} source files changed during the run (another identity, size or modification time, or gone); no copy of this run is called verified."
+msgstr "実行中に転送元のファイル {n} 件が変更されました（別の識別子・サイズ・更新日時、または消失）。今回の実行のコピーはいずれも検証済みとはみなしません。"
+
+msgid "{src} has no name of its own (a drive or filesystem root); with several sources, each one needs a name to land under."
+msgstr "{src} には固有の名前がありません（ドライブまたはファイルシステムのルート）。複数の転送元では、それぞれに配置先の名前が必要です。"
+
+msgid "this destination folder is inside a source folder (the same folder on disk); nothing was written there"
+msgstr "この宛先フォルダーは転送元のフォルダーの中にあります（ディスク上の同一フォルダー）。そこには何も書き込んでいません"
+
+msgid "--dest {a} and --dest {b} are the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} と --dest {b} はディスク上の同じフォルダーです。コピーは 2 つではなく 1 つになります。"
+
+msgid "--dest {a} and --dest {b} would write into the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} と --dest {b} はディスク上の同じフォルダーに書き込むことになります。コピーは 2 つではなく 1 つになります。"
+
+msgid "An unfinished file may have been left behind: {path}"
+msgstr "未完了のファイルが残っている可能性があります: {path}"
+
+msgid "--dest does not run elevated (sudo or root) yet."
+msgstr "--dest はまだ昇格した権限（sudo または root）では実行できません。"
+
+msgid "stalled during pre-flight: no answer for {n} s"
+msgstr "事前チェックで停止: {n} 秒間応答なし"
+
+msgid "The source is on {fs}, whose timestamps are too coarse to notice a file rewritten in place at the same size while it was being read; for such a rewrite, 'changed during the run' cannot be ruled out."
+msgstr "転送元は {fs} 上にあり、そのタイムスタンプは粗すぎるため、読み込み中に同じサイズでその場で書き換えられたファイルを検出できません。そのような書き換えについては「実行中に変更された」可能性を排除できません。"
+
+msgid "{size} written · {time} for this destination"
+msgstr "{size} 書き込み · この保存先で {time}"
+
+msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
+msgstr "FILE から保存先を 1 行に 1 つずつ読み込みます (それぞれ --dest で指定したのと同じ扱い)。空行と、空白以外の最初の文字が # の行は無視し、それ以外は行の内容をそのまま使います。複数指定可。"
+
+msgid "A name for this copy, shown in the summary and recorded with the result."
+msgstr "このコピーの名前。サマリーに表示され、結果と一緒に記録されます。"
+
+msgid "--dests-file {path}: cannot read it ({why})"
+msgstr "--dests-file {path}: 読み込めません ({why})"
+
+msgid "--dests-file {path} names no destination."
+msgstr "--dests-file {path} に保存先がありません。"
+
+msgid "--job-name goes with --dest or --dests-file."
+msgstr "--job-name は --dest または --dests-file と一緒に使います。"
+
+msgid "--job-name must be 1 to 200 printable characters on one line."
+msgstr "--job-name は 1 行で 1〜200 文字の印字可能な文字にしてください。"
+
+msgid "Job: {name}"
+msgstr "ジョブ: {name}"
+
+msgid "Metadata not applied: {n} item(s) — elevated run with no safe handle on the file (never set through a path when elevated)"
+msgstr "メタデータ未適用: {n} 件 — 昇格実行でファイルへの安全なハンドルがありません (昇格時はパス経由で設定しません)"
+
+msgid "'{name}' is both a folder here and a saved connection. Write ./{name} for the folder, or {name}: for the connection."
+msgstr "'{name}' はここにあるフォルダーであり、保存済みの接続名でもあります。フォルダーなら ./{name}、接続なら {name}: と指定してください。"
+
+msgid "'{name}' is both a file here and a saved connection. Write ./{name} for the file, or {name}: for the connection."
+msgstr "'{name}' はここにあるファイルであり、保存済みの接続名でもあります。ファイルなら ./{name}、接続なら {name}: と指定してください。"
+
+msgid "{rel}: the destination folder was replaced during the run (not followed when elevated)"
+msgstr "{rel}: 実行中に保存先フォルダーが置き換えられました (昇格時は追跡しません)"
+
+msgid "{rel}: a symlinked folder on the way (not followed when elevated)"
+msgstr "{rel}: 途中のフォルダーがシンボリックリンクです (昇格時は追跡しません)"
+
+msgid "replaced since the scan; not copied when elevated"
+msgstr "スキャン後に置き換えられました。昇格時はコピーしません"
+
+msgid "--dest {name} is a saved connection; only local folders are destinations with --dest in this version. For a local folder of that name, write ./{name}."
+msgstr "--dest {name} は保存済みの接続です。このバージョンの --dest で指定できる保存先はローカルフォルダーのみです。その名前のローカルフォルダーなら ./{name} と指定してください。"
+
+msgid "its ASC MHL history cannot be read ({why})"
+msgstr "ASC MHL の履歴を読み取れません ({why})"
+
+msgid "its ASC MHL history does not match its chain file ({path})"
+msgstr "ASC MHL の履歴がチェーンファイルと一致しません ({path})"
+
+msgid "no manifest written, the history was left as it is"
+msgstr "マニフェストは書き込まず、履歴はそのままにしました"
+
+msgid "{n} names cannot be written into the ASC MHL file (control characters); they are in {list} only"
+msgstr "{n} 件の名前は ASC MHL ファイルに書き込めません (制御文字)。{list} にのみ記録されます"
+
+msgid "no manifest: the xxhash package is not installed"
+msgstr "マニフェストなし: xxhash パッケージがインストールされていません"
+
+msgid "the manifest could not be written: {why}"
+msgstr "マニフェストを書き込めませんでした: {why}"
+
+msgid "Manifest: {mhl} and {lst}"
+msgstr "マニフェスト: {mhl} と {lst}"
+
+msgid "manifest"
+msgstr "マニフェスト"
+
+msgid "{rel}: not a regular file"
+msgstr "{rel}: 通常のファイルではありません"
+
+msgid "{rel}: too large for a manifest"
+msgstr "{rel}: マニフェストとしては大きすぎます"
+
+msgid "Check a destination against its own manifest (ascmhl/ or blitcp.xxh128), without the source: every file it lists is read back and hashed. Writes nothing."
+msgstr "保存先をそれ自身のマニフェスト (ascmhl/ または blitcp.xxh128) と照合します。コピー元は不要で、記載された各ファイルを読み戻してハッシュを計算します。何も書き込みません。"
+
+msgid "--verify-manifest takes only the destination to check."
+msgstr "--verify-manifest には確認する保存先だけを指定します。"
+
+msgid "--verify-manifest needs the xxhash package."
+msgstr "--verify-manifest には xxhash パッケージが必要です。"
+
+msgid "{dest}: no answer for {n} s"
+msgstr "{dest}: {n} 秒間応答がありません"
+
+msgid "{dest}: no such folder"
+msgstr "{dest}: そのフォルダーはありません"
+
+msgid "{dest} has no manifest ({mhl}/ or {lst})."
+msgstr "{dest} にはマニフェスト ({mhl}/ または {lst}) がありません。"
+
+msgid "checking {dest} against its manifest ({n} files)"
+msgstr "{dest} をマニフェストと照合中 ({n} ファイル)"
+
+msgid "{k} of {n} checked"
+msgstr "{n} 件中 {k} 件を確認済み"
+
+msgid "All {n} files match the manifest"
+msgstr "{n} 件すべてのファイルがマニフェストと一致します"
+
+msgid "{bad} of {n} files do not match the manifest ({differ} differ, {missing} missing)"
+msgstr "{n} 件中 {bad} 件がマニフェストと一致しません (相違 {differ} 件、欠落 {missing} 件)"
+
+msgid "{rel}: missing"
+msgstr "{rel}: 欠落"
+
+msgid "Up to date: the source matches the xxh128 its manifest records for all {n} files, and each is there at the recorded size; not read back this run — blitcp --verify-manifest checks them"
+msgstr "最新: {n} 件すべてでコピー元がマニフェストに記録された xxh128 と一致し、各ファイルは記録どおりのサイズで存在します。今回は読み戻していません — blitcp --verify-manifest で確認できます"
+
+msgid "{n} unchanged — the source matches the xxh128 its manifest records, and each is there at the recorded size; not written or read back again"
+msgstr "{n} 件は変更なし — コピー元がマニフェストに記録された xxh128 と一致し、各ファイルは記録どおりのサイズで存在します。再書き込みも読み戻しもしていません"
+
+msgid "{n} files were read a second time: read to compare with what the destination recorded for them, found changed, and read again to be written"
+msgstr "{n} 件のファイルを再度読み込みました: コピー先の記録と比較するために読み込み、変更が見つかったため、書き込むためにもう一度読み込みました"
+
+msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
+msgstr "{n} 件は ASC MHL の履歴に既にあるファイルの新しいバージョンです。ascmhl は以前の記録と比較して報告します (ASC MHL はメディアが変化しない前提です)。blitcp --verify-manifest と {lst} は現在のバージョンを確認します。"
+
+msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
+msgstr "中断した --dest の実行を再開します: 既に書き込まれ、サイズ・日時・xxh128 がコピー元と一致するファイルは再コピーしません (未検証のものは今回読み戻して検証します)。"
+
+msgid "--resume goes with --dest or --dests-file."
+msgstr "--resume は --dest または --dests-file と一緒に使います。"
+
+msgid "the resume journal could not be written: {why}"
+msgstr "再開用ジャーナルを書き込めませんでした: {why}"
+
+msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
+msgstr "保存先のマニフェストに異なる内容で記録されているファイルを置き換えます (既定では保持して報告します。カメラはカードごとにクリップ名を最初から付け直します)。"
+
+msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
+msgstr "{n} 件のファイルが異なる内容でここに存在します — そのまま保持し、上書きしませんでした (--overwrite-changed で置き換えます。カードごとのフォルダーにすると衝突しません)"
+
+msgid "… and {n} more"
+msgstr "… ほか {n} 件"
+
+msgid "not written: running as {user} needs Python 3.9 or later"
+msgstr "書き込みませんでした: {user} として実行するには Python 3.9 以降が必要です"
+
+msgid "not written: cannot act as {user}"
+msgstr "書き込みませんでした: {user} として動作できません"
+
+msgid "no host name to record"
+msgstr "記録するホスト名がありません"
+
+msgid "Warning: {old} is deprecated and stops working in 5.0 — use {new}."
+msgstr "警告: {old} は非推奨で、5.0 で使えなくなります — {new} を使ってください。"
+
+msgid "blitcp-gui cannot start: PySide6 {qt} crashes on Python older than {good}. Install another version (pip install \"PySide6!={qt}\") or use Python {good} or later."
+msgstr "blitcp-gui を起動できません: PySide6 {qt} は Python {good} より前のバージョンでクラッシュします。別のバージョンをインストールする (pip install \"PySide6!={qt}\") か、Python {good} 以降を使ってください。"
+
+msgid "Note: the SSH dedup cache is not kept between runs under sudo — it lives in your home folder, which this run does not write as root."
+msgstr "注意: sudo では SSH 重複排除キャッシュは実行間で保持されません — キャッシュはホームフォルダーにあり、この実行は root としてそこに書き込みません。"
+
+msgid "not written: a frozen build cannot act as {user}"
+msgstr "書き込まれていません: パッケージ版は {user} として動作できません"
+
+msgid "{dir} is not writable by {user} (an earlier blitcp run under sudo may have created it as root). Fix: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+msgstr "{dir} は {user} が書き込めません (以前に sudo で実行した blitcp が root として作成した可能性があります)。対処: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+
+msgid "Note: {path} not saved: {why}"
+msgstr "注意: {path} は保存されませんでした: {why}"
+
+msgid "cannot connect: {err}"
+msgstr "接続できません: {err}"
+
+msgid "content differs on the remote host"
+msgstr "リモートホスト上の内容が一致しません"
+
+msgid "no hash came back from the remote host"
+msgstr "リモートホストからハッシュが返ってきませんでした"
+
+msgid "not written by this run"
+msgstr "この実行では書き込まれていません"
+
+msgid "the bytes sent differ from the bytes read"
+msgstr "送信したバイトが読み取ったバイトと一致しません"
+
+msgid "{path} is a symlink to {where}: the files would land somewhere else than the folder named; nothing was written"
+msgstr "{path} は {where} へのシンボリックリンクです: ファイルは指定したフォルダー以外の場所に置かれてしまいます。何も書き込まれていません"
+
+msgid "{src}: an SSH source must be the only source of a --dest run."
+msgstr "{src}: SSH のコピー元は --dest 実行で唯一のコピー元である必要があります。"
+
+msgid "--ssh-no-sftp is not supported with --dest: the fan-out reads and writes SSH over SFTP."
+msgstr "--ssh-no-sftp は --dest と併用できません: 分配コピーは SSH を SFTP で読み書きします。"
+
+msgid "no such folder or file on the remote ({err})"
+msgstr "リモートにそのフォルダーもファイルもありません ({err})"
+
+msgid "not listed on the remote"
+msgstr "リモートで一覧に含められませんでした"
+
+msgid "the remote listing ended with exit code {rc}"
+msgstr "リモートの一覧取得が終了コード {rc} で終わりました"
+
+msgid "the remote listing is larger than {n} MB; copy a smaller folder"
+msgstr "リモートの一覧が {n} MB を超えています。もっと小さいフォルダーをコピーしてください"
+
+msgid "{rel}: the name is not UTF-8, and SFTP cannot carry it"
+msgstr "{rel}: 名前が UTF-8 ではないため、SFTP で扱えません"
+
+msgid "--dest {a} and --dest {b} are the same place, reached two ways; that is one copy, not two."
+msgstr "--dest {a} と --dest {b} は、2 つの経路でたどり着く同じ場所です。コピーは 2 つではなく 1 つです。"
+
+msgid "--dest {dest}: not a destination blitcp can write. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--dest {dest}: blitcp が書き込めるコピー先ではありません。ローカルフォルダー、user@host:/パス、s3:// az:// gs://、smb://host/share、または保存済み接続 (NAME: か NAME:パス) を指定してください。"
+
+msgid "--dest {name} is a saved connection: write {name}: to copy to it, or ./{name} for a local folder of that name."
+msgstr "--dest {name} は保存済みの接続です。そこへコピーするには {name}: と、同名のローカルフォルダーには ./{name} と書いてください。"
+
+msgid "SMB password: "
+msgstr "SMB パスワード: "
+
+msgid "a Windows device name (CON, NUL, COM1…) is not a file on a share"
+msgstr "Windows のデバイス名 (CON、NUL、COM1…) は共有上のファイルではありません"
+
+msgid "a share cannot hold \\ : * ? \" < > | or control characters in a name"
+msgstr "共有では名前に \\ : * ? \" < > | や制御文字を使えません"
+
+msgid "a share may drop a trailing dot or space, making this name another file's"
+msgstr "共有は末尾のドットや空白を落とすことがあり、この名前が別のファイルの名前になります"
+
+msgid "content differs on the destination"
+msgstr "コピー先で内容が異なります"
+
+msgid "the probe object {key} could not be removed: {err}"
+msgstr "確認用オブジェクト {key} を削除できませんでした: {err}"
+
+msgid "{rel}: the name is not UTF-8, and an object store cannot hold it"
+msgstr "{rel}: 名前が UTF-8 ではないため、オブジェクトストレージに保存できません"
+
+msgid "{rel}: the share cannot store this name"
+msgstr "{rel}: 共有はこの名前を保存できません"
+
+msgid "Spool folder {path} cannot be used ({err}); spilling to {tmp}, which may be memory. Set BLITCP_SPOOL_DIR to a folder on disk."
+msgstr "スプールフォルダー {path} を使用できません ({err})。あふれた分は {tmp} に書かれますが、そこはメモリの場合があります。BLITCP_SPOOL_DIR にディスク上のフォルダーを設定してください。"
+
+msgid "--deep goes with --verify-manifest."
+msgstr "--deep は --verify-manifest と一緒に使います。"
+
+msgid "--verify-manifest {dest}: not a destination blitcp can check. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--verify-manifest {dest}: blitcp が確認できるコピー先ではありません。ローカルフォルダー、user@host:/パス、s3:// az:// gs://、smb://host/share、または保存済み接続 (NAME: か NAME:パス) を指定してください。"
+
+msgid "All {n} files are present with the sizes the manifest records — content not compared; --deep reads them back and hashes them"
+msgstr "{n} 個のファイルはすべてマニフェストに記録されたサイズで存在します — 内容は比較していません。--deep で読み戻してハッシュします"
+
+msgid "With --verify-manifest on an SSH, SMB or object-store destination: download every file and hash it here, instead of asking the remote host or the store."
+msgstr "SSH・SMB・オブジェクトストレージのコピー先に --verify-manifest を使うとき: リモートホストやストレージに尋ねる代わりに、すべてのファイルをダウンロードしてここでハッシュします。"
+
+msgid "cannot check whether --dest {a} and --dest {b} are one place ({why}); no file was written. Fix that destination, or copy to them in separate runs."
+msgstr "--dest {a} と --dest {b} が同じ場所かどうか確認できません ({why})。ファイルは書き込んでいません。そのコピー先を直すか、別々に実行してコピーしてください。"
+
+msgid "its own probe, just written, is not in the remote listing"
+msgstr "書き込んだばかりの自分の確認用ファイルがリモートの一覧にありません"
+
+msgid "its own probe, just written, is not in the store's listing"
+msgstr "書き込んだばかりの自分の確認用オブジェクトがストレージの一覧にありません"
+
+msgid "its own probe, just written, is not visible"
+msgstr "書き込んだばかりの自分の確認用ファイルが見えません"
+
+msgid "no answer for {n} s"
+msgstr "{n} 秒間応答がありません"
+
+msgid "no probe could be written to {d}: {why}"
+msgstr "{d} に確認用ファイルを書き込めませんでした: {why}"
+
+msgid "not a regular file"
+msgstr "通常のファイルではありません"
+
+msgid "size differs from the manifest"
+msgstr "サイズがマニフェストと異なります"
+
+msgid "the object carries none of blitcp's hashes (replaced, or written by another tool); --deep compares its bytes"
+msgstr "オブジェクトに blitcp のハッシュがありません (置き換えられたか、別のツールで書かれました)。--deep でバイトを比較します"
+
+msgid "the object is not the one the manifest records (its hash differs); --deep compares its bytes"
+msgstr "オブジェクトはマニフェストに記録されたものではありません (ハッシュが異なります)。--deep でバイトを比較します"
+
+msgid "{n} of them by size only; --deep reads every file back and hashes it"
+msgstr "そのうち {n} 個はサイズのみ。--deep ですべてのファイルを読み戻してハッシュします"
+
+msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
+msgstr "コピー先 (ローカルフォルダー、SSH フォルダー、SMB 共有、バケット) を、元データなしで自身のマニフェスト (ascmhl/ または blitcp.xxh128) と照合します。レベルはコピー先次第です: 読み戻し、リモートホストでのハッシュ、またはストレージ自身のチェックサム (--deep はすべてのファイルを読み戻します)。何も書き込みません。"
+
+msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
+msgstr "--deep-verify は --dest と一緒に使います (--verify-manifest では --deep を使ってください)。"
+
+msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
+msgstr "--deep-verify {dest} は --dest のコピー先のどれでもありません (--dest と同じ書き方か、'all' を指定してください)。"
+
+msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
+msgstr "指定した --dest (繰り返し可、'all' ですべて) を、送ったすべてのファイルをダウンロードしてここでハッシュすることで確認します。ストレージのチェックサムやリモートホストのハッシュは使いません。8 MiB 以上の Azure blob (動画の取り込み) では、これが唯一の内容確認です。Azure はそれらのチェックサムを保持しません。"
+
+msgid "content differs from the source (store CRC)"
+msgstr "内容が元データと異なります (ストレージの CRC)"
+
+msgid "nothing under {src}"
+msgstr "{src} の下には何もありません"
+
+msgid "the store's checksum differs from the one the manifest records; --deep compares its bytes"
+msgstr "ストレージのチェックサムがマニフェストの記録と異なります。--deep でバイトを比較します"
+
+msgid "{n} matched the store's own full-object CRC"
+msgstr "{n} 個がストレージ自身のオブジェクト全体 CRC と一致"
+
+msgid "{n} object(s) were rewritten in place (a server-side copy) to carry their metadata: this endpoint took no full-object checksum at upload. Each copy rewrites the whole object; on stores with a minimum storage duration (Wasabi, Backblaze B2) the replaced copy may be billed."
+msgstr "{n} 個のオブジェクトを、メタデータを持たせるためにその場で書き直しました (サーバー側コピー)。このエンドポイントはアップロード時にオブジェクト全体のチェックサムを受け付けませんでした。各コピーはオブジェクト全体を書き直します。最低保存期間のあるストレージ (Wasabi、Backblaze B2) では、置き換えられたコピーが課金されることがあります。"
+
+msgid "{src}: a remote source must be the only source of a --dest run."
+msgstr "{src}: リモートの元データは --dest 実行の唯一の元データでなければなりません。"
+
+msgid "{src}: not a source blitcp can read with --dest. Give a local folder or file, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME:path."
+msgstr "{src}: blitcp が --dest で読める元データではありません。ローカルのフォルダーかファイル、user@host:/パス、s3:// az:// gs://、smb://host/share、または保存済み接続 (NAME:パス) を指定してください。"
+
+msgid "a reparse point on the share (link, junction, tiered or deduplicated file); not copied"
+msgstr "共有上のリパースポイント (リンク、ジャンクション、階層化または重複除去されたファイル)。コピーしていません"
+
+msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
+msgstr "元データ自身のマニフェスト ({mhl}/、{lst}: {n} ファイル) はコピーしません。各コピー先が自分のものを書きます。"
+
+msgid "--deep-verify: every file read back from this destination and hashed"
+msgstr "--deep-verify: このコピー先からすべてのファイルを読み戻してハッシュします"
+
+msgid "A folder on this computer or a mounted drive."
+msgstr "このコンピューターまたはマウントされたドライブ上のフォルダー。"
+
+msgid "A web source cannot be copied to several destinations"
+msgstr "Web の元データは複数のコピー先にコピーできません"
+
+msgid "Add destination"
+msgstr "コピー先を追加"
+
+msgid "Browse SMB"
+msgstr "SMB を参照"
+
+msgid "Browse SMB share"
+msgstr "SMB 共有を参照"
+
+msgid "Check this destination against its manifest, without the source (--verify-manifest)"
+msgstr "元データなしでこのコピー先をマニフェストと照合します (--verify-manifest)"
+
+msgid "Checked again: all {n} files match the manifest"
+msgstr "再確認: {n} 個すべてのファイルがマニフェストと一致"
+
+msgid "Checked again: {bad} of {n} files do not match"
+msgstr "再確認: {n} 個中 {bad} 個のファイルが一致しません"
+
+msgid "Checking against the manifest…"
+msgstr "マニフェストと照合中…"
+
+msgid "Choose destination folder"
+msgstr "コピー先フォルダーを選択"
+
+msgid "Copied, not verified"
+msgstr "コピー済み・未検証"
+
+msgid "Destination presets"
+msgstr "コピー先のプリセット"
+
+msgid "Destinations saved as {name}"
+msgstr "コピー先を {name} として保存しました"
+
+msgid "ETA {t}"
+msgstr "残り {t}"
+
+msgid "ETA —"
+msgstr "残り —"
+
+msgid "Failed: {why}"
+msgstr "失敗: {why}"
+
+msgid "Incomplete: {f} failed, {r} refused"
+msgstr "不完全: 失敗 {f}、拒否 {r}"
+
+msgid "Kept files that differ from the source"
+msgstr "元データと異なるファイルを残しました"
+
+msgid "Manifest: {where}"
+msgstr "マニフェスト: {where}"
+
+msgid "New connection…"
+msgstr "新しい接続…"
+
+msgid "Not available with several destinations: {opts}"
+msgstr "複数のコピー先では使えません: {opts}"
+
+msgid "Not verified: the source changed during the copy"
+msgstr "未検証: コピー中に元データが変わりました"
+
+msgid "Open manifest"
+msgstr "マニフェストを開く"
+
+msgid "Recommended for Azure video offloads: Azure keeps no checksum for blobs of 8 MiB and over, so only a download proves them."
+msgstr "Azure への動画取り込みに推奨: Azure は 8 MiB 以上の blob のチェックサムを保持しないため、ダウンロードだけがそれを確認できます。"
+
+msgid "Remove"
+msgstr "削除"
+
+msgid "Save destinations…"
+msgstr "コピー先を保存…"
+
+msgid "Save these destinations as"
+msgstr "これらのコピー先を次の名前で保存"
+
+msgid "Sources → one or more destinations: the source is read once and written to every destination."
+msgstr "元データ → 1 つ以上のコピー先: 元データは 1 回だけ読み、すべてのコピー先に書き込みます。"
+
+msgid "The check could not run (exit {c})"
+msgstr "確認を実行できませんでした (終了コード {c})"
+
+msgid "Verified: {n} files"
+msgstr "検証済み: {n} ファイル"
+
+msgid "Verify again later"
+msgstr "後でもう一度確認"
+
+msgid "Verify by downloading every file (--deep-verify)"
+msgstr "すべてのファイルをダウンロードして確認 (--deep-verify)"
+
+msgid "With several destinations, a remote source must be the only source"
+msgstr "複数のコピー先では、リモートの元データは唯一の元データでなければなりません"
+
+msgid "download to verify"
+msgstr "ダウンロードして確認"
+
+msgid "hashed on the remote host"
+msgstr "リモートホストでハッシュ"
+
+msgid "hashed on the remote host (sample)"
+msgstr "リモートホストでハッシュ (サンプル)"
+
+msgid "links and clones"
+msgstr "リンクとクローン"
+
+msgid "read back from the disk"
+msgstr "ディスクから読み戻し"
+
+msgid "read back over the network"
+msgstr "ネットワーク経由で読み戻し"
+
+msgid "read back through the OS cache"
+msgstr "OS キャッシュ経由で読み戻し"
+
+msgid "s3://bucket/prefix, az://container/prefix, gs://bucket/prefix, or a saved connection as NAME:path."
+msgstr "s3://bucket/プレフィックス、az://container/プレフィックス、gs://bucket/プレフィックス、または保存済み接続 (NAME:パス)。"
+
+msgid "size only"
+msgstr "サイズのみ"
+
+msgid "size only (no store checksum)"
+msgstr "サイズのみ (ストレージのチェックサムなし)"
+
+msgid "smb://host/share/path, a UNC path, or a saved SMB connection as NAME:path."
+msgstr "smb://host/share/パス、UNC パス、または保存済み SMB 接続 (NAME:パス)。"
+
+msgid "source unreadable"
+msgstr "元データを読めません"
+
+msgid "the hash recorded at upload"
+msgstr "アップロード時に記録したハッシュ"
+
+msgid "the store's own MD5"
+msgstr "ストレージ自身の MD5"
+
+msgid "the store's own SHA-256"
+msgstr "ストレージ自身の SHA-256"
+
+msgid "the store's own full-object CRC"
+msgstr "ストレージ自身のオブジェクト全体 CRC"
+
+msgid "user@host:/path, or a saved SSH connection as NAME:path."
+msgstr "user@host:/パス、または保存済み SSH 接続 (NAME:パス)。"
+
+msgid "verification: {level}"
+msgstr "検証: {level}"
+
+msgid "{done} / {total} files"
+msgstr "{done} / {total} ファイル"
+
+msgid "{n} files failed verification"
+msgstr "{n} 個のファイルが検証に失敗"
+
+msgid "{n} files present, sizes match — content not compared"
+msgstr "{n} 個のファイルあり、サイズ一致 — 内容は比較していません"
+
+msgid "Verified: {n} files — {levels}"
+msgstr "検証済み: {n} ファイル — {levels}"
+
+msgid "Checked again: all {n} files present with the recorded sizes — content not compared"
+msgstr "再確認: {n} 個すべてのファイルが記録されたサイズで存在 — 内容は比較していません"
+
+msgid "data after the end of the archive"
+msgstr "アーカイブの終端の後のデータ"
+
+msgid "a tar header with a wrong checksum"
+msgstr "チェックサムが誤っている tar ヘッダー"
+
+msgid "an oversized tar header"
+msgstr "大きすぎる tar ヘッダー"
+
+msgid "a hard link"
+msgstr "ハードリンク"
+
+msgid "a symbolic link"
+msgstr "シンボリックリンク"
+
+msgid "a folder"
+msgstr "フォルダー"
+
+msgid "a special file"
+msgstr "特殊ファイル"
+
+msgid "{name}: {what}, not a file that was asked for"
+msgstr "{name}: {what} であり、要求したファイルではありません"
+
+msgid "{name}: not a file that was asked for"
+msgstr "{name}: 要求したファイルではありません"
+
+msgid "a malformed pax header"
+msgstr "不正な pax ヘッダー"
+
+msgid "Refused: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "拒否: コピー元ホストのアーカイブに {what} が含まれています — 宛先に届く前に停止しました"
+
+msgid "refused: {what}"
+msgstr "拒否: {what}"
+
+msgid "not requested: the source host sent {what} in an earlier batch"
+msgstr "要求していません: コピー元ホストが前のバッチで {what} を送りました"
+
+msgid "Error: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "エラー: コピー元ホストのアーカイブに {what} が含まれています — 宛先に届く前に停止しました"
+
+msgid "a negative number in a tar header"
+msgstr "tar ヘッダー内の負の数"
+
+msgid "a tar header that is not a number"
+msgstr "数値ではない tar ヘッダー"
+
+msgid "{path}: the folder changed after it was checked (it now leads outside the destination); nothing was written there"
+msgstr "{path}: 確認後にフォルダーが変わりました (今は宛先の外を指しています)。そこには何も書き込んでいません"
+
+msgid "{rel}: {folder} is a symlink to {where}, outside the destination; nothing was written there"
+msgstr "{rel}: {folder} は宛先の外にある {where} へのシンボリックリンクです。そこには何も書き込んでいません"
+
+msgid "a member named twice"
+msgstr "二重に名前が付けられたメンバー"
+
+msgid "a pax header that changes what tar makes ({key})"
+msgstr "tar が作成するものを変える pax ヘッダー ({key})"
+
+msgid "an unknown place"
+msgstr "不明な場所"
+
+msgid "Error: {opt} does not apply {where}."
+msgstr "エラー: {opt} は{where}には使えません。"
+
+msgid "to a copy to one destination"
+msgstr "1 つの宛先へのコピー"
+
+msgid "with --dest"
+msgstr "--dest"
+
+msgid "with --verify-manifest"
+msgstr "--verify-manifest"
+
+msgid "--ssh-no-sftp and --sftp-only exclude each other."
+msgstr "--ssh-no-sftp と --sftp-only は同時に指定できません。"
+
+msgid "the server offers no SFTP, and --sftp-only (or the saved connection's protocol \"sftp\") allows nothing else"
+msgstr "サーバーは SFTP を提供しておらず、--sftp-only (または保存済み接続のプロトコル \"sftp\") はそれ以外を許可しません"
+
+msgid "could not be moved into place: {err}"
+msgstr "所定の場所に移動できませんでした: {err}"
+
+msgid "the remote tar batch failed: {err}"
+msgstr "リモートの tar バッチが失敗しました: {err}"
+
+msgid "not written: {twin}, the file with the same content, did not land"
+msgstr "書き込まれていません: 同じ内容のファイル {twin} が届きませんでした"
+
+msgid "could not be linked on the remote host: {err}"
+msgstr "リモートホストでリンクできませんでした: {err}"
+
+msgid "could not be linked or copied on the remote host"
+msgstr "リモートホストでリンクもコピーもできませんでした"
+
+msgid "{n} folder(s) did not take the source folder's mode and time"
+msgstr "{n} 個のフォルダーにコピー元フォルダーのモードと時刻を適用できませんでした"
+
+msgid "not synced to disk on the remote host (no shell there)"
+msgstr "リモートホストでディスクに同期されていません (シェルがありません)"
+
+msgid "could not sync the remote destination: the files may still be in its cache"
+msgstr "リモートの宛先を同期できませんでした: ファイルはまだキャッシュ上にある可能性があります"
+
+msgid "{n} of them hold the same content as another file of this run: hard links to it there"
+msgstr "そのうち {n} 個はこの実行の別ファイルと同じ内容: 宛先ではそのファイルへのハードリンクです"
+
+msgid "{n} copied on the remote host (it took no hard link)"
+msgstr "{n} 個はリモートホスト上でコピーしました (ハードリンクを受け付けませんでした)"
+
+msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
+msgstr "ローカルの宛先: 各ファイルを隠し名で書き込み、ディスクに書き出してから本来の名前に変更します。書きかけのファイルが見えることはありません。指定しない場合、新しいファイルはその場に書き込まれ、既にあるファイルは隠し名を経由して置き換えられます。"
+
+msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
+msgstr "ローカルの宛先: 新しいファイルはその場に書き込み、既にあるファイルは隠し名を経由して置き換えます。宛先のディスクは最後に書き出します (既定。オブジェクトストレージからのダウンロードでも同様)。"
+
+msgid "{opt} goes with --dest."
+msgstr "{opt} は --dest と一緒に使います。"
+
+msgid "Note: no deduplication for {dest}: {why}"
+msgstr "注: {dest} では重複排除を行いません: {why}"
+
+msgid "already in place"
+msgstr "既に配置済み"
+
+msgid "copies (no links here)"
+msgstr "コピー (ここではリンク不可)"
+
+msgid "hard links"
+msgstr "ハードリンク"
+
+msgid "reflinks"
+msgstr "reflink"
+
+msgid "symlinks"
+msgstr "シンボリックリンク"
+
+msgid "the file with the same content changed while linking"
+msgstr "同じ内容のファイルがリンク中に変更されました"
+
+msgid "the file with the same content is no longer a regular file"
+msgstr "同じ内容のファイルが通常のファイルではなくなりました"
+
+msgid "{n} of them have the same content as a file already there or written in this run, and were not written again: {how}"
+msgstr "そのうち {n} 個は宛先に既にあるか、この実行で書き込んだファイルと同じ内容のため、再度書き込みませんでした: {how}"
+
+msgid "the file with the same content is outside the destination (not linked when elevated)"
+msgstr "同じ内容のファイルが宛先の外にあります (昇格した権限ではリンクしません)"
+
+msgid "the destination folder was replaced during the run (not followed when elevated)"
+msgstr "実行中に宛先フォルダーが置き換えられました (昇格した権限ではたどりません)"
+
+msgid "a symlinked folder on the way to the file with the same content (not followed when elevated)"
+msgstr "同じ内容のファイルへの途中にシンボリックリンクのフォルダーがあります (昇格した権限ではたどりません)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links; every other destination gets a full copy of each file."
+msgstr "--dest での重複排除: ローカルまたは SSH の宛先では、この実行内の重複ファイルと宛先に既にあるファイルはリンクになります。それ以外の宛先には各ファイルの完全なコピーが作られます。"
+
+msgid "cannot rename on the destination (each file lands by a rename): {err}"
+msgstr "宛先で名前を変更できません（各ファイルは名前の変更で配置されます）: {err}"
+
+msgid "cannot read back what was written (each file is verified so): {err}"
+msgstr "書き込んだ内容を読み戻せません（各ファイルはこの方法で検証されます）: {err}"
+
+msgid "cannot read back what was written (each file is verified so): the bytes differ"
+msgstr "書き込んだ内容を読み戻せません（各ファイルはこの方法で検証されます）: バイトが異なります"
+
+msgid "The share took {got} of {want} connections: files went {n} at a time."
+msgstr "共有は {want} 本中 {got} 本の接続を受け付けました: ファイルは一度に {n} 個ずつ送られました。"
+
+msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "最新: {n} 件すべてがサイズと更新日時で変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
+
+msgid "Up to date: nothing here needed writing"
+msgstr "最新: ここで書き込む必要のあるものはありませんでした"
+
+msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} 件はサイズと更新日時で変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
+
+msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "最新: {n} 件すべてがサイズとストレージのバージョンタグで変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
+
+msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} 件はサイズとストレージのバージョンタグで変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
+
+msgid "the object changed after it was listed"
+msgstr "一覧取得後にオブジェクトが変更されました"
+
+msgid "Removed {n} unfinished files an interrupted run had left here:"
+msgstr "中断された実行がここに残した未完了のファイル {n} 件を削除しました:"
+
+msgid "Could not look for unfinished files an interrupted run may have left: {why}"
+msgstr "中断された実行が残した可能性のある未完了のファイルを確認できませんでした: {why}"
+
+msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
+msgstr "コピー先が 1 つのコピーで ASC MHL マニフェストと blitcp.xxh128 を保持します (--dest、--resume、--overwrite-changed、--job-name では常に保持)。ありの場合、変更のないファイルは読み込まずにスキップします (高速、記録を信頼)。なしの場合、ローカルのコピー先は blitcp の記録で判断します (両側で変更なしと記録されたファイルは読み込まず、それ以外の同じサイズのファイルは比較します)。SSH と SMB では、ファイルのサイズと更新日時が記録どおりである間はそこにある blitcp の署名付きハッシュキャッシュが判断するため、blitcp 以外で同じサイズのまま変更され更新日時を元に戻されたコピー先ファイルは、--no-cache を使わない限り再実行で検出されません。"
+
+msgid "hash cache not updated: {why}"
+msgstr "ハッシュキャッシュを更新できませんでした: {why}"
+
+msgid "manifest mode — its records ({mhl}) decide what is unchanged"
+msgstr "マニフェストモード — その記録 ({mhl}) が変更の有無を判断します"
+
+msgid "no manifest — a file whose size and modification time there are the ones blitcp's signed hash cache recorded is decided by that cache; one changed there with its time put back is not seen (--no-cache compares the files)"
+msgstr "マニフェストなし — そこでのサイズと更新日時が blitcp の署名付きハッシュキャッシュの記録どおりのファイルは、そのキャッシュで判断します。そこで変更され更新日時を元に戻されたファイルは検出されません (--no-cache でファイル自体を比較)"
+
+msgid "no manifest — each file of the same size is compared with what is there"
+msgstr "マニフェストなし — 同じサイズの各ファイルを、そこにあるものと比較します"
+
+msgid "no manifest, --no-cache — every file is written again"
+msgstr "マニフェストなし、--no-cache — すべてのファイルを書き直します"
+
+msgid "{n} files: the dedup database and this destination's manifest record different content at the same size and time — the manifest decided; the database was left as it is:"
+msgstr "{n} 件のファイル: 重複排除 DB とこのコピー先のマニフェストが、同じサイズと日時で異なる内容を記録しています — マニフェストが判断しました。DB はそのままです:"
+
+msgid "{rel}: the dedup database and the manifest record different hashes for this source file at the same size and time — the manifest decided; the database's record was left as it is (database {db}, manifest {got})"
+msgstr "{rel}: 重複排除 DB とマニフェストが、このコピー元ファイルについて同じサイズと日時で異なるハッシュを記録しています — マニフェストが判断しました。DB の記録はそのままです (DB {db}、マニフェスト {got})"
+
+msgid "DRY RUN — nothing is written."
+msgstr "ドライラン — 何も書き込みません。"
+
+msgid "would write {n} files ({size})"
+msgstr "{n} 個のファイルを書き込む予定（{size}）"
+
+msgid "{n} unchanged"
+msgstr "{n} 個は変更なし"
+
+msgid "{n} conflicts (there with other content, kept)"
+msgstr "{n} 件の競合（別の内容で既に存在、保持）"
+
+msgid "{n} unreadable at the source"
+msgstr "{n} 個はソースで読み取れません"
+
+msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
+msgstr "ドライランでは探しません：中断された実行が残した未完成のファイル（--resume が削除します）。"
+
+msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
+msgstr "ドライランでは確認しません：2 つの宛先が同じ場所かどうか（この確認はプローブファイルを書き込みます）。"
+
+msgid "Not planned in a dry run: links to identical files already at a destination; such files are counted as written."
+msgstr "ドライランでは計画しません：宛先に既にある同一ファイルへのリンク。そのようなファイルは書き込みとして数えます。"
+
+msgid "Whether each destination takes a write is not tested in a dry run (that test writes a probe file)."
+msgstr "各宛先に書き込めるかはドライランではテストしません（このテストはプローブファイルを書き込みます）。"
+
+msgid "Fail the run when the dedup database at the destination could have been written by someone else (its owner, permissions, or a folder others can replace files in). Default: ignore that database, say so, and copy without the cache."
+msgstr "宛先の重複排除データベースを他人が書き込めた可能性がある場合（所有者、権限、または他人がファイルを置き換えられるフォルダ）に実行を失敗させます。既定：そのデータベースを無視し、その旨を表示して、キャッシュなしでコピーします。"
+
+msgid "{name} is not a regular file"
+msgstr "{name} は通常のファイルではありません"
+
+msgid "{name} is owned by another user (uid {uid})"
+msgstr "{name} は別のユーザー（uid {uid}）が所有しています"
+
+msgid "{name} can be written by others (mode {mode})"
+msgstr "{name} は他人が書き込めます（モード {mode}）"
+
+msgid "its folder {dir} is owned by another user (uid {uid})"
+msgstr "そのフォルダ {dir} は別のユーザー（uid {uid}）が所有しています"
+
+msgid "its folder {dir} lets anyone replace files in it (mode {mode}, no sticky bit)"
+msgstr "そのフォルダ {dir} では誰でもファイルを置き換えられます（モード {mode}、スティッキービットなし）"
+
+msgid "its folder {dir} lets other members of its group replace files in it (mode {mode})"
+msgstr "そのフォルダ {dir} ではグループの他のメンバーがファイルを置き換えられます（モード {mode}）"
+
+msgid "{name} is a symlink"
+msgstr "{name} はシンボリックリンクです"
+
+msgid "{name} was replaced after it was checked"
+msgstr "{name} は確認後に置き換えられました"
+
+msgid "dedup DB ignored: {why} — copying without the cache. Fix:\n      chown {user} {path} && chmod 600 {path}"
+msgstr "重複排除 DB を無視しました：{why} — キャッシュなしでコピーします。修正方法：\n      chown {user} {path} && chmod 600 {path}"
+
+msgid "Up to date: all {n} files are as blitcp recorded them when it last wrote or compared them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "最新：{n} 個のファイルはすべて、blitcp が最後に書き込みまたは比較したときの記録どおりです（サイズと時刻、両側）。読み取っていません — --no-cache で比較します"
+
+msgid "{n} unchanged as blitcp recorded them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "{n} 個は blitcp の記録どおり変更なし（サイズと時刻、両側）。読み取っていません — --no-cache で比較します"
+
+msgid "no manifest — blitcp's records decide: a file they show unchanged on both sides is not read; any other file of the same size is compared with what is there (--no-cache compares every file)"
+msgstr "マニフェストなし — blitcp の記録で判断します：両側で変更なしと記録されたファイルは読み取りません。同じサイズのその他のファイルは既存のものと比較します（--no-cache はすべてのファイルを比較します）"
+
+msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
+msgstr "永続的なハッシュキャッシュを無効にします：blitcp の記録を持つ重複排除データベースと、--manifest がない場合の SSH または SMB 宛先上の blitcp の署名付きハッシュキャッシュ（.blitcp_manifest.json）。再実行では、ローカル宛先の同じサイズのファイルをすべて読み取って比較し、SSH ホスト上でハッシュを計算し、SMB 共有にはすべてのファイルを再度書き込みます。FAT、exFAT、NFS、SMB、FUSE では記録がサイズと更新時刻で判断します：そこで同じサイズのまま変更され更新時刻を戻されたファイルは --no-cache でのみ検出されます。"
+
+msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
+msgstr "各宛先のマニフェストが同じサイズ・更新時刻・変更時刻で記録しているファイルも含め、すべてのソースファイルを読み取ってハッシュを計算します（このオプションなしでは読み取りません）。FAT、exFAT、NFS、SMB、FUSE 上のソースではサイズと更新時刻で判断します：そこで同じサイズのまま変更され更新時刻を戻されたファイルは --verify-source でのみ検出されます。"
+
+msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
+msgstr "注意: --relay-spool-mb はこのコピーには効果がありません。各ファイルはバッファを通してストリーミングされ、ディスクには何も退避されません。"
+
+msgid "enabled"
+msgstr "有効"
+
+msgid "disabled (--no-dedup)"
+msgstr "無効 (--no-dedup)"
+
+msgid "{n} files matched"
+msgstr "{n} 件のファイルが一致しました"
+
+msgid "Source '{src}' — no matching files or directory found"
+msgstr "コピー元 '{src}' — 一致するファイルまたはフォルダーが見つかりません"
+
+msgid "no remote files matched {pattern!r} in {folder}"
+msgstr "{folder} に {pattern!r} と一致するリモートファイルがありません"
+
+msgid "glob characters are only supported in the final path component for remote sources."
+msgstr "リモートのコピー元では、ワイルドカードはパスの最後の要素でのみ使えます。"
+
+msgid "changed after it was found to be a duplicate of {twin}; not linked, and not written — copy it again"
+msgstr "{twin} の重複と判定された後に変更されました。リンクも書き込みもしていません — もう一度コピーしてください"
+
+msgid "Note: {note}"
+msgstr "注: {note}"
+
+msgid ""
+"exit codes:\n"
+"  0  everything done\n"
+"  1  the run ran and some files failed (a write to a destination,\n"
+"     a destination that failed mid-run, a file refused or failing\n"
+"     verification)\n"
+"  2  nothing was done: a usage error, a pre-flight failure, a\n"
+"     connection that cannot be made, a host key that cannot be\n"
+"     confirmed\n"
+"  3  only source files could not be read\n"
+msgstr ""
+"終了コード:\n"
+"  0  すべて完了\n"
+"  1  実行はされたが一部のファイルが失敗した（コピー先への書き込み、\n"
+"     途中で失敗したコピー先、拒否されたファイル、検証に失敗したファイル）\n"
+"  2  何も行われなかった: 使い方の誤り、事前チェックの失敗、確立できない\n"
+"     接続、確認できないホスト鍵\n"
+"  3  コピー元のファイルが読めなかっただけ\n"
+
+msgid "{n} file(s) could NOT be read from the source (permission denied / locked); everything else copied OK — exclude or unlock them and re-run."
+msgstr "{n} 件のファイルをコピー元から読み取れませんでした（アクセス拒否 / ロック中）。それ以外はすべて正常にコピーされました — 除外するかロックを解除して再実行してください。"
+
+msgid "{n} duplicate(s) named by the source host are downloaded too: the host's word is not proof that they match"
+msgstr "送信元ホストが重複とした {n} 個のファイルもダウンロードします: ホストの申告は一致の証明になりません"
+
+msgid "{n} file(s) the source host called duplicates differ here: kept as separate copies"
+msgstr "送信元ホストが重複とした {n} 個のファイルはここでは内容が異なります: 別々のコピーとして保持しました"
+
+msgid "could not compare what is there ({why}): every file is written again, except one dedup finds already in place"
+msgstr "既存のものと比較できませんでした ({why}): すべてのファイルを再度書き込みます（重複排除がすでに配置済みと判断したものを除く）"
+
+msgid "{dir} is in a cloud-synced folder: the sync client would upload the dedup database (--dedup-in-sync-folder keeps it there)"
+msgstr "{dir} はクラウド同期フォルダー内にあります: 同期クライアントが重複排除データベースをアップロードしてしまいます（--dedup-in-sync-folder でそこに保持）"
+
+msgid "It also keeps blitcp's dedup database in such a folder, which is otherwise not made there."
+msgstr "そのようなフォルダーにも blitcp の重複排除データベースを保持します（指定しない場合はそこに作成されません）。"
+
+msgid "changed after it was read; not written — copy it again"
+msgstr "読み取り後に変更されました。書き込んでいません — もう一度コピーしてください"
+
+msgid "Stages (wall clock): pre-flight {pre} · copy {copy} · verify {verify} · records and close {close}"
+msgstr "段階 (実時間): 事前確認 {pre} · コピー {copy} · 検証 {verify} · 記録と終了処理 {close}"
+
+msgid "no manifest: the xxhash package is not installed (pip install xxhash)"
+msgstr "マニフェストなし: xxhash パッケージがインストールされていません (pip install xxhash)"
+
+msgid "Up to date: all {n} files have the same content here as at the source (read on both sides and compared); not written again"
+msgstr "最新です: {n} 個すべてのファイルがここでソースと同じ内容です (両側を読み取って比較しました)。再度書き込みはしません"
+
+msgid "{n} unchanged — the same content here as at the source (read on both sides and compared); not written again"
+msgstr "{n} 個は変更なし — ここでソースと同じ内容です (両側を読み取って比較しました)。再度書き込みはしません"
+
+msgid "interrupted"
+msgstr "中断されました"
+
+msgid "To retry once there is room: {cmd}"
+msgstr "空きができたら再試行: {cmd}"
+
+msgid "out of file descriptors even for one file at a time ({err})"
+msgstr "1 ファイルずつでもファイル記述子が足りません ({err})"
+
+msgid "the process ran out of file descriptors ({err})"
+msgstr "プロセスのファイル記述子が尽きました ({err})"
+
+msgid "{written} written · {skipped} skipped · {cloned} cloned · {linked} linked within run · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{written} 件書き込み · {skipped} 件スキップ · {cloned} 件クローン · {linked} 件を実行内でリンク · {refused} 件拒否 · {failed} 件失敗 · {src} 件はソースで読み取り不可"
+
+msgid "links only within this destination folder; a new folder is a full copy"
+msgstr "リンクはこの宛先フォルダー内のみ。新しいフォルダーは完全なコピーです"
+
+msgid "links anywhere on the drive (--index-existing)"
+msgstr "ドライブ全体でリンク (--index-existing)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links — {scope}; every other destination gets a full copy of each file."
+msgstr "--dest での重複排除: ローカルまたは SSH の宛先では、この実行内の重複と既にあるファイルがリンクになります — {scope}。その他の宛先は各ファイルの完全なコピーを受け取ります。"
+
+msgid "Stages (wall clock): scan source {scan} · scan destination {dest} · compare {compare} · dedup lookup {lookup} · plan {plan} · copy {copy} · verify {verify} · records {close}"
+msgstr "段階 (実時間): ソースの走査 {scan} · 宛先の走査 {dest} · 比較 {compare} · 重複の照会 {lookup} · 計画 {plan} · コピー {copy} · 検証 {verify} · 記録 {close}"
+
+msgid "Linked to a copy already here: {n} — the list: {path}"
+msgstr "既にここにあるコピーへのリンク: {n} — 一覧: {path}"
+
+msgid "input {input}"
+msgstr "入力 {input}"
+
+msgid "other destinations {others}"
+msgstr "他の宛先 {others}"
+
+msgid "Up to date: all {n} files have the same content here as at the source — the source read for each; here {rec} as this destination's records hold them (not read), {read} read and compared; not written again"
+msgstr "最新: {n} 個のファイルすべてがソースと同じ内容です — ソースは各ファイルを読み取り、ここでは {rec} 個をこの宛先の記録どおりと判断 (読み取りなし)、{read} 個を読み取って比較しました。再書き込みはしません"
+
+msgid "could not look at what is there: {why} — nothing written to it"
+msgstr "そこにあるものを確認できませんでした: {why} — 何も書き込んでいません"
+
+msgid "the host could not look at a file there: {why}"
+msgstr "ホストがそこにあるファイルを確認できませんでした: {why}"
+
+msgid "Source"
+msgstr "ソース"
+
+msgid "Destination"
+msgstr "宛先"
+
+msgid "Dedup DB"
+msgstr "重複DB"
+
+msgid "Hash"
+msgstr "ハッシュ"
+
+msgid "Manifest"
+msgstr "マニフェスト"
+
+msgid "Write"
+msgstr "書き込み"
+
+msgid "Journal"
+msgstr "ジャーナル"
+
+msgid "Verify"
+msgstr "検証"
+
+msgid "{n} (tables below)"
+msgstr "{n} (下の表)"
+
+msgid "manifest {state}"
+msgstr "マニフェスト {state}"
+
+msgid "verify {how}"
+msgstr "検証 {how}"
+
+msgid "Phase"
+msgstr "段階"
+
+msgid "progress"
+msgstr "進行"
+
+msgid "verified"
+msgstr "検証済み"
+
+msgid "mismatch"
+msgstr "不一致"
+
+msgid "Link"
+msgstr "接続"
+
+msgid "Files/s"
+msgstr "件/秒"
+
+msgid "Rate"
+msgstr "速度"
+
+msgid "State"
+msgstr "状態"
+
+msgid "{n} files/s"
+msgstr "{n} 件/秒"
+
+msgid "buffer {pct} % full"
+msgstr "バッファ {pct} % 使用"
+
+msgid "waiting on #{n}"
+msgstr "#{n} を待機中"
+
+msgid "Reader"
+msgstr "読取"
+
+msgid "Method"
+msgstr "方法"
+
+msgid "Copied"
+msgstr "コピー"
+
+msgid "Skipped"
+msgstr "スキップ"
+
+msgid "Cloned"
+msgstr "クローン"
+
+msgid "Linked"
+msgstr "リンク"
+
+msgid "Time"
+msgstr "時間"
+
+msgid "Result"
+msgstr "結果"
+
+msgid "{n} FAILED"
+msgstr "{n} 件失敗"
+
+msgid "Done"
+msgstr "完了"
+
+msgid "{n} written"
+msgstr "{n} 件書き込み"
+
+msgid "{n} destinations"
+msgstr "宛先 {n} 件"
+
+msgid "source read once"
+msgstr "ソースの読み取りは1回"
+
+msgid "none left"
+msgstr "残りなし"
+
+msgid "{n} left {dash} see list"
+msgstr "{n} 件残存 {dash} 一覧を参照"
+
+msgid "+{n} records"
+msgstr "+{n} レコード"
+
+msgid "Timings"
+msgstr "時間内訳"
+
+msgid "{why} while writing"
+msgstr "書き込み中に {why}"
+
+msgid "{why} while reading the source"
+msgstr "ソースの読み取り中に {why}"
+
+msgid "(and {n} other errors {dash} see list)"
+msgstr "(ほか {n} 種のエラー {dash} 一覧を参照)"
+
+msgid "{n} files on {dest}"
+msgstr "{dest} で {n} 件"
+
+msgid "1 file on {dest}"
+msgstr "{dest} で 1 件"
+
+msgid "first"
+msgstr "最初"
+
+msgid "list"
+msgstr "一覧"
+
+msgid "retry"
+msgstr "再試行"
+
+msgid "partitions of the same {bus} disk ({disk})"
+msgstr "同じ {bus} ディスク ({disk}) のパーティション"
+
+msgid "partitions of the same disk ({disk})"
+msgstr "同じディスク ({disk}) のパーティション"
+
+msgid "#{a} and #{b} are {what}. They share one spindle, so each"
+msgstr "#{a} と #{b} は{what}です。1 台のディスクを共有するため、それぞれ"
+
+msgid "Note"
+msgstr "注意"
+
+msgid "gets about half the speed. To copy them one after the other instead:"
+msgstr "速度はおよそ半分になります。順番にコピーするには:"
+
+msgid "Verified"
+msgstr "検証済み"
+
+msgid "read back device"
+msgstr "デバイス再読込"
+
+msgid "read back from device (O_DIRECT)"
+msgstr "デバイスから再読込 (O_DIRECT)"
+
+msgid "device"
+msgstr "デバイス"
+
+msgid "{n} read back from device"
+msgstr "{n} 件をデバイスから再読込"
+
+msgid "verified from device"
+msgstr "デバイスから検証済み"
+
+msgid "read back (cache)"
+msgstr "再読込 (キャッシュ)"
+
+msgid "OS cache"
+msgstr "OS キャッシュ"
+
+msgid "{n} read back through the OS cache"
+msgstr "{n} 件を OS キャッシュ経由で再読込"
+
+msgid "verified through the OS cache"
+msgstr "OS キャッシュ経由で検証済み"
+
+msgid "read back network"
+msgstr "ネットワーク再読込"
+
+msgid "network"
+msgstr "ネットワーク"
+
+msgid "verified over the network"
+msgstr "ネットワーク経由で検証済み"
+
+msgid "remote hash check"
+msgstr "リモートハッシュ"
+
+msgid "remote hash"
+msgstr "リモートハッシュ"
+
+msgid "{n} hash-checked on the remote"
+msgstr "{n} 件をリモートでハッシュ照合"
+
+msgid "verified by remote hash"
+msgstr "リモートハッシュで検証済み"
+
+msgid "remote hash sample"
+msgstr "リモート抜取照合"
+
+msgid "remote hash check (random sample)"
+msgstr "リモートハッシュ照合 (無作為抽出)"
+
+msgid "remote sample"
+msgstr "リモート抜取"
+
+msgid "{n} hash-checked on the remote (sample)"
+msgstr "{n} 件をリモートでハッシュ照合 (抜取)"
+
+msgid "a sample verified by remote hash"
+msgstr "抜取分をリモートハッシュで検証済み"
+
+msgid "store checksum"
+msgstr "ストアのチェックサム"
+
+msgid "the store's own checksum"
+msgstr "ストア自身のチェックサム"
+
+msgid "{n} matched the store's checksum"
+msgstr "{n} 件がストアのチェックサムと一致"
+
+msgid "verified by the store's checksum"
+msgstr "ストアのチェックサムで検証済み"
+
+msgid "existence and size only"
+msgstr "存在とサイズのみ"
+
+msgid "{n} present at the right size"
+msgstr "{n} 件が正しいサイズで存在"
+
+msgid "sizes match, content not compared"
+msgstr "サイズは一致、内容は未比較"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Error"
+msgstr "エラー"
+
+msgid "{n} sources"
+msgstr "ソース {n} 件"
+
+msgid "off"
+msgstr "オフ"
+
+msgid "on"
+msgstr "オン"
+
+msgid "(xxhash is not installed)"
+msgstr "(xxhash が未インストール)"
+
+msgid "(the destination has one)"
+msgstr "(宛先に既存)"
+
+msgid "(the store's sidecar)"
+msgstr "(ストアのサイドカー)"
+
+msgid "(on with --manifest/--resume)"
+msgstr "(--manifest/--resume でオン)"
+
+msgid "partial"
+msgstr "パーシャル"
+
+msgid "partial (--partial)"
+msgstr "パーシャル (--partial)"
+
+msgid "partial, renamed into place"
+msgstr "パーシャル後にリネーム"
+
+msgid "objects"
+msgstr "オブジェクト"
+
+msgid "whole objects"
+msgstr "オブジェクト単位"
+
+msgid "partial, renamed when complete"
+msgstr "パーシャル、完了時にリネーム"
+
+msgid "in-place"
+msgstr "直接書き込み"
+
+msgid "partial only on replace"
+msgstr "置換時のみパーシャル"
+
+msgid "resume"
+msgstr "再開"
+
+msgid "remote hash, or read back by SFTP"
+msgstr "リモートハッシュ、または SFTP 再読込"
+
+msgid "remote"
+msgstr "リモート"
+
+msgid "this machine's hash cache"
+msgstr "このマシンのハッシュキャッシュ"
+
+msgid "(with the manifest)"
+msgstr "(マニフェストと共に)"
+
+msgid "hashed once, at source"
+msgstr "ソースで 1 回だけハッシュ"
+
+msgid "stalled"
+msgstr "停止"
+
+msgid "empty"
+msgstr "空"
+
+msgid "not there yet"
+msgstr "未作成"
+
+msgid "{n} existing"
+msgstr "既存 {n} 件"
+
+msgid "{n} known"
+msgstr "既知 {n} 件"
+
+msgid "{n} to link"
+msgstr "リンク予定 {n} 件"
+
+msgid "{n} to copy"
+msgstr "コピー予定 {n} 件"
+
+msgid "dedup off (--no-dedup)"
+msgstr "重複排除オフ (--no-dedup)"
+
+msgid "1 lane"
+msgstr "1 レーン"
+
+msgid "{size} batches"
+msgstr "{size} バッチ"
+
+msgid "each file through a partial"
+msgstr "各ファイルをパーシャル経由"
+
+msgid "1 reader"
+msgstr "読取 1"
+
+msgid "fan-out"
+msgstr "ファンアウト"
+
+msgid "{n} lanes"
+msgstr "{n} レーン"
+
+msgid "pace = slowest lane"
+msgstr "速度 = 最も遅いレーン"
+
+msgid "physical order: {n} files mapped"
+msgstr "物理順: {n} 件をマップ"
+
+msgid "physical order: skipped (SSD)"
+msgstr "物理順: 省略 (SSD)"
+
+msgid "physical order: unavailable (the source filesystem gives no offsets)"
+msgstr "物理順: 利用不可 (ソースのファイルシステムがオフセットを返さない)"
+
+msgid "tar push"
+msgstr "tar 送信"
+
+msgid "Copy"
+msgstr "コピー"
+
+msgid "copied {done} / {total}"
+msgstr "コピー {done} / {total}"
+
+msgid "ETA {eta}"
+msgstr "残り {eta}"
+
+msgid "checked {done} / {total}"
+msgstr "照合 {done} / {total}"
+
+msgid "nothing to copy"
+msgstr "コピー対象なし"
+
+msgid "1 file"
+msgstr "1 件"
+
+msgid "{n} files"
+msgstr "{n} 件"
+
+msgid "{n} cloned"
+msgstr "クローン {n} 件"
+
+msgid "all done"
+msgstr "すべて完了"
+
+msgid "{n} failed on #{idx}"
+msgstr "#{idx} で {n} 件失敗"
+
+msgid "{n} MISMATCH"
+msgstr "{n} 件不一致"
+
+msgid "nothing written"
+msgstr "書き込みなし"
+
+msgid "sizes only"
+msgstr "サイズのみ"
+
+msgid "all match"
+msgstr "すべて一致"
+
+msgid "nothing to verify (nothing was written)"
+msgstr "検証対象なし (書き込みなし)"
+
+msgid "the destination failed"
+msgstr "宛先が失敗"
+
+msgid "not verified (--no-verify)"
+msgstr "未検証 (--no-verify)"
+
+msgid "not verified: the source changed"
+msgstr "未検証: ソースが変更された"
+
+msgid "incomplete"
+msgstr "不完全"
+
+msgid "nothing written, nothing to verify"
+msgstr "書き込みなし、検証対象なし"
+
+msgid "the source"
+msgstr "ソース"
+
+msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
+msgstr "宛先に異なる内容で存在、そのまま保持 (--overwrite-changed で置換)"
+
+msgid "hash mismatch after write"
+msgstr "書き込み後にハッシュ不一致"
+
+msgid "scan"
+msgstr "スキャン"
+
+msgid "plan"
+msgstr "計画"
+
+msgid "copy"
+msgstr "コピー"
+
+msgid "sync"
+msgstr "同期"
+
+msgid "records"
+msgstr "記録"
+
+msgid "input"
+msgstr "入力"
+
+msgid "scan source"
+msgstr "ソース走査"
+
+msgid "scan destination"
+msgstr "宛先走査"
+
+msgid "compare"
+msgstr "比較"
+
+msgid "dedup lookup"
+msgstr "重複検索"
+
+msgid "other destinations"
+msgstr "他の宛先"
+
+msgid "Stages"
+msgstr "ステージ"
+
+msgid "one destination"
+msgstr "宛先 1 つ"
+
+msgid "several"
+msgstr "複数"
+
+msgid "no destination given."
+msgstr "宛先が指定されていません。"
+
+msgid "no source and no destination given."
+msgstr "ソースも宛先も指定されていません。"
+
+msgid "A copy needs a source and at least one destination:"
+msgstr "コピーにはソースと 1 つ以上の宛先が必要です:"
+
+msgid "--dest and a positional destination cannot be mixed."
+msgstr "--dest と位置引数の宛先は併用できません。"
+
+msgid "You gave --dest {dest} and also {extra}: a second source, or a mistyped destination? Say which:"
+msgstr "--dest {dest} と {extra} が指定されました: 2 つ目のソースですか、宛先の書き間違いですか? どちらか明示してください:"
+
+msgid "a destination too"
+msgstr "これも宛先"
+
+msgid "a second source"
+msgstr "2 つ目のソース"
+
+msgid "source not found: {src}"
+msgstr "ソースが見つかりません: {src}"
+
+msgid "No matching files or directory found. With your destination, the command is:"
+msgstr "一致するファイルやフォルダーがありません。指定の宛先を使うコマンドは:"
+
+msgid "the destination {dest} is inside the source {src}."
+msgstr "宛先 {dest} はソース {src} の中にあります。"
+
+msgid "the destination {dest} contains the source {src}."
+msgstr "宛先 {dest} がソース {src} を含んでいます。"
+
+msgid "A copy must not land in what it is reading. Give a destination apart from the source:"
+msgstr "コピー先を読み取り元の中に置くことはできません。ソースの外の宛先を指定してください:"
+
+msgid "the destination {dest} is given twice."
+msgstr "宛先 {dest} が 2 回指定されています。"
+
+msgid "Each destination is one copy; give it once:"
+msgstr "宛先 1 つにつきコピー 1 つです。1 回だけ指定してください:"
+
+msgid "Scan source"
+msgstr "ソース走査"
+
+msgid "listing"
+msgstr "一覧取得中"
+
+msgid "{n} dirs"
+msgstr "フォルダー {n}"
+
+msgid "{n} unreadable"
+msgstr "読取不可 {n} 件"
+
+msgid "Scan destination"
+msgstr "宛先走査"
+
+msgid "Scan destinations"
+msgstr "宛先走査"
+
+msgid "looking"
+msgstr "確認中"
+
+msgid "Dedup lookup"
+msgstr "重複検索"
+
+msgid "looking up"
+msgstr "検索中"
+
+msgid "Dedup DB: {path}"
+msgstr "重複DB: {path}"
+
+msgid "Plan"
+msgstr "計画"
+
+msgid "syncing the destination and writing the records"
+msgstr "宛先を同期し記録を書き込み中"
+
+msgid "No bars and no redrawing: each phase as one line when it has finished, as when the output is not a terminal."
+msgstr "バーも再描画もなし: 各フェーズを完了時に 1 行で表示 (出力が端末でない場合と同じ)。"
+
+msgid "1 destination FAILED"
+msgstr "宛先 1 件が失敗"
+
+msgid "{n} destinations FAILED"
+msgstr "宛先 {n} 件が失敗"
+
+msgid "{dest} failed: {why}"
+msgstr "{dest} が失敗: {why}"
+
+msgid "{n} files not written"
+msgstr "{n} 件未書き込み"
+
+msgid "nothing to verify"
+msgstr "検証対象なし"
+
+msgid "read back"
+msgstr "再読込"
+
+msgid "links anywhere on the drive"
+msgstr "ドライブ全体でリンク"
+
+msgid "links within this folder only"
+msgstr "このフォルダー内のみリンク"
+
+msgid "{n} files not written or not verified"
+msgstr "{n} 件が未書き込みまたは未検証"
+
+msgid "Dedup"
+msgstr "重複排除"
+
+msgid "no DB {dash} {why}"
+msgstr "DB なし {dash} {why}"
+
+msgid "kept for local and SSH destinations only"
+msgstr "ローカルと SSH の宛先のみ対象"
+
+msgid "links anywhere on this drive"
+msgstr "このドライブ全体でリンク"
+
+msgid "Written"
+msgstr "書込"
+
+msgid "written"
+msgstr "書き込み"
+
+msgid "written {done} / {total}"
+msgstr "書き込み {done} / {total}"
+
+msgid "{n} of {total} files are not at this destination"
+msgstr "{total} 件中 {n} 件がこの宛先にありません"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "All {n} files are already up to date."
+msgstr "{n} 個のファイルはすべて最新です。"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out before the copy"
+msgstr "コピー前に除外されました"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out — nothing is written there"
+msgstr "除外 — そこには何も書き込まれません"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{a} and {b} are one folder, or one holds the other"
+msgstr "{a} と {b} は同じフォルダーか、一方が他方を含んでいます"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{d} is the source, inside it, or holds it"
+msgstr "{d} はコピー元そのもの、その中、またはそれを含む場所です"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{opt} takes one destination for now"
+msgstr "{opt} は現在、宛先 1 つでのみ使えます"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "Warning:"
+msgstr "警告:"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{dests} are on one filesystem: together they need {need}, it has {free} free"
+msgstr "{dests} は同じファイルシステム上にあります。合計で {need} 必要ですが、空きは {free} です"
+
+msgid "stalled: no answer for {n} s — dropped"
+msgstr "停止: {n} 秒間応答なし — 打ち切り"
+
+msgid "stalled after the copy: no answer for {n} s"
+msgstr "コピー後に停止: {n} 秒間応答なし"
+
+msgid "stalled during verification: no answer for {n} s"
+msgstr "検証中に停止: {n} 秒間応答なし"
+
+msgid "dropped; what it holds is not verified"
+msgstr "打ち切り。内容は検証されていません"
+
+msgid "stalled: no answer for {n} s"
+msgstr "停止: {n} 秒間応答なし"
+
+msgid "stalled during the copy: no answer for {n} s"
+msgstr "コピー中に停止: {n} 秒間応答なし"
+
+msgid "half-written:"
+msgstr "書き込み途中:"
+
+msgid "not checked"
+msgstr "未検証"
+
+msgid "{opt} does not apply to several local or SSH destinations"
+msgstr "{opt} は複数のローカル／SSH 宛先には使えません"
+
+msgid "could not be checked against the sources ({err}); nothing was written there"
+msgstr "ソースとの照合ができませんでした（{err}）。そこには何も書き込まれていません"
+
+msgid "the host offers none"
+msgstr "ホストが提供していません"
+
+msgid "no SFTP ({how}) — with several destinations an SSH destination needs SFTP; copy to it on its own"
+msgstr "SFTP なし ({how}) — 複数の宛先では SSH 宛先に SFTP が必要です。この宛先には単独でコピーしてください"
+
+msgid "no SFTP and no tar there ({how}) — nothing can write to it"
+msgstr "SFTP も tar もありません ({how}) — 書き込めません"
+
+msgid "copied, not verified: {why}"
+msgstr "コピー済み、未検証: {why}"
+
+msgid "copied, not verified"
+msgstr "コピー済み、未検証"
+
+#: blitcp.py (×N --use-sudo)
+msgid "{src}: with several destinations, --use-sudo takes a local source"
+msgstr "{src}: 複数の宛先では、--use-sudo はローカルのコピー元のみ使えます"
+
+msgid "{opt} does not take --use-sudo with several destinations"
+msgstr "{opt} は複数の宛先では --use-sudo と併用できません"
+
+msgid "an SMB or cloud destination does not take --use-sudo"
+msgstr "SMB またはクラウドの宛先では --use-sudo は使えません"
+
+msgid "an SSH destination or a saved connection does not take --use-sudo yet — copy to it without --use-sudo"
+msgstr "SSH の宛先や保存済みの接続では、まだ --use-sudo は使えません — --use-sudo なしでコピーしてください"
+
+msgid "{mnt} is not mounted — mount it, or name another destination"
+msgstr "{mnt} はマウントされていません — マウントするか、別の宛先を指定してください"
+
+#: blitcp.py (the fan-out's options, gone)
+msgid "{opt} is not available in this version"
+msgstr "{opt} はこのバージョンでは使用できません"
+
+msgid "{opt} goes with several destinations"
+msgstr "{opt} は複数の宛先でのみ使用できます"
+
+#: blitcp.py (several destinations: the fan-out's shapes)
+msgid "{src}: several destinations take a local source"
+msgstr "{src}: 複数の宛先にはローカルのソースが必要です"
+
+msgid "a bare name — write it as NAME:folder/ for a saved connection, or ./{name} for a folder here"
+msgstr "名前だけです — 保存済みの接続なら NAME:フォルダ/、ここのフォルダなら ./{name} と書いてください"
+
+#: blitcp_gui.py (several destinations: a verdict without a count)
+msgid "Verification failed"
+msgstr "検証に失敗しました"
+
+#: blitcp.py (--manifest on the 4.2.15 engine)
+msgid "--manifest takes a local source, xxh128 hashes and verification"
+msgstr "--manifest にはローカルのソース、xxh128 ハッシュ、検証が必要です"
+
+msgid "manifest {name}"
+msgstr "マニフェスト {name}"
+
+msgid "no manifest: its verification did not pass"
+msgstr "マニフェストなし: 検証が成功しませんでした"
+
+msgid "no manifest: nothing new to record"
+msgstr "マニフェストなし: 記録する新しいものはありません"
+
+msgid "{n} files are not in its manifest: this run has no xxh128 of them"
+msgstr "{n} 個のファイルはマニフェストにありません: この実行にはその xxh128 がありません"
+
+#: blitcp.py (--manifest: files it does not hold)
+msgid "manifest incomplete: {n} files"
+msgstr "マニフェストが不完全: {n} 個のファイル"
+
+#: blitcp.py (several destinations: a kind they do not take)
+msgid "not a destination several destinations take — a local folder, user@host:/path, smb://, s3://, az:// or gs://"
+msgstr "複数の宛先では使えない宛先です — ローカルフォルダー、user@host:/path、smb://、s3://、az:// または gs://"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "{why} — not written"
+msgstr "{why} — 書き込まれていません"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "the destination folder is not the one this run started with"
+msgstr "宛先フォルダーが、この実行の開始時のフォルダーではありません"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not a name under the destination"
+msgstr "宛先の下の名前ではありません"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "a folder on the way resolves outside the destination"
+msgstr "途中のフォルダーが宛先の外を指しています"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "this destination folder is inside a source folder (the same folder on disk)"
+msgstr "この宛先フォルダーはソースフォルダーの中にあります（ディスク上の同じフォルダー）"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "could not be reached from the destination root"
+msgstr "宛先のルートからたどり着けませんでした"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not the file the scan found (it, or a folder on the way, changed since) — not read"
+msgstr "スキャンで見つかったファイルではありません（ファイルか途中のフォルダーがその後変わりました）— 読み取っていません"
+msgid "1–{n} one destination"
+msgstr "1–{n} 宛先を1つ"
+
+msgid "BLITCP_UI={val} is not lines, dashboard or quiet — ignored"
+msgstr "BLITCP_UI={val} は lines、dashboard、quiet のいずれでもありません — 無視します"
+
+msgid "DEDUP"
+msgstr "重複"
+
+msgid "DESTINATIONS"
+msgstr "宛先"
+
+msgid "DETAILS"
+msgstr "詳細"
+
+msgid "Deduplication"
+msgstr "重複排除"
+
+msgid "Disk layout"
+msgstr "ディスク配置"
+
+msgid "FROM"
+msgstr "元"
+
+msgid "HASH"
+msgstr "ハッシュ"
+
+msgid "How a copy is shown: lines (the default) or dashboard (full screen, a terminal of at least 100 × 24). Also [ui] mode in ~/.config/blitcp/config.toml or BLITCP_UI; -q always wins."
+msgstr "コピーの表示方法: lines（既定）または dashboard（全画面、100 × 24 以上の端末）。~/.config/blitcp/config.toml の [ui] mode や BLITCP_UI でも指定可。-q が常に優先。"
+
+msgid "Incremental"
+msgstr "増分チェック"
+
+msgid "Index existing"
+msgstr "既存の索引"
+
+msgid "NOTES"
+msgstr "メモ"
+
+msgid "Notes"
+msgstr "メモ"
+
+msgid "PHASES"
+msgstr "フェーズ"
+
+msgid "READ RATE, last 5 min"
+msgstr "読み取り速度（直近5分）"
+
+msgid "Source and {tag}destination are on the same disk ({disk}): reads and writes take turns."
+msgstr "ソースと{tag}宛先は同じディスク（{disk}）です。読み取りと書き込みが交互になります。"
+
+msgid "Source and {tag}destinations are on the same disk ({disk}): reads and writes take turns."
+msgstr "ソースと{tag}宛先は同じディスク（{disk}）です。読み取りと書き込みが交互になります。"
+
+msgid "Source on a {dev}: files are read in their order on the disk."
+msgstr "ソースは {dev}: ファイルはディスク上の順序で読み取ります。"
+
+msgid "Source on a {dev}: read order does not matter."
+msgstr "ソースは {dev}: 読み取り順序は関係ありません。"
+
+msgid "Space check"
+msgstr "空き容量"
+
+msgid "Stopped"
+msgstr "停止"
+
+msgid "Stopping safely: the file in progress finishes, the destination is synced, then blitcp exits."
+msgstr "安全に停止中: 処理中のファイルを完了し、宛先を同期してから blitcp を終了します。"
+
+msgid "Syncing the destination…"
+msgstr "宛先を同期中…"
+
+msgid "TO"
+msgstr "先"
+
+msgid "The dashboard without colours (as NO_COLOR)."
+msgstr "色なしのダッシュボード（NO_COLOR と同じ）。"
+
+msgid "all the time"
+msgstr "常に"
+
+msgid "{pct} % of the time"
+msgstr "{pct} % の時間"
+
+msgid "(a rested HDD: 5–15 ms)"
+msgstr "（休止状態の HDD: 5–15 ms）"
+
+msgid "(a rested SATA SSD: under 1 ms)"
+msgstr "（休止状態の SATA SSD: 1 ms 未満）"
+
+msgid "(a rested NVMe drive: under 0.2 ms)"
+msgstr "（休止状態の NVMe ドライブ: 0.2 ms 未満）"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "ソースのディスク{dev}が上限です: {busy}使用中で、読み取りごとに約 {ms} ms 待っています{ref}。"
+
+msgid "The source disk{dev} is the limit: it is busy {busy}."
+msgstr "ソースのディスク{dev}が上限です: {busy}使用中です。"
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else reading from it would help."
+msgstr "blitcp はこのディスクを待っています。より速いディスク、休止状態のディスク、または他に何も読み取らない状態にすると改善します。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "{tag}宛先のディスク{dev}が上限です: {busy}使用中で、書き込みごとに約 {ms} ms 待っています{ref}。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy}."
+msgstr "{tag}宛先のディスク{dev}が上限です: {busy}使用中です。"
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else writing to it would help."
+msgstr "blitcp はこのディスクを待っています。より速いディスク、休止状態のディスク、または他に何も書き込まない状態にすると改善します。"
+
+msgid "The network is the limit: it carries {pct} % of what its {mbps} Mb/s link can. blitcp is waiting for it; a faster link, or nothing else using it, would help."
+msgstr "ネットワークが上限です: {mbps} Mb/s のリンクで可能な量の {pct} % を転送しています。blitcp はネットワークを待っています。より速いリンク、または他に何も使わない状態にすると改善します。"
+
+msgid "blitcp's CPU is the limit: it keeps one core busy all the time, while the disks and the network have room to spare. A faster CPU would help."
+msgstr "blitcp の CPU が上限です: 1 コアが常に使用中で、ディスクとネットワークには余裕があります。より速い CPU で改善します。"
+
+msgid "The network was the limit for {pct} % of the run."
+msgstr "実行時間の {pct} % でネットワークが上限でした。"
+
+msgid "The source disk was the limit for {pct} % of the run."
+msgstr "実行時間の {pct} % でソースディスクが上限でした。"
+
+msgid "The {tag}destination disk was the limit for {pct} % of the run."
+msgstr "実行時間の {pct} % で{tag}宛先ディスクが上限でした。"
+
+msgid "Total"
+msgstr "合計"
+
+msgid "VERIFY"
+msgstr "検証"
+
+msgid "WHAT LIMITS THE SPEED"
+msgstr "速度を制限しているもの"
+
+msgid "WRITE"
+msgstr "書込"
+
+msgid "WRITE RATE, last 5 min"
+msgstr "書き込み速度（直近5分）"
+
+msgid "before the copy began; nothing was written"
+msgstr "コピー開始前。何も書き込まれていません"
+
+msgid "blitcp's CPU was the limit for {pct} % of the run."
+msgstr "実行時間の {pct} % で blitcp の CPU が上限でした。"
+
+msgid "blitcp: the terminal is {c} × {r}; the dashboard needs 100 × 24. The copy goes on."
+msgstr "blitcp: 端末は {c} × {r} です。ダッシュボードには 100 × 24 が必要です。コピーは続行中。"
+
+msgid "busy %  wait ms  read/s     write/s    r/s     w/s"
+msgstr "使用%   待機ms   読取/s     書込/s     r/s     w/s"
+
+msgid "cpu"
+msgstr "cpu"
+
+msgid "dashboard: {err}"
+msgstr "ダッシュボード: {err}"
+
+msgid "dest"
+msgstr "宛先"
+
+msgid "engine"
+msgstr "エンジン"
+
+msgid "error — see notes"
+msgstr "エラー — メモを参照"
+
+msgid "g graph"
+msgstr "g グラフ"
+
+msgid "half-written: {name} ({done} of {total})"
+msgstr "書きかけ: {name}（{total} 中 {done}）"
+
+msgid "in place"
+msgstr "その場で"
+
+msgid "index"
+msgstr "索引"
+
+msgid "layout"
+msgstr "配置"
+
+msgid "limit: "
+msgstr "上限: "
+
+msgid "limit: blitcp"
+msgstr "上限: blitcp"
+
+msgid "n notes"
+msgstr "n メモ"
+
+msgid "net"
+msgstr "網"
+
+msgid "no disk statistics"
+msgstr "ディスク統計なし"
+
+msgid "not verified"
+msgstr "未検証"
+
+msgid "nothing half-written"
+msgstr "書きかけのファイルなし"
+
+msgid "now"
+msgstr "現在"
+
+msgid "now {rate}"
+msgstr "現在 {rate}"
+
+msgid "of one core"
+msgstr "（1 コア比）"
+
+msgid "one core busy ◀"
+msgstr "1 コア使用中 ◀"
+
+msgid "over SSH"
+msgstr "SSH 経由"
+
+msgid "q stop safely"
+msgstr "q 安全に停止"
+
+msgid "rate"
+msgstr "速度"
+
+msgid "send {tx} · receive {rx} · link {mbps}"
+msgstr "送信 {tx} · 受信 {rx} · リンク {mbps}"
+
+msgid "source"
+msgstr "ソース"
+
+msgid "source files skipped"
+msgstr "ソースファイルをスキップ"
+
+msgid "space"
+msgstr "容量"
+
+msgid "state"
+msgstr "状態"
+
+msgid "to continue: {cmd}"
+msgstr "続行するには: {cmd}"
+
+msgid "v back"
+msgstr "v 戻る"
+
+msgid "v details"
+msgstr "v 詳細"
+
+msgid "verification FAILED"
+msgstr "検証に失敗"
+
+msgid "verified from disk"
+msgstr "ディスクから検証済み"
+
+msgid "waits for [{k}]"
+msgstr "[{k}] 待ち"
+
+msgid "writing"
+msgstr "書き込み中"
+
+msgid "{c} copied · {s} skipped · {l} linked · {f} failed"
+msgstr "{c} コピー · {s} スキップ · {l} リンク · {f} 失敗"
+
+msgid "{f} of {t} files copied · {b}"
+msgstr "{t} 件中 {f} 件をコピー · {b}"
+
+msgid "{ms} ms/read ◀"
+msgstr "{ms} ms/読取 ◀"
+
+msgid "{ms} ms/write ◀"
+msgstr "{ms} ms/書込 ◀"
+
+msgid "{n} destinations · {ok} done · {bad} failed"
+msgstr "{n} 宛先 · {ok} 完了 · {bad} 失敗"
+
+msgid "{n} duplicates"
+msgstr "{n} 件の重複"
+
+msgid "{path}: cannot be read ({why}) — ignored"
+msgstr "{path}: 読み取れません（{why}）— 無視します"
+
+msgid "{path}: not valid TOML ({why}) — ignored"
+msgstr "{path}: 不正な TOML（{why}）— 無視します"
+
+msgid "{path}: this Python cannot read TOML — ignored"
+msgstr "{path}: この Python は TOML を読めません — 無視します"
+
+msgid "{path}: ui.{key} = {val!r} is not allowed — ignored"
+msgstr "{path}: ui.{key} = {val!r} は使えません — 無視します"
+
+msgid "{path}: unknown key '{key}' — ignored"
+msgstr "{path}: 不明なキー '{key}' — 無視します"
+
+msgid "left out"
+msgstr "除外"
+
+msgid "dropped — see notes"
+msgstr "中止 — ノートを参照"
+
+msgid "stalled — see notes"
+msgstr "停止 — ノートを参照"
+
+msgid "{pct} % of {mbps} Mb/s"
+msgstr "{mbps} Mb/s の {pct} %"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "ソースのディスク{dev}が上限です: {busy}使用中で、書き込みごとに約 {ms} ms 待っています{ref}。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "{tag}宛先のディスク{dev}が上限です: {busy}使用中で、読み取りごとに約 {ms} ms 待っています{ref}。"
+
+msgid "{rate} · {f} / {t} files"
+msgstr "{rate} · {f} / {t} ファイル"
+
+msgid "↑↓ notes"
+msgstr "↑↓ メモ"
+
+msgid "◀ limit: cpu"
+msgstr "◀ 上限: cpu"
+
+msgid "◀ limit: disk {pct} %"
+msgstr "◀ 上限: ディスク {pct} %"
+
+msgid "◀ limit: network {mbps} Mb/s"
+msgstr "◀ 上限: ネットワーク {mbps} Mb/s"
+
+msgid "The small files finish first; no large file is started."
+msgstr "小さいファイルを先に完了します。大きいファイルは開始しません。"
+
+msgid "Stopped: the copied files get their links, folders, records and sync…"
+msgstr "停止: コピー済みファイルのリンク、フォルダー、記録、同期を行います…"
+
+msgid "Stopping safely: the files in progress finish, what was copied gets its links, folders, records and sync, then blitcp exits."
+msgstr "安全に停止中: 処理中のファイルを完了し、コピー済みのものにリンク・フォルダー・記録・同期を行ってから blitcp を終了します。"
+
+msgid "size checked"
+msgstr "サイズを確認"
+
+
+msgid "owner {owner}, mode {mode}"
+msgstr "所有者 {owner}、モード {mode}"
+
+msgid "local folder {path}"
+msgstr "ローカルフォルダー {path}"
+
+msgid "{where}, folder {path}"
+msgstr "{where}、フォルダー {path}"
+
+msgid "shares there: {names}"
+msgstr "そこにある共有: {names}"
+
+msgid "SMB share {share} on {host}, folder {path}"
+msgstr "{host} の SMB 共有 {share}、フォルダー {path}"
+
+msgid "{scheme} bucket {bucket}, prefix {prefix} (listed, nothing written)"
+msgstr "{scheme} バケット {bucket}、プレフィックス {prefix}（一覧取得のみ、書き込みなし）"
+
+msgid "no answer from {host} in {n} s: is it on, reachable, firewalled?"
+msgstr "{n} 秒以内に {host} から応答がありません: 電源は入っていますか、到達できますか、ファイアウォールで遮断されていませんか？"
+
+msgid "folder not writable: {folder} ({detail}) — give {user} write access, or choose another folder"
+msgstr "フォルダーに書き込めません: {folder}（{detail}）— {user} に書き込み権限を与えるか、別のフォルダーを選んでください"
+
+msgid "cannot connect to {host}: {err}"
+msgstr "{host} に接続できません: {err}"
+
+msgid "the host key could not be confirmed"
+msgstr "ホスト鍵を確認できませんでした"
+
+msgid "cannot list {where}: {err}"
+msgstr "{where} を一覧表示できません: {err}"
+
+msgid "OK — connected, folder writable: {what}"
+msgstr "OK — 接続済み、フォルダーに書き込めます: {what}"
+
+msgid "OK — connected, bucket listed: {what}"
+msgstr "OK — 接続済み、バケットを一覧取得しました: {what}"
+
+msgid "connection {name!r} has no valid type"
+msgstr "接続 {name!r} に有効な種類がありません"
+
+msgid "{path} is not a folder"
+msgstr "{path} はフォルダーではありません"
+
+msgid "{host} does not accept {proto} on port {port} — check the port"
+msgstr "{host} はポート {port} で {proto} を受け付けていません — ポートを確認してください"
+
+msgid "cannot find host {host}: check its name"
+msgstr "ホスト {host} が見つかりません: 名前を確認してください"
+
+msgid "its shares could not be listed: {err}"
+msgstr "共有の一覧を取得できませんでした: {err}"
+
+msgid "the share {share} is a path — a share is a name, not a path: set the share to {head} and put {rest} in the path"
+msgstr "共有 {share} はパスです — 共有は名前であってパスではありません: 共有を {head} にし、{rest} をパスに入れてください"
+
+msgid "share {share} not found on {host}; {shares}. If it is a folder, put it in the path"
+msgstr "{host} に共有 {share} が見つかりません。{shares}。フォルダーならパスに入れてください"
+
+msgid "{who} refused the login (user {user}). Set the user and password in this connection"
+msgstr "{who} がログインを拒否しました（ユーザー {user}）。この接続にユーザーとパスワードを設定してください"
+
+msgid "bucket {bucket} not found — check its name, and the region or account of this connection"
+msgstr "バケット {bucket} が見つかりません — 名前と、この接続のリージョンまたはアカウントを確認してください"
+
+msgid "access denied to bucket {bucket} — check the keys of this connection and what they may read"
+msgstr "バケット {bucket} へのアクセスが拒否されました — この接続のキーと読み取り権限を確認してください"
+
+msgid "the endpoint {endpoint} does not answer as a storage service — check the endpoint URL"
+msgstr "エンドポイント {endpoint} がストレージサービスとして応答しません — エンドポイント URL を確認してください"
+
+msgid "this connection has no host"
+msgstr "この接続にはホストがありません"
+
+msgid "access denied"
+msgstr "アクセスが拒否されました"
+
+msgid "cannot check {dest}: {err}"
+msgstr "{dest} を確認できません: {err}"
+
+msgid "this connection has no share; {shares}"
+msgstr "この接続には共有がありません。{shares}"
+
+msgid "this connection has no default bucket: test it as {name}:BUCKET in a run, or set one with: blitcp creds edit {name}"
+msgstr "この接続には既定のバケットがありません: 実行時に {name}:BUCKET として試すか、次で設定してください: blitcp creds edit {name}"
+
+msgid "Password for {who}: "
+msgstr "{who} のパスワード: "
+
+msgid "the host key of {host} is not known yet (SHA256:{fp}) — connect once from a terminal to confirm it, or add it to {path}"
+msgstr "{host} のホスト鍵はまだ不明です（SHA256:{fp}）— 端末から一度接続して確認するか、{path} に追加してください"
+
+msgid "{host} has no SFTP, and this connection is SFTP only"
+msgstr "{host} には SFTP がなく、この接続は SFTP 専用です"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection"
+msgstr "{who} がログインを拒否しました。試したもの: {tried}。この接続にパスワードまたは鍵を設定してください"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection, or give --ssh-key / --ssh-password-env"
+msgstr "{who} がログインを拒否しました。試したもの: {tried}。この接続にパスワードまたは鍵を設定するか、--ssh-key / --ssh-password-env を指定してください"
+
+msgid "cannot be tested without the engine"
+msgstr "エンジンなしではテストできません"
+
+msgid "test failed"
+msgstr "テスト失敗"
+
+msgid "SSH {who} port {port}"
+msgstr "SSH {who} ポート {port}"
+
+msgid "dashboard closed ({err}); the copy goes on below"
+msgstr "ダッシュボードを閉じました（{err}）。コピーは下で続行します"
+
+msgid "dashboard: that view could not be drawn ({err}); back to the main view"
+msgstr "ダッシュボード: その表示を描画できませんでした（{err}）。メイン表示に戻ります"
+
+msgid "the endpoint {endpoint} is not a valid URL — check the endpoint URL (for example https://host:port)"
+msgstr "エンドポイント {endpoint} は有効な URL ではありません — エンドポイント URL を確認してください（例: https://host:port）"
+
+msgid "Warning: could not read the cookies in {src} for {host} ({why}) — downloading without them"
+msgstr "警告: {host} の {src} の Cookie を読み取れませんでした（{why}）— Cookie なしでダウンロードします"
+
+msgid "no such file"
+msgstr "ファイルがありません"
+
+msgid "not a cookies.txt file: {err}"
+msgstr "cookies.txt ファイルではありません: {err}"
+
+msgid "this build cannot read a browser's session; export the browser's cookies to a cookies.txt and use --cookies FILE"
+msgstr "このビルドはブラウザーのセッションを読み取れません。ブラウザーの Cookie を cookies.txt に書き出し、--cookies FILE を使ってください"
+
+msgid "browser_cookie3 is not installed: python -m pip install browser-cookie3"
+msgstr "browser_cookie3 がインストールされていません: python -m pip install browser-cookie3"
+
+msgid "this build cannot read {src}"
+msgstr "このビルドは {src} を読み取れません"
+
+msgid "this site needs sign-in: open it in {browser} and sign in, or set cookies"
+msgstr "このサイトはサインインが必要です: {browser} で開いてサインインするか、Cookie を設定してください"
+
+msgid "this site needs sign-in: open it in your browser and sign in, then choose it as the live session, or set cookies (--cookies FILE / --cookies-from-browser NAME)"
+msgstr "このサイトはサインインが必要です: ブラウザーで開いてサインインし、ライブセッションとして選ぶか、Cookie を設定してください（--cookies FILE / --cookies-from-browser NAME）"
+
+msgid "Dry run…"
+msgstr "ドライラン…"
+
+msgid "Starting…"
+msgstr "開始中…"
+
+msgid "copied — waiting for the others"
+msgstr "コピー済み — 他の完了を待っています"
+
+msgid " and mtime"
+msgstr "・更新時刻"
+
+msgid "HTTP → {n} destinations  [one download]"
+msgstr "HTTP → {n} か所  [1 回のダウンロード]"
+
+msgid "SSH transfers require paramiko"
+msgstr "SSH 転送には paramiko が必要です"
+
+msgid "Up to date — skipped (same size{and_mtime})."
+msgstr "最新 — スキップ（同じサイズ{and_mtime}）。"
+
+msgid "a web source does not go to a cloud store — relay via an SSH or SMB destination"
+msgstr "Web ソースはクラウドストレージに送れません — SSH または SMB の宛先を経由してください"
+
+msgid "no destination is left to write to"
+msgstr "書き込める宛先が残っていません"
+
+msgid "transfer truncated"
+msgstr "転送が途中で切れました"
+
+msgid "{path}: {why}"
+msgstr "{path}: {why}"
+
+msgid "Write a manifest (MHL)"
+msgstr "マニフェストを書き込む (MHL)"
+
+msgid "Drop a destination that stops answering after {n} s"
+msgstr "{n} 秒応答しない宛先を外す"
+
+msgid "Verify against manifest"
+msgstr "マニフェストと照合"
+
+msgid "Check a destination against the manifest a copy wrote there, without the source (--verify-manifest)"
+msgstr "コピーが宛先に書き込んだマニフェストと、ソースなしで照合します (--verify-manifest)"
+
+msgid "Destination folder"
+msgstr "宛先フォルダー"
+
+msgid "Read every file back (--deep)"
+msgstr "すべてのファイルを読み戻す (--deep)"
+
+msgid "manifest (MHL)"
+msgstr "マニフェスト (MHL)"
+
+msgid "no manifest: {why}"
+msgstr "マニフェストなし: {why}"
+
+msgid "The saved connections are locked — the run needs them"
+msgstr "保存された接続はロックされています — 実行に必要です"
+
+msgid "{dest}: connecting…"
+msgstr "{dest}: 接続中…"
+
+msgid "Check cancelled"
+msgstr "チェックを取り消しました"
+
+msgid "up to date"
+msgstr "最新"
+
+msgid "sample-hashed"
+msgstr "抽出ハッシュ確認"
+
+msgid "--ui dashboard needs blitcp_dashboard.py beside blitcp.py — get it with: blitcp --fetch-modules (lines for now)"
+msgstr "--ui dashboard には blitcp.py と同じ場所に blitcp_dashboard.py が必要です — 取得: blitcp --fetch-modules（今回は行表示）"
+
+msgid "Write an ASC MHL generation (ascmhl/ and blitcp.xxh128) at each destination whose check found no fault, from the hashes this run already has (a local source, xxh128). What is skipped is decided as without it. Check a destination later, without the source, with --verify-manifest DEST."
+msgstr "検証に合格した各コピー先に、この実行がすでに持つハッシュ（ローカルのコピー元、xxh128）から ASC MHL の世代（ascmhl/ と blitcp.xxh128）を書き込みます。スキップの判定はこのオプションなしと同じです。後でコピー元なしでコピー先を確認するには --verify-manifest DEST。"

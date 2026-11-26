@@ -6,8 +6,9 @@
 Build script — compiles blitcp into a standalone executable.
 
 Usage:
-  python build.py              # build CLI executable
+  python build.py              # build the CLI (and the GUI, when present)
   python build.py --clean      # clean build artifacts first
+  python build.py --help       # options; builds nothing
 
 Output:
   dist/blitcp       — CLI executable
@@ -43,6 +44,14 @@ CLOUD_COLLECT = {
 COOKIE_COLLECT = {
     "browser_cookie3": ["browser_cookie3"],
 }
+
+# Every import the frozen binary must carry by name. The engine's own modules
+# (the 4.4.0 split: blitcp.py imports blitcp_cloud.py, blitcp_iface.py and
+# blitcp_dashboard.py)
+# are named too: PyInstaller's static scan finds them today, and a binary
+# that misses one fails at start — so it is not left to the scan.
+ENGINE_MODULES = ("blitcp_iface", "blitcp_cloud", "blitcp_dashboard")
+HIDDEN_IMPORTS = ("xxhash", "paramiko") + ENGINE_MODULES
 
 # Shared libraries the bundle must NOT carry — the host has to provide them.
 # Qt's xcb plugin builds its keymap through the host's libxkbcommon-x11, then
@@ -89,7 +98,7 @@ GUI_SPEC_TEMPLATE = '''# -*- mode: python ; coding: utf-8 -*-
 import os
 from PyInstaller.utils.hooks import collect_all
 
-datas, binaries, hiddenimports = [('locales', 'locales')], [], ['xxhash', 'paramiko']
+datas, binaries, hiddenimports = [('locales', 'locales')], [], {hidden!r}
 for pkg in {pkgs!r}:
     _d, _b, _h = collect_all(pkg)
     datas += _d
@@ -115,7 +124,6 @@ def install_deps():
         "pyinstaller": "PyInstaller",
         "xxhash": "xxhash",
         "paramiko": "paramiko",
-        "PySide6": "PySide6",
     }
     for pip_name, import_name in deps.items():
         try:
@@ -133,6 +141,19 @@ def install_deps():
                     sys.executable, "-m", "pip", "install", pip_name, "--quiet",
                     "--disable-pip-version-check", "--break-system-packages",
                 ])
+    # PySide6 from requirements-gui.txt, always: its version pin (no 6.12.0,
+    # which crashes the GUI on Python < 3.12) is the one source, and pip
+    # replaces an installed version the pin excludes.
+    req_gui = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "requirements-gui.txt")
+    print("  Installing GUI requirements (requirements-gui.txt)...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r",
+                               req_gui, "--quiet", "--disable-pip-version-check"])
+    except subprocess.CalledProcessError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r",
+                               req_gui, "--quiet", "--disable-pip-version-check",
+                               "--break-system-packages"])
     # pywin32 is Windows-only and required for NTFS owner/ACL preservation;
     # without it the ACL copy silently no-ops in the frozen binary. Installed
     # from requirements-win.txt (same file CI uses) so the version pin has a
@@ -231,6 +252,7 @@ def _gui_spec_cmd(name, script, icon):
     with open(spec_path, "w") as fh:
         fh.write(GUI_SPEC_TEMPLATE.format(
             pkgs=_optional_packages(),
+            hidden=list(HIDDEN_IMPORTS),
             script=os.path.abspath(script),
             name=name,
             host_libs=HOST_LIBS,
@@ -273,6 +295,15 @@ def _po_parse(path):
     catalog, cur_id, cur_str, state = {}, None, None, None
     def unesc(s):
         return s.encode().decode("unicode_escape").encode("latin-1").decode("utf-8")
+
+    def unquote(s):
+        # Exactly one quote off each end. strip('"') took an ESCAPED quote
+        # too when a string ended in one (... \"{dir}\""), leaving a lone
+        # backslash for unicode_escape.
+        s = s.strip()
+        if len(s) < 2 or s[0] != '"' or s[-1] != '"':
+            raise ValueError("%s:%d: not a quoted PO string" % (path, ln))
+        return s[1:-1]
     for ln, raw in enumerate(open(path, encoding="utf-8"), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -280,11 +311,11 @@ def _po_parse(path):
         if line.startswith("msgid "):
             if cur_id is not None:
                 catalog[cur_id] = cur_str
-            cur_id, cur_str, state = unesc(line[6:].strip().strip('"')), None, "id"
+            cur_id, cur_str, state = unesc(unquote(line[6:])), None, "id"
         elif line.startswith("msgstr "):
-            cur_str, state = unesc(line[7:].strip().strip('"')), "str"
+            cur_str, state = unesc(unquote(line[7:])), "str"
         elif line.startswith('"'):
-            chunk = unesc(line.strip('"'))
+            chunk = unesc(unquote(line))
             if state == "id":
                 cur_id += chunk
             elif state == "str":
@@ -340,8 +371,7 @@ def build_target(name, script, windowed=False, icon=None):
             "--clean",
             "--noupx",
             "--windowed" if windowed else "--console",
-            "--hidden-import=xxhash",
-            "--hidden-import=paramiko",
+        ] + ["--hidden-import=" + m for m in HIDDEN_IMPORTS] + [
             # Translations (I18N_DESIGN.md): bundled next to the code; the
             # runtime finds them via sys._MEIPASS/locales.
             f"--add-data=locales{os.pathsep}locales",
@@ -421,19 +451,38 @@ def sign_binary(path, thumbprint):
     return False
 
 
+def _parse_args(argv=None):
+    """The command line, read before anything is done: --help and an unknown
+    flag exit here, with the tree untouched (`build.py --help` once ran a
+    full build — locales, pip, both binaries, the spec files)."""
+    import argparse
+    p = argparse.ArgumentParser(
+        prog="build.py",
+        description="Compile blitcp (and blitcp_gui.py, when present) into "
+                    "standalone executables in dist/ with PyInstaller.",
+        epilog="Environment: BLITCP_ONEDIR=1 builds folder bundles instead "
+               "of single-file executables.")
+    p.add_argument("--clean", action="store_true",
+                   help="remove build/, dist/, __pycache__/ and *.spec first")
+    p.add_argument("--no-gui", action="store_true",
+                   help="build the CLI only")
+    p.add_argument("--sign", metavar="THUMBPRINT",
+                   help="code-sign the executables (Windows signtool) with "
+                        "the certificate of this SHA-1 thumbprint")
+    args = p.parse_args(argv)
+    # "--sign --clean" is already refused by argparse (--sign needs a value);
+    # an empty or dash-led value must not reach signtool /sha1 either.
+    if args.sign is not None and (not args.sign or args.sign.startswith("-")):
+        p.error("--sign needs a certificate thumbprint")
+    return args
+
+
 def main():
+    args = _parse_args()
     # Translations first — a bad .po must fail the build, not the user's copy.
     compile_locales()
-    clean = "--clean" in sys.argv
-    sign_thumb = None
-    if "--sign" in sys.argv:
-        i = sys.argv.index("--sign")
-        sign_thumb = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
-        # Reject a missing thumbprint OR a following flag ("--sign --clean" must
-        # not treat "--clean" as the thumbprint and hand it to signtool /sha1).
-        if not sign_thumb or sign_thumb.startswith("-"):
-            print("  Error: --sign needs a certificate thumbprint")
-            sys.exit(1)
+    clean = args.clean
+    sign_thumb = args.sign
 
     print(f"blitcp Builder - {platform.system()} ({platform.machine()})")
     print("-" * 50)
@@ -470,7 +519,7 @@ def main():
     # Build the GUI too, when its source is present (skippable via --no-gui).
     gui_src = "blitcp_gui.py"
     gui_built = False
-    if "--no-gui" not in sys.argv and os.path.exists(gui_src):
+    if not args.no_gui and os.path.exists(gui_src):
         print("\nBuilding GUI executable...")
         # Best-effort: a GUI build failure must not sink the required CLI release.
         gui_built = build_target("blitcp_gui", gui_src, windowed=True, icon=icon)

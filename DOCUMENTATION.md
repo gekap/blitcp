@@ -15,6 +15,7 @@ This document is the canonical reference for every option exposed by both the CL
 - [Dedup Options](#dedup-options)
 - [SSH Options](#ssh-options)
 - [Copy Modes](#copy-modes)
+- [Several destinations (`--dest`)](#several-destinations---dest)
 - [Credentials manager (`creds`)](#credentials-manager-creds)
 - [Cloud storage (S3 / Azure / GCS)](#cloud-storage-s3--azure--gcs)
 - [Listing remote objects (`ls` / `list-objects`)](#listing-remote-objects-ls--list-objects)
@@ -42,6 +43,8 @@ Both the source and destination accept **local paths** or **SSH remote paths**:
 | `user@host:/path/to/data` | SSH remote path |
 
 All four combinations work: **local→local**, **local→remote**, **remote→local**, and **remote→remote** (relay through your machine).
+
+SMB shares (`smb://server/share/path`), object stores (`s3://`, `az://`, `gs://`) and a web URL (`https://…`, as a source) work too. To write one source to several destinations from one read, see [Several destinations](#several-destinations---dest).
 
 In the GUI, use the **Browse** button to select one or more files or a folder. Paths with spaces work normally — no quoting is needed inside the GUI input fields.
 
@@ -81,6 +84,20 @@ Shows the full copy plan (file count, sizes, dedup results, copy strategy) witho
 
 CLI: `--dry-run`
 
+A dry run reads every source file in full, once, and every file of the same
+size already at a destination — that is how it tells unchanged files and
+duplicates apart. On a large source, plan for the time that reading takes.
+
+With several destinations (`--dest`), the dry run shows, one after the other
+under a `[k]` heading, what a copy to each destination alone would do —
+write, leave unchanged, link (duplicates within the run) or refuse — and
+makes nothing there: no folder, no probe file, no manifest, no dedup
+database. Not covered by a dry run: whether two destinations are one place
+and whether each takes a write (both checks write a probe file), and links
+to identical files already at a destination. With
+`--log-file` the plan is written as a record marked `"dry_run": true`, with
+the same buckets a run's record has.
+
 ### Verbose
 
 Enables detailed filesystem detection output: filesystem type, capabilities (hardlink, symlink, reflink, case sensitivity), detection timings, and probe results.
@@ -115,10 +132,10 @@ The exit code remains the primary signal in every mode:
 
 | Code | Meaning |
 |---|---|
-| `0` | Everything copied and verified |
-| `1` | Verification found corrupt/incomplete data, or the run failed systemically |
-| `2` | Usage error, or a copy error |
-| `3` | Only unreadable/locked **source** files were skipped — everything else copied |
+| `0` | Everything done: every file copied (and verified, unless `--no-verify`) |
+| `1` | The run ran and some files failed: a write to a destination failed, a destination failed mid-run, a file was refused or failed verification |
+| `2` | Nothing was done: a usage error, a pre-flight failure (no room, a destination that cannot be made), a connection that cannot be made, a host key that cannot be confirmed |
+| `3` | Only **source** files could not be read — unreadable or locked, or a source that went away mid-file (an SSH host lost during a pull); everything else copied |
 
 **When to use:** cron jobs, CI, and any script that only needs "did the copy
 succeed?". Note that redirecting stdout to `/dev/null` without `--quiet` also
@@ -144,38 +161,85 @@ returns, so redirecting it to a log file records every frame; use plain
 
 CLI: `-p`, `--progress`
 
+### Dashboard (`--ui dashboard`)
+
+A full-screen view of the copy instead of scrolling lines: the phases, each
+destination's progress, what limits the speed, and the run's notes. It needs
+a terminal of at least 100 × 24 with curses; anywhere else (not a terminal,
+`TERM=dumb`, a smaller window, `--dry-run`, the desktop app) the run prints
+lines as usual, and `-q` / `--progress` always win.
+
+```bash
+blitcp --ui dashboard /data --dest /mnt/a --dest backup@nas.local:/backup
+```
+
+Keys: **q** stops safely (files in progress finish; what was copied gets its
+links, records and sync), **v** toggles the details view (`-v` opens on it),
+**g** the graph, **n** the notes, **1**–**9** focus one destination, **Esc**
+goes back. To make it the default, `~/.config/blitcp/config.toml`
+(`$XDG_CONFIG_HOME/blitcp/` when set; read with Python 3.11+):
+
+```toml
+[ui]
+mode   = "dashboard"   # "lines" (default), "dashboard" or "quiet"
+graph  = true          # the graph shown at start
+limits = "auto"        # "off" hides the "what limits the speed" panel
+hints  = true          # false leaves hints out of the notes
+```
+
+The environment variable `BLITCP_UI` (`lines`, `dashboard`, `quiet`)
+overrides the file, and `--ui` overrides both; an unknown key or value is
+one warning line and is ignored. `--no-color` (or `NO_COLOR`) draws it
+without colours.
+
+CLI: `--ui {lines,dashboard}`, `--no-color`
+
 ### Skip verification
 
-Skips the post-copy check. How much that check does depends on where the destination is, so the table below is the short answer and the rest of the section is the detail.
+Skips the post-copy check. How much that check does depends on where the destination is, so the table below is the short answer and the rest of the section is the detail. It is the same for one destination or several (`--dest`).
 
-| Mode | What is verified |
+| Destination | What is verified |
 |---|---|
-| local → local | Existence + size for every file, **plus a content hash of every byte-copied file** |
-| local → remote (push) | Existence + size on the remote, plus SHA-256 on a random sample of up to 20 files |
-| remote → local (pull) | Existence + size only |
-| remote → remote (relay) | Existence + size only |
-| cloud upload | Sampled `HEAD` of up to 20 objects against the hash recorded at upload |
+| Local folder | **Every file the run wrote is read back** from the device (O_DIRECT on Linux, where that means a device read) and hashed against the source's digest. A file **cloned** from the source (same reflink filesystem, below) is read back the same way, with one destination or several: a clone shares the source's blocks on disk, while this run's read of the source may have been answered from memory — only reading the clone from the device checks what it holds. Its read-back hash is the one the records and the manifest keep |
+| SMB share | Every file the run wrote **by existence and the size the server reports** — a share keeps no checksum to compare. The summary says "size checked" |
+| SSH | Every file the run wrote **by existence and size**, and **a random sample of up to 20 hashed on the remote host** (xxh128sum, sha256sum, the remote Python or md5sum, whichever it has) and compared. The summary says how many were hashed ("random sample") |
+| S3 / GCS | **Every object** against the checksum the store computed (S3: CRC32, or SHA-256; GCS: MD5) |
+| Azure | A blob sent in one request against the Content-MD5 Azure computed; a blob sent in blocks (8 MiB and over) **by size only** — Azure keeps no checksum for it. After a `--manifest` run, `--verify-manifest DEST --deep` downloads it and hashes it |
 
-**A local copy compares content.** Every file, copied or linked, is checked for existence and for the exact expected size in a single walk of the destination. On top of that, each byte-copied file is re-read from the destination and its hash compared against the digest the copy engine captured from the source while those bytes were already in the buffer — so the check costs one destination read, not a read of both sides. The algorithm is whichever one `--hash` selected (xxh128 by default, SHA-256 when forced or when `xxhash` is absent); it is not pinned to SHA-256. Cost, measured on 81,703 files / 1.26 GiB SSD to SSD: 16.5s → 22.2s, about +35% [measured: v4.1.6 release notes, [CHANGELOG.md](CHANGELOG.md)].
+**Every success line says how each file was checked.** For example
+`✓ Verified: all 12 files OK — 10 read back from the disk (O_DIRECT) · 2 by existence + size: links and clones`.
+When no file's bytes were compared at all, the line does not say "Verified":
+`✓ All 3 files present, sizes match — content not compared — 3 by existence + size only`.
+With `--progress-json` the same verdict is also emitted as a
+`{"t": "verify_result", "content": …, "levels": {…}}` event, which is what the
+GUI reads — the sentence itself is translated.
+
+**A local copy compares content, as the device holds it.** Every file, copied or linked, is checked for existence and for the exact expected size in a single walk of the destination. On top of that, each byte-copied file is re-read from the destination and its hash compared against the digest the copy engine captured from the source while those bytes were already in the buffer — so the check costs one destination read, not a read of both sides. The algorithm is whichever one `--hash` selected (xxh128 by default, SHA-256 when forced or when `xxhash` is absent); it is not pinned to SHA-256.
+
+The re-read uses O_DIRECT on Linux: the kernel writes back the file's dirty pages and then reads from the device, instead of answering from the page cache the copy has just filled. Before this, the "re-read" was served from memory [measured: 2026-11-03, 64 MiB file on ext4 — 16 KB fetched from storage by the old readback, the whole file by the new one; `test_verify_honesty.py`]. Where O_DIRECT is not available or would not mean a device read — tmpfs, overlay and other memory-backed filesystems, FUSE (including ntfs-3g), ZFS (before OpenZFS 2.3 it accepts O_DIRECT and ignores it), btrfs, bcachefs and f2fs (compressed extents fall back to buffered reads without an error), macOS and Windows — the file is read through the OS cache and the line says `read back through the OS cache (may not reflect the disk)`. On NFS/SMB mounts O_DIRECT goes to the server and the line says `read back over the network`. Cost of reading the device instead of memory, on this project's development machine: Phase 6 1.6–1.8s → 3.0–3.1s for 1 GiB + 2,000 × 100 KiB on an internal ext4 disk [measured: 2026-11-03, two runs each]; on a slower medium the check takes as long as reading the data back takes.
 
 Four cases inside a local copy carry no comparable digest:
 
 | Case | Why | What happens instead |
 |---|---|---|
-| Reflink/CoW clones and hard links written as unique files | the filesystem shares the very same extents, so there is nothing that can diverge | existence + size; the summary says so — `(N by existence + size: links and clones)` |
+| Hard links (and clones made for duplicates) written as unique files | the filesystem shares the very same extents, so there is nothing that can diverge | existence + size; the summary says so — `(N by existence + size: links and clones)` |
 | Deduplicated duplicates (the link map) | same reason | existence only, and this one is **not** called out in the summary line |
 | Sparse copies | no whole-file digest exists; producing one would mean materialising the holes | the allocated extents of both sides are byte-compared — content **is** compared, just not via a hash |
 | Files written by the tar block-stream engine (`--small-files stream`) | that engine does not feed the digest collector | the source is hashed as well, so content is still compared — at the cost of reading both sides |
 
-**A pull is not content-checked.** `blitcp user@host:/data /local` verifies existence and size and stops there: the digest collector is armed only by the local copy engine, so a pulled file has no source digest on this machine to compare against. Note that the run prints the same `✓ Verified: all N files OK` line as a content-verified local copy — **nothing in the output distinguishes the two**, so do not read that line as a content guarantee unless the copy was local → local.
-
-**A push samples; a relay samples nothing.** For a push, up to 20 files are picked at random and hashed with SHA-256 on both sides (`sha256sum` or `python3` on the remote, locally on the source). For a remote → remote relay the same code runs, but the "local" side of the comparison is the *remote source* path, which does not exist on the relaying machine — the read fails and the file is passed over. A relay is therefore checked for existence and size only.
+**A remote source is checked like a local one.** A file read from an SSH folder, a bucket or a share is hashed as it streams through this machine, and each destination is checked against that hash as in the table. A remote source cannot be watched while it is read, so it is listed again at the end: a file that changed meanwhile is reported, never called verified.
 
 **Remote verification is trust-based either way.** The far side reports its own hashes, so a compromised server can report whatever it likes. What SSH does guarantee is the wire: its per-packet integrity checks mean corruption in flight drops the connection rather than landing silently.
 
 **An incremental re-run verifies what it copied, not what it skipped.** Files already up to date never enter the copy list and so never reach this phase — they were content-compared earlier, by the incremental check in Phase 2b.
 
-**When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Leave verification ON for external drives, USB sticks, or network destinations where errors are more likely. On a pull or a relay, where the check is existence + size, a second run is the stronger tool: it compares content and re-copies anything that differs.
+**A clone is read back even with `--no-verify`.** A file cloned from the
+source (reflink, on the source's own XFS, Btrfs or bcachefs) is made
+without reading the source, so its one read-back is where its hash comes
+from — the hash its manifest and dedup records keep. `--no-verify` skips
+the check, not that read.
+
+**When to use:** Only if you need maximum speed and trust the storage (e.g. copying to a known-good SSD). Leave verification ON for external drives, USB sticks, or network destinations where errors are more likely.
 
 CLI: `--no-verify`
 
@@ -229,6 +293,15 @@ CLI: `--log-file PATH`
 
 ---
 
+### File modes
+
+With `--preserve mode` (the default) a file gets the source's mode; without
+it, a file already at the destination keeps the mode it had there if it
+belongs to the user the new file will belong to, and every other file gets
+the usual mode (0666 less the umask — on an SSH destination, the server's) —
+on every route, except that a relay by the `--use-sudo` route gives a new
+file the source host's mode less the destination's umask.
+
 ## Dedup Options
 
 ### Disable deduplication
@@ -241,11 +314,114 @@ CLI: `--no-dedup`
 
 ### Disable hash cache
 
-Disables the persistent SQLite hash cache stored at the destination. This cache remembers file hashes across runs, making incremental copies much faster by skipping unchanged files without re-hashing.
+Disables the persistent hash caches:
 
-**When to use:** If the cache is corrupted or stale, or you want a guaranteed fresh hashing on every run. The default (cache enabled) dramatically speeds up repeated copies to the same destination.
+- the SQLite dedup database at a local destination (`.blitcp_dedup.db`), which
+  remembers source hashes across runs for deduplication and for the drift
+  warning (a source file whose bytes changed while its size and modification
+  time did not);
+- without `--manifest`, blitcp's signed hash cache on an SSH or SMB
+  destination (`.blitcp_manifest.json`). Each row records a file's size, hash
+  and modification time there (whole seconds, as the server reports it). A
+  re-run decides "unchanged" from a row only while the file still has that
+  size and time; any other file of the same size is hashed on the host (SSH)
+  or written again (SMB). A destination file changed outside blitcp at the
+  same size with its modification time put back is not detected. Each row
+  also names its hash algorithm; a row of another algorithm (a run with
+  another `--hash`) is decided afresh. A cache written before 4.4.0 has no
+  times: on the first run after the upgrade its rows are accepted by size
+  and hash, as before, and written back with the time and the algorithm;
+  from then on the time must match. With `--no-cache` the cache is ignored: over SSH each file of
+  the same size is hashed on the host, and every file is written to an SMB
+  share again. (Before 4.4.0, `--no-cache` did not bypass the SSH cache.)
+
+**In a cloud-synced folder the dedup database is not made unless asked.**
+The sync client would upload it (and its `-wal`/`-shm` files) after every
+run. On Windows, where a OneDrive, Dropbox or Google Drive folder is
+detected, blitcp makes no `.blitcp_dedup.db` inside one — that destination
+copies without the records — unless `--dedup-in-sync-folder` is given. On
+macOS and Linux a synced folder is not detected: exclude `.blitcp_dedup.db*`
+from syncing in the sync client, or run with `--no-cache`, which makes no
+database at a local destination.
+
+A local destination without `--manifest` is decided by blitcp's records in
+the dedup database: every file a run writes and verifies (or compares in
+full) is recorded on both sides — size, modification time, change time and
+hash, and when the record was written. A re-run skips a file whose records
+still hold without reading either side:
+
+- where the filesystem keeps a real change time (ext4, XFS, Btrfs, ZFS,
+  F2FS, tmpfs, bcachefs, overlayfs, APFS), the change time must be the
+  recorded one — a file rewritten with its modification time put back
+  (`touch -r`) is caught;
+- elsewhere (FAT, exFAT, NFS, SMB, FUSE, …), size and modification time
+  decide, as in rsync's quick check, and a file whose modification time is
+  within 2 seconds of when its recorded hash was taken (the read that
+  checked it) is read. **A file changed
+  there at the same size with its modification time put back is caught only
+  with `--no-cache`.**
+
+Every other file of the same size is read on both sides and compared.
+`--no-cache` reads and compares every file and keeps no records.
+
+**When to use:** If a cache is corrupted or stale, if files at an SSH or SMB
+destination may have been changed by something other than blitcp, or if you
+want every file hashed fresh on every run.
+
+**Who may write the dedup database.** Its rows decide what a run skips and
+links, so blitcp uses it only if nobody else could have written it. On a
+filesystem with real permissions (ext4, XFS, Btrfs, ZFS, F2FS, APFS, NFS, …)
+the database — and its `-wal` / `-shm` files — must be a regular file, not a
+symlink, owned by the user running blitcp (root, for a `sudo` run), and not
+writable by group or others; and nobody else may be able to replace files in
+its folder (others' write access needs the sticky bit). On FAT, exFAT,
+ntfs-3g, SMB/CIFS mounts and FUSE the permission bits are made up when the
+drive is mounted, so only the file type and the owner are checked: anyone
+who can mount such a drive can change the database and the backup alike,
+and the database adds nothing to that. Otherwise the database is ignored —
+not read, not written — the run copies without the cache, and one line says
+why and how to fix it (`chown` / `chmod 600`). `--strict-cache` makes that a
+failure instead. The checks are made on the open file, and the file SQLite
+then opens must be the same one. Windows: not checked yet.
 
 CLI: `--no-cache`
+
+### Second runs and manifests (`--manifest`, `--verify-manifest`)
+
+A copy keeps no manifest unless you pass `--manifest`, one destination or
+several (`--dest`) alike.
+
+- **Without `--manifest`**, a local destination is decided by blitcp's records
+  (see "Disable hash cache" above): what they vouch for is not read, the rest
+  is compared on both sides; on SSH and SMB the signed hash cache above
+  decides.
+- **With `--manifest`**, what is skipped is decided the same way, and each
+  destination whose verification passed also gets a new ASC MHL generation
+  (`ascmhl/`, its chain, `blitcp.xxh128`), written from the xxh128 the run
+  already has — no file is read again for it. A file left unchanged keeps
+  the record an earlier generation gave it; a run without `--manifest` adds
+  no generation.
+
+```bash
+blitcp --manifest /media/CARD01 --dest /mnt/shuttle --dest /mnt/archive
+```
+
+`--manifest` takes a local source, xxh128 hashes (the `xxhash` package, not
+`--hash sha256`) and verification; otherwise it is refused, exit 2. A sparse
+file, a reflink clone on the source's own volume, and an unchanged file no
+earlier generation lists (`--manifest` new to an existing backup) cannot be
+listed: the summary says "manifest incomplete: N files".
+
+**Checking a destination later, without the source.** `--verify-manifest
+DEST` checks a local folder, an SSH folder, an SMB share or a bucket against
+its own manifest — read back from the disk, hashed by the SSH host, or the
+store's checksum; `--deep` downloads every remote file and hashes it here. It
+writes nothing and exits 1 when a file differs or is missing (each listed),
+2 when there is no manifest.
+
+```bash
+blitcp --verify-manifest /mnt/shuttle
+```
 
 ### Hash algorithm — default: `auto`
 
@@ -304,6 +480,98 @@ CLI: `--ssh-src-password`, `--ssh-dst-password`
 
 ---
 
+## Several destinations (`--dest`)
+
+`--dest` names a destination; repeat it for several. The source is read once
+and written to every destination — local folders, `user@host:/path`,
+`smb://server/share/path`, `s3://`, `az://`, `gs://` — in any mix; a saved
+connection is written `NAME:folder/` (a bare name that is a saved connection
+is refused: write `./NAME` for a folder here). With `--dest`, every
+positional argument is a source, and with several destinations it must be a
+local path. `--dests-file FILE` reads destinations one per line, as if each
+were given with `--dest`; empty lines and `#` lines are skipped.
+
+```bash
+blitcp /data --dest /mnt/usb1 --dest backup@nas.local:/backup --dest s3://my-bucket/data
+```
+
+Each destination is planned as a copy to it alone (its own dedup database,
+incremental check and space check), written from the one read, verified as
+a one-destination copy is, and given its own summary; `-q` prints one line
+per destination and a total. A destination that fails is its own failure:
+the others are copied and verified, and the run exits 1. One `--dest` is the
+same copy as `blitcp SRC DST`. For now `--log-file` and `--small-files
+stream` take one destination; `--partial`, `--no-partial`, `--resume`,
+`--job-name`, `--overwrite-changed`, `--verify-source`, `--deep-verify` and
+`--fanout-buffer` are refused in this version (exit 2).
+
+### A web source to several destinations
+
+One `http://` or `https://` URL is downloaded once and written to every
+local, SSH and SMB destination as it arrives, each verified as a
+one-destination copy is; nothing is written on this machine except into a
+local destination. A destination that fails during the download is dropped
+with its reason and the others finish. A cloud store among them is refused,
+as it is for one destination.
+
+```bash
+blitcp https://example.com/file.iso --dest /mnt/a/ --dest backup@nas.local:/isos/ --dest smb://nas/share/isos/
+```
+
+### Before anything is written (pre-flight)
+
+1. **Refusals.** What several destinations do not take — a source that is
+   not local, a bare saved name, an HTTP URL as a destination, a web source
+   to a cloud store, the options above — is refused in one line each.
+2. **Each destination is probed:** connected, its folder opened (made if the
+   copy would make it), a hidden `.blitcp-probe-…` file written and removed —
+   a cloud store is listed, nothing written — within 15 seconds. A
+   destination that fails is said in one line, with what to fix, and left
+   out; the others start. `blitcp creds test NAME` runs the same probe.
+3. **Planning and space.** Two names for one place (a saved name and
+   `user@host`, a host and its IP, a symlink) are refused. Destinations on
+   one filesystem have their space added up ("… together they need X, it has
+   Y free" — refused unless `--force`); destinations on one device get a
+   warning line, since one disk then holds both copies.
+4. **The source** gets the [source pre-flight](#what-blitcp-checks-before-it-copies)
+   once for all destinations; a large file whose probe read fails is
+   reported and not copied.
+
+A refusal, or a copy that stops before it writes anything, exits 2. With one
+destination, a failed probe exits 2 as well.
+
+### A destination that stops answering (`--stall-timeout`)
+
+With several destinations, one whose planning, writes, sync or read-back make
+no progress for `--stall-timeout` seconds (default 120) is left out — its
+half-written files listed — and the others are copied and verified; the run
+exits 1. A single call that does not return in that time counts, so raise it
+for a slow disk with much to sync. It covers local, SSH, S3 and Azure
+destinations (a GCS upload and an SMB destination's final steps are bounded
+by their own timeouts), and is refused with one destination.
+
+```bash
+blitcp /data --dest /mnt/usb1 --dest backup@nas.local:/backup --stall-timeout 300
+```
+
+### `--use-sudo` with several destinations
+
+`--use-sudo` takes a local source and several **local folders**. Each gets
+what a copy to it alone gets under `--use-sudo` — `--preserve all`, its own
+dedup database, its own sudo audit record (the run's records share a
+`run_id`) — and keeps the xattrs and ACLs its filesystem can hold (an exFAT
+drive drops them and says so). Refused before sudo asks for the password,
+exit 2: an SSH destination or saved connection, an SMB or cloud destination,
+a source that is not local, and a folder under `/mnt`, `/media` or
+`/run/media` whose drive is not mounted (that check applies to one
+destination too).
+
+```bash
+blitcp --use-sudo /var/lib/libvirt/images --dest /mnt/usb1/images --dest /mnt/usb2/images
+```
+
+---
+
 ## Credentials manager (`creds`)
 
 `blitcp.py creds` stores reusable **cloud** (S3 / Azure / GCS) and **SSH** connections so you can refer to them by name instead of typing endpoints, keys, and paths on every copy. Connections live in a credentials file (default shown by `creds list`); the file can be encrypted at rest with **AES-256-GCM**.
@@ -317,10 +585,10 @@ blitcp.py creds <sub> [NAME] [FILE]
 | Subcommand | What it does |
 |------------|--------------|
 | `list` | Show saved connections (secrets masked). |
-| `add NAME [-y]` | Add a connection interactively (type `s3`/`azure`/`gcs`/`ssh`). Prompts before overwriting an existing name; `-y`/`--force` skips the prompt. |
+| `add NAME [-y]` | Add a connection interactively (type `s3`/`azure`/`gcs`/`ssh`/`smb`/`http`, or an S3-compatible preset such as `r2`, `b2`, `wasabi`). Prompts before overwriting an existing name; `-y`/`--force` skips the prompt. |
 | `edit NAME` | Edit a connection interactively. **Enter** keeps the current value; `-` clears an optional field. |
 | `remove NAME` | Delete a connection. |
-| `test NAME` | Live connection check (cloud API call or SSH login). |
+| `test NAME` | Live connection check — the same probe a copy runs on its destinations (below). |
 | `encrypt` | Encrypt the credentials file at rest (AES-256-GCM, bound to this `blitcp.py`). |
 | `decrypt` | Decrypt back to plaintext (mode `0600`). |
 | `rekey` | Re-bind an encrypted file to the current binary. |
@@ -348,6 +616,20 @@ BLITCP_CREDS_PASSPHRASE='…' blitcp.py creds list
 
 The lock is tamper-resistance only — root can reverse it. Run `creds unlock` before editing a locked file.
 
+**`creds test NAME`** probes the saved connection exactly as a copy probes a
+destination before it writes anything: it connects, opens the connection's
+folder and writes and removes a hidden probe file there (SSH, SMB), or lists
+the bucket and prefix (a cloud store — nothing written), and gives up after
+15 seconds. On success it prints `OK — connected, folder writable: …` (or
+`bucket listed`) and exits 0; otherwise one line says what is wrong — a
+refused login, a share or bucket not found, no answer, a folder not
+writable — and it exits 1. An `http` connection gets one request and its
+HTTP status. The desktop app's **Test** button runs the same probe.
+
+```
+blitcp creds test nas
+```
+
 ---
 
 ## Cloud storage (S3 / Azure / GCS)
@@ -371,6 +653,8 @@ blitcp.py creds add gcs-archive     # type: gcs
 | `s3://NAME@bucket/prefix` | Explicit bucket/prefix using connection `NAME` for credentials. Also `az://NAME@container/prefix` and `gs://NAME@bucket/prefix`. |
 | `s3://bucket/prefix` | Bucket/prefix using ambient/default credentials (no saved connection). Also `az://…` and `gs://…`. |
 
+> A bare `NAME` that is **also** a file or folder in the current directory is refused: write `./NAME` for the local path or `NAME:` for the connection. blitcp never picks one of the two for you.
+
 > Connection names resolve to the connection's `type` (`s3`, `az`, `gs`, or `ssh`). The cloud URL schemes are exactly `s3://`, `az://`, and `gs://`; the optional `NAME@` prefix selects a saved connection's credentials (bucket names can't contain `@`, so this is unambiguous).
 
 ```
@@ -388,6 +672,46 @@ blitcp.py /data s3://my-bucket/incoming
 ```
 
 If a connection has **no default bucket**, use the `NAME:<bucket>/<key>` shorthand or the `s3://NAME@<bucket>/<key>` form (or add a default bucket with `creds edit NAME`).
+
+### Object stores among several destinations (`--dest`)
+
+`--dest` takes `s3://`, `az://` and `gs://` destinations (and saved cloud
+connections as `NAME:folder/`) next to local, SSH and SMB ones, from a local
+source — see [Several destinations](#several-destinations---dest). Each
+store is planned, uploaded and verified by the one-destination upload's own
+code: what is unchanged there (present, same size, the hash on the object or
+its ETag), duplicates copied inside the bucket, the signed sidecar. A store
+that cannot be planned (an endpoint that cannot be reached or read) is left
+out in one line before the copy. An Azure destination among several needs
+`azure-storage-blob` 12.10 or later (`blitcp deps --install`).
+
+**How each object store is verified.** Every object is checked against the
+checksum the *store* computed over the bytes it holds, compared with the same
+digest of the bytes blitcp sent:
+
+| Store | Under 8 MiB (one request) | 8 MiB and over (multipart / blocks) |
+|-------|---------------------------|-------------------------------------|
+| S3 and S3-compatible | the store's SHA-256 | the store's composite SHA-256 (per part) |
+| Google Cloud Storage | the store's MD5 | the store's MD5 |
+| Azure Blob | the store's MD5 | **size only** — Azure keeps no checksum for a blob sent in blocks |
+
+The summary names the level each file reached. `blitcp --verify-manifest DEST`
+checks a destination later, without the source, at the same levels (the store's
+checksum against the one its manifest recorded); `--deep` downloads every file
+and hashes it instead.
+
+**Azure video offloads.** Camera files are almost always 8 MiB and over, so on
+Azure they are block blobs, which Azure keeps no checksum for. blitcp stores
+its own hash in each blob's metadata, but only reading the blob back proves
+what Azure holds. Copy with `--manifest`, then check the container with
+`--verify-manifest … --deep`, which downloads every blob and hashes it:
+
+```
+blitcp --manifest /media/CARD01 --dest /mnt/shuttle --dest az://media/2026-11-06
+blitcp --verify-manifest az://media/2026-11-06 --deep
+```
+
+It costs one download of everything sent to that destination.
 
 ---
 
@@ -652,10 +976,12 @@ On btrfs / XFS-with-reflinks / APFS / bcachefs, blitcp uses the kernel's CoW clo
 
 This means:
 
-- A **10 GB copy** on the same btrfs volume completes in **milliseconds** instead of minutes
-- A backup of `/home` to `/mnt/btrfs/backup` is essentially **free** until you start modifying files
-- Synology DS720+ users (btrfs at `/volume1`) get near-instant local backups
-- macOS users get the same speed `cp` already provides — blitcp was previously slower on APFS for the same operation
+- A copy on the same volume writes no file data: each file is cloned, and
+  each clone is read back once and hashed, as any written file is — that
+  hash is what the records and the manifest keep. With several
+  destinations the source is read once for the others, and a clone whose
+  read-back disagrees with that read fails.
+- The clones take no extra space until one side is modified (CoW).
 
 When the source and destination are on **different filesystems** (e.g. copying from `/home` ext4 to `/mnt/btrfs`), reflink isn't possible and blitcp automatically falls back to the byte-stream copy. The same-filesystem check via `st_dev` happens before any syscall.
 
@@ -917,8 +1243,10 @@ Highlights:
   (S3 CopyObject / Azure Copy Blob / GCS rewrite) so the bytes never leave the
   cloud; across runs, an unchanged tree is skipped via a manifest object.
   Bandwidth saved is reported separately from storage used.
-- **Verification** — uploads are HEAD-sampled against the stored hash;
-  downloads are re-hashed and compared (a mismatch exits non-zero).
+- **Verification** — every object written is compared with the checksum the
+  store itself computed (S3 SHA-256, GCS MD5, Azure Content-MD5 for single-put
+  blobs); downloads are read back and compared with the hash recorded at
+  upload. A mismatch, a missing object or a wrong size exits non-zero.
 
 ### Credentials
 
@@ -980,6 +1308,15 @@ Design (and honest limits):
   associated data) for **tamper-evidence** — a swapped binary is detected. Because
   the *key* is your passphrase, a normal update never locks you out; it just warns
   and `creds rekey` re-binds.
+- **Connection names are stored in the clear** (never hosts, users, keys or
+  passwords) and checked against the encrypted connections every time the file
+  is unlocked, so an edited list is reported as tampering. That is what lets a
+  bare `NAME` endpoint be told apart from a local folder **without the
+  passphrase**: a run whose sources and destinations are all local never reads,
+  unlocks or tamper-checks the vault. The encryption is unchanged, so earlier
+  versions still open the file. Reading the vault never writes it; one
+  encrypted by an earlier version gains the list on its next save — run
+  `creds rekey` once.
 - `creds lock` is **tamper-resistance, not secrecy, and not absolute** — setting it
   needs root, and root can always reverse it. It is unavailable/weak off Linux.
 
@@ -1130,6 +1467,13 @@ The `--log-file` option writes a machine-readable JSON log with:
   ]
 }
 ```
+
+`--log-file` takes one destination for now: a copy to several destinations
+with `--log-file` is refused in one line ("--log-file takes one destination
+for now", exit 2). With one `--dest` the record is the one above.
+
+The buckets must add up to `total_files`; a record that does not says so in
+`consistency_error`, and the run exits 1.
 
 ---
 

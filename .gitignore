@@ -9,10 +9,14 @@ languages
 # fs_detect module, so they no longer run against blitcp.py. Kept local until
 # they are ported or dropped.
 test_*.py
+# The integration suite IS part of the tool: committed on purpose.
+!tests/integration/test_*.py
+# So are the property tests (Hypothesis) of the QA kit.
+!tests/property/test_*.py
 pentest_scenarios.py
 fs_detect.py
 check_exploits.py
-# TLS material (Cloudflare Origin Cert + private key for fast-copy.dev)
+# TLS material (Cloudflare Origin Cert + private key; never committed)
 *.pem
 *.key
 *.crt
@@ -53,3 +57,7 @@ k8s/fast-copy-landing-backup-*.tar.gz
 k8s/fast-copy-site/
 k8s/fast-copy-contact-worker/dist/
 k8s/traffic/__pycache__/
+
+# k8s/ is deployment material kept only in the working tree (CLAUDE.md:
+# never committed). Untracked 2026-11-05; history is not rewritten.
+k8s/

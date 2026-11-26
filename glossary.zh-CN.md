@@ -60,7 +60,7 @@
 
 ## 一律不翻译
 
-- 名称：`blitcp`、`fast_copy`、`blitcp.py`、`blitcp_gui.py`、`blitcp-gui`
+- 名称：`blitcp`、`blitcp.py`、`blitcp_gui.py`、`blitcp-gui`
 - 命令行选项与子命令：`--no-dedup`、`--preserve all`、`-R`、`--update`、`creds`、`ls`、`deps` 等
 - 代码块、输出示例、路径、环境变量（`BLITCP_LANG`、`FAST_COPY_*` 等）
 - 文件系统名称：btrfs、XFS、APFS、bcachefs、ReFS、FAT32、exFAT、NTFS、ext4、tmpfs、HFS+、f2fs、NFS、SMB、FUSE

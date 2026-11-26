@@ -143,9 +143,6 @@ msgstr "Απενεργοποίηση κρυπτογράφησης SMB3 (ενερ
 msgid "Disable deduplication"
 msgstr "Απενεργοποίηση dedup"
 
-msgid "Disable persistent hash cache (cross-run dedup database)"
-msgstr "Απενεργοποίηση μόνιμης hash cache (βάση dedup μεταξύ εκτελέσεων)"
-
 msgid "Disk layout resolved: {n}/{total} files mapped"
 msgstr "Διάταξη δίσκου: {n}/{total} αρχεία χαρτογραφήθηκαν"
 
@@ -437,14 +434,14 @@ msgstr "Ορισμός ως πηγή"
 msgid "Show available updates and release notes"
 msgstr "Εμφάνιση διαθέσιμων ενημερώσεων και release notes"
 
-msgid "Show copy plan without copying"
-msgstr "Εμφάνιση πλάνου αντιγραφής χωρίς αντιγραφή"
+msgid "Show the copy plan without copying. Reads every source file, and each file of the same size already at a destination; writes nothing there"
+msgstr "Εμφάνιση του σχεδίου αντιγραφής χωρίς αντιγραφή. Διαβάζει κάθε αρχείο της πηγής και κάθε αρχείο ίδιου μεγέθους που υπάρχει ήδη σε έναν προορισμό· δεν γράφει τίποτα εκεί"
 
 msgid "Show version and exit"
 msgstr "Εμφάνιση έκδοσης και έξοδος"
 
-msgid "Skip post-copy verification"
-msgstr "Παράλειψη επαλήθευσης μετά την αντιγραφή"
+msgid "Skip post-copy verification. A file cloned from the source (reflink) is still read back once: that read gives it the hash its records keep"
+msgstr "Παράλειψη του ελέγχου μετά την αντιγραφή. Ένα αρχείο που κλωνοποιήθηκε από την πηγή (reflink) διαβάζεται ακόμη μία φορά: αυτή η ανάγνωση του δίνει το hash που κρατούν οι εγγραφές του"
 
 msgid "Skip space check, copy even if not enough space"
 msgstr "Παράλειψη ελέγχου χώρου· αντιγραφή ακόμα κι αν δεν επαρκεί"
@@ -655,7 +652,6 @@ msgstr "subcommands:\n  creds <sub>      Διαχείριση αποθηκευμ
 
 msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
 msgstr "Γλώσσα μηνυμάτων: {langs}. Υπερισχύει του BLITCP_LANG και του locale του συστήματος. Η μηχανική έξοδος (--log-file) μένει στα αγγλικά."
-
 
 # GUI deep-path strings + Settings/language section (2026-08-06)
 msgid "Access denied — run as Administrator to browse this folder"
@@ -949,7 +945,6 @@ msgstr "χρόνοι"
 msgid "xattr"
 msgstr "xattr"
 
-
 msgid "Small files"
 msgstr "Μικρά αρχεία"
 
@@ -964,9 +959,6 @@ msgstr "Πώς αντιγράφονται τα αρχεία κάτω του 1MB 
 
 msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
 msgstr "Μηχανισμός μικρών αρχείων για τοπικές αντιγραφές: 'parallel' = δεξαμενή νημάτων (νήματα x4, προεπιλογή), 'stream' = μονονηματικό tar block-stream"
-
-msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
-msgstr "υποεντολές:\n  creds <sub>      Διαχείριση αποθηκευμένων προφίλ σύνδεσης cloud/SSH στο\n                   αρχείο διαπιστευτηρίων: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Βοήθεια: 'blitcp creds'.\n  ls <target>      Εμφάνιση θέσης cloud (όνομα αποθηκευμένης σύνδεσης ή URL\n                   s3:// / az:// / gs://) ή απομακρυσμένου καταλόγου SSH\n                   (αποθηκευμένη σύνδεση ssh ή user@host:/path, μέσω SFTP).\n                   Ψευδώνυμο: list-objects. Βοήθεια: 'blitcp ls -h'.\n\nπαραδείγματα:\n  blitcp /data /media/usb/data           τοπικό  → τοπικό\n  blitcp /data user@host:/backup         τοπικό  → απομακρυσμένο (SSH)\n  blitcp user@host:/data /local/backup   απομακρυσμένο → τοπικό\n  blitcp /data s3://bucket/backup        τοπικό  → cloud\n  blitcp creds add aws-dev               αποθήκευση προφίλ σύνδεσης\n  blitcp ls aws-dev                      λίστα αποθηκευμένης σύνδεσης cloud\n  blitcp ls user@host:/var/log           λίστα απομακρυσμένου καταλόγου SSH\n"
 
 msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
 msgstr "Μεταφορά μέσω καθαρού SFTP — δεν εκτελούνται ποτέ εντολές στον server. Για SFTP-only endpoints (managed gateways, περιορισμένοι λογαριασμοί) που κλείνουν το exec channel. Incremental και verify λειτουργούν· τα dedup links και ο έλεγχος χώρου στο remote παραλείπονται."
@@ -1024,8 +1016,6 @@ msgstr "{n} μόνο με ύπαρξη + μέγεθος: hard links και refli
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} χωρίς έλεγχο περιεχομένου: η πηγή δεν διαβάστηκε"
-
-
 
 msgid "Checked {n} remote path(s)"
 msgstr "Ελέγχθηκαν {n} διαδρομή/ές στο απομακρυσμένο"
@@ -1221,3 +1211,2491 @@ msgstr "Σύνδεση με {0}…"
 
 msgid "Showing the first {0} of {1} entries"
 msgstr "Εμφανίζονται οι πρώτες {0} από {1} καταχωρίσεις"
+
+msgid "Not verified: the destination has no hash tool (xxh128sum / sha256sum / md5sum)."
+msgstr "Δεν επαληθεύτηκε: ο προορισμός δεν έχει εργαλείο hash (xxh128sum / sha256sum / md5sum)."
+
+msgid "Verification failed: {n} of {t} objects"
+msgstr "Η επαλήθευση απέτυχε: {n} από {t} αντικείμενα"
+
+msgid "Verifying {n} objects against the store's checksums..."
+msgstr "Επαλήθευση {n} αντικειμένων με τα checksums του αποθηκευτικού χώρου..."
+
+msgid "content differs from the source (store MD5)"
+msgstr "το περιεχόμενο διαφέρει από την πηγή (MD5 του αποθηκευτικού χώρου)"
+
+msgid "content differs from the source (store SHA-256)"
+msgstr "το περιεχόμενο διαφέρει από την πηγή (SHA-256 του αποθηκευτικού χώρου)"
+
+msgid "could not be checked ({err})"
+msgstr "δεν ήταν δυνατός ο έλεγχος ({err})"
+
+msgid "no hash returned by the destination: {name}"
+msgstr "ο προορισμός δεν επέστρεψε hash: {name}"
+
+msgid "not found on the destination"
+msgstr "δεν βρέθηκε στον προορισμό"
+
+msgid "on remote"
+msgstr "στον απομακρυσμένο host"
+
+msgid "size differs on the destination"
+msgstr "το μέγεθος διαφέρει στον προορισμό"
+
+msgid "{n} by existence + size only"
+msgstr "{n} μόνο με ύπαρξη + μέγεθος"
+
+msgid "{n} by existence + size only (the store keeps no checksum for it)"
+msgstr "{n} μόνο με ύπαρξη + μέγεθος (ο αποθηκευτικός χώρος δεν κρατά checksum γι' αυτά)"
+
+msgid "{n} hashed on the remote host"
+msgstr "{n} με hash στον απομακρυσμένο host"
+
+msgid "{n} hashed on the remote host (random sample)"
+msgstr "{n} με hash στον απομακρυσμένο host (τυχαίο δείγμα)"
+
+msgid "{n} matched the hash recorded at upload"
+msgstr "{n} ταιριάζουν με το hash που καταγράφηκε στο ανέβασμα"
+
+msgid "{n} matched the store's own MD5"
+msgstr "{n} ταιριάζουν με το MD5 του αποθηκευτικού χώρου"
+
+msgid "{n} matched the store's own SHA-256"
+msgstr "{n} ταιριάζουν με το SHA-256 του αποθηκευτικού χώρου"
+
+msgid "{n} read back from the disk (O_DIRECT)"
+msgstr "{n} διαβάστηκαν πίσω από τον δίσκο (O_DIRECT)"
+
+msgid "{n} read back over the network"
+msgstr "{n} διαβάστηκαν πίσω μέσω δικτύου"
+
+msgid "{n} read back through the OS cache (may not reflect the disk)"
+msgstr "{n} διαβάστηκαν πίσω μέσω της cache του OS (ίσως δεν αντιστοιχούν στον δίσκο)"
+
+msgid "✓ All {n} files present{where}, sizes match — content not compared"
+msgstr "✓ Και τα {n} αρχεία υπάρχουν{where}, τα μεγέθη ταιριάζουν — το περιεχόμενο δεν συγκρίθηκε"
+
+msgid "✓ All {n} objects present{where}, sizes match — content not compared"
+msgstr "✓ Και τα {n} αντικείμενα υπάρχουν{where}, τα μεγέθη ταιριάζουν — το περιεχόμενο δεν συγκρίθηκε"
+
+msgid "✓ Verified: all {n} files OK{where}"
+msgstr "✓ Επαληθεύτηκαν: και τα {n} αρχεία OK{where}"
+
+msgid "✓ Verified: all {n} objects OK{where}"
+msgstr "✓ Επαληθεύτηκαν: και τα {n} αντικείμενα OK{where}"
+
+msgid "cannot create the destination: {err}"
+msgstr "δεν είναι δυνατή η δημιουργία του προορισμού: {err}"
+
+msgid "content differs from the source"
+msgstr "το περιεχόμενο διαφέρει από την πηγή"
+
+msgid "could not be read back from the destination"
+msgstr "δεν διαβάστηκε πίσω από τον προορισμό"
+
+msgid "destination is not writable: {err}"
+msgstr "ο προορισμός δεν είναι εγγράψιμος: {err}"
+
+msgid "not enough free space: {need} needed, {free} free"
+msgstr "δεν υπάρχει αρκετός ελεύθερος χώρος: χρειάζονται {need}, ελεύθερα {free}"
+
+msgid "--dest needs at least one source."
+msgstr "Το --dest χρειάζεται τουλάχιστον μία πηγή."
+
+msgid "--dest {dest} is given twice."
+msgstr "Το --dest {dest} δίνεται δύο φορές."
+
+msgid "--dest {dest} is inside the source {src}."
+msgstr "Το --dest {dest} βρίσκεται μέσα στην πηγή {src}."
+
+msgid "--dest {dest}: only local destinations are supported with --dest in this version."
+msgstr "--dest {dest}: σε αυτή την έκδοση το --dest υποστηρίζει μόνο τοπικούς προορισμούς."
+
+msgid "--fanout-buffer must be at least 1 MB."
+msgstr "Το --fanout-buffer πρέπει να είναι τουλάχιστον 1 MB."
+
+msgid "--stall-timeout must be at least 1 second."
+msgstr "Το --stall-timeout πρέπει να είναι τουλάχιστον 1 δευτερόλεπτο."
+
+msgid "A destination that makes no progress for this long is marked FAILED and the others carry on (default: {n})"
+msgstr "Ένας προορισμός που δεν προχωρά για τόσο χρόνο σημειώνεται ΑΠΕΤΥΧΕ και οι υπόλοιποι συνεχίζουν (προεπιλογή: {n})"
+
+msgid "A destination; repeat for several. The source is read once and written to every destination at the same time. With --dest, every positional argument is a source. A destination is a local folder, an SSH folder (user@host:/path, or a saved connection NAME:path), an SMB share (smb://server/share/path) or an object store (s3://, az://, gs://)."
+msgstr "Ένας προορισμός· επαναλάβετε για περισσότερους. Η πηγή διαβάζεται μία φορά και γράφεται ταυτόχρονα σε κάθε προορισμό. Με --dest, κάθε θεσιακό όρισμα είναι πηγή. Προορισμός είναι ένας τοπικός φάκελος, ένας φάκελος SSH (user@host:/διαδρομή ή αποθηκευμένη σύνδεση ΟΝΟΜΑ:διαδρομή), ένας κοινόχρηστος φάκελος SMB (smb://server/share/διαδρομή) ή ένας χώρος αποθήκευσης αντικειμένων (s3://, az://, gs://)."
+
+msgid "An unfinished file was left behind: {path}"
+msgstr "Έμεινε πίσω ένα ημιτελές αρχείο: {path}"
+
+msgid "Destinations"
+msgstr "Προορισμοί"
+
+msgid "FAILED: {reason}"
+msgstr "ΑΠΕΤΥΧΕ: {reason}"
+
+msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
+msgstr "Μνήμη για δεδομένα που διαβάστηκαν αλλά δεν έχουν γραφτεί ακόμη σε κάθε προορισμό· όταν γεμίσει, ο πιο αργός προορισμός ορίζει τον ρυθμό (προεπιλογή: {n})"
+
+msgid "Pre-flight failed; no file was written."
+msgstr "Ο προέλεγχος απέτυχε· δεν γράφτηκε κανένα αρχείο."
+
+msgid "These counts do not add up to {n} files; treat this destination as unverified."
+msgstr "Αυτοί οι αριθμοί δεν αθροίζουν σε {n} αρχεία· θεωρήστε αυτόν τον προορισμό μη επαληθευμένο."
+
+msgid "Two sources are both named {name}; they would land on top of each other."
+msgstr "Δύο πηγές ονομάζονται και οι δύο {name}· θα έπεφταν η μία πάνω στην άλλη."
+
+msgid "copied"
+msgstr "αντιγράφηκε"
+
+msgid "copying"
+msgstr "αντιγραφή"
+
+msgid "done"
+msgstr "ολοκληρώθηκε"
+
+msgid "one read, {n} destinations"
+msgstr "μία ανάγνωση, {n} προορισμοί"
+
+msgid "refused: {why}"
+msgstr "απορρίφθηκε: {why}"
+
+msgid "several destinations"
+msgstr "πολλαπλοί προορισμοί"
+
+msgid "source: {rel}: {why}"
+msgstr "πηγή: {rel}: {why}"
+
+msgid "stalled: no progress for {n} s"
+msgstr "κόλλησε: καμία πρόοδος για {n} s"
+
+msgid "verifying"
+msgstr "επαλήθευση"
+
+msgid "waiting"
+msgstr "αναμονή"
+
+msgid "{bad} of {n} files failed verification"
+msgstr "{bad} από {n} αρχεία απέτυχαν στην επαλήθευση"
+
+msgid "{copied} written · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{copied} γράφτηκαν · {refused} απορρίφθηκαν · {failed} απέτυχαν · {src} μη αναγνώσιμα στην πηγή"
+
+msgid "{dests} are on the same device — this reduces redundancy and throughput."
+msgstr "Τα {dests} βρίσκονται στην ίδια συσκευή — αυτό μειώνει τον πλεονασμό και τη ρυθμαπόδοση."
+
+msgid "{n} files written, not verified (--no-verify)"
+msgstr "{n} αρχεία γράφτηκαν, χωρίς επαλήθευση (--no-verify)"
+
+msgid "{n} files, {size}"
+msgstr "{n} αρχεία, {size}"
+
+msgid "{n} not written (the destination failed)"
+msgstr "{n} δεν γράφτηκαν (ο προορισμός απέτυχε)"
+
+msgid "{opt} is not supported with --dest yet."
+msgstr "Το {opt} δεν υποστηρίζεται ακόμη με --dest."
+
+msgid "{path}: no such source. With --dest, every positional argument is a source; give each destination with --dest."
+msgstr "{path}: δεν υπάρχει τέτοια πηγή. Με --dest, κάθε θεσιακό όρισμα είναι πηγή· δώστε κάθε προορισμό με --dest."
+
+msgid "{src}: only local sources are supported with --dest in this version."
+msgstr "{src}: σε αυτή την έκδοση το --dest υποστηρίζει μόνο τοπικές πηγές."
+
+msgid "--dest is empty. Give a path (an empty one would mean the current directory)."
+msgstr "Το --dest είναι κενό. Δώστε μια διαδρομή (μια κενή θα σήμαινε τον τρέχοντα κατάλογο)."
+
+msgid "--dest {dest} contains the source {src}."
+msgstr "Το --dest {dest} περιέχει την πηγή {src}."
+
+msgid "--dest {inner} is inside --dest {outer}; the two copies would write the same files."
+msgstr "Το --dest {inner} βρίσκεται μέσα στο --dest {outer}· τα δύο αντίγραφα θα έγραφαν τα ίδια αρχεία."
+
+msgid "{rel}: would be written into the source {src}"
+msgstr "{rel}: θα γραφόταν μέσα στην πηγή {src}"
+
+msgid "Incomplete: {n} of {total} files are not at this destination"
+msgstr "Ημιτελές: {n} από {total} αρχεία δεν βρίσκονται σε αυτόν τον προορισμό"
+
+msgid "this destination path is a source file (the same file on disk); it was not replaced"
+msgstr "αυτή η διαδρομή προορισμού είναι αρχείο της πηγής (το ίδιο αρχείο στον δίσκο)· δεν αντικαταστάθηκε"
+
+msgid "this destination path already holds another file from this run (on a case-insensitive destination two names can be one); it was not replaced"
+msgstr "αυτή η διαδρομή προορισμού έχει ήδη άλλο αρχείο από αυτή την εκτέλεση (σε προορισμό χωρίς διάκριση πεζών-κεφαλαίων δύο ονόματα μπορεί να είναι ένα)· δεν αντικαταστάθηκε"
+
+msgid "Not verified: the source changed during the run"
+msgstr "Χωρίς επαλήθευση: η πηγή άλλαξε κατά την εκτέλεση"
+
+msgid "{n} source files changed during the run (another identity, size or modification time, or gone); no copy of this run is called verified."
+msgstr "{n} αρχεία της πηγής άλλαξαν κατά την εκτέλεση (άλλη ταυτότητα, μέγεθος ή χρόνος τροποποίησης, ή χάθηκαν)· κανένα αντίγραφο αυτής της εκτέλεσης δεν θεωρείται επαληθευμένο."
+
+msgid "{src} has no name of its own (a drive or filesystem root); with several sources, each one needs a name to land under."
+msgstr "Το {src} δεν έχει δικό του όνομα (ρίζα δίσκου ή συστήματος αρχείων)· με πολλές πηγές, η καθεμία χρειάζεται ένα όνομα κάτω από το οποίο θα τοποθετηθεί."
+
+msgid "this destination folder is inside a source folder (the same folder on disk); nothing was written there"
+msgstr "αυτός ο φάκελος προορισμού βρίσκεται μέσα σε φάκελο της πηγής (ο ίδιος φάκελος στον δίσκο)· δεν γράφτηκε τίποτα εκεί"
+
+msgid "--dest {a} and --dest {b} are the same folder on disk; that is one copy, not two."
+msgstr "Τα --dest {a} και --dest {b} είναι ο ίδιος φάκελος στον δίσκο· αυτό είναι ένα αντίγραφο, όχι δύο."
+
+msgid "--dest {a} and --dest {b} would write into the same folder on disk; that is one copy, not two."
+msgstr "Τα --dest {a} και --dest {b} θα έγραφαν στον ίδιο φάκελο στον δίσκο· αυτό είναι ένα αντίγραφο, όχι δύο."
+
+msgid "An unfinished file may have been left behind: {path}"
+msgstr "Ίσως έμεινε πίσω ένα ημιτελές αρχείο: {path}"
+
+msgid "--dest does not run elevated (sudo or root) yet."
+msgstr "Το --dest δεν εκτελείται ακόμη με αυξημένα δικαιώματα (sudo ή root)."
+
+msgid "stalled during pre-flight: no answer for {n} s"
+msgstr "κόλλησε στον προέλεγχο: καμία απάντηση για {n} s"
+
+msgid "The source is on {fs}, whose timestamps are too coarse to notice a file rewritten in place at the same size while it was being read; for such a rewrite, 'changed during the run' cannot be ruled out."
+msgstr "Η πηγή βρίσκεται σε {fs}, του οποίου οι χρονοσφραγίδες είναι πολύ αδρές για να φανεί ένα αρχείο που ξαναγράφτηκε επί τόπου με το ίδιο μέγεθος ενώ διαβαζόταν· για μια τέτοια επανεγγραφή δεν μπορεί να αποκλειστεί το «άλλαξε κατά την εκτέλεση»."
+
+msgid "{size} written · {time} for this destination"
+msgstr "{size} γράφτηκαν · {time} για αυτόν τον προορισμό"
+
+msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
+msgstr "Ανάγνωση προορισμών από το FILE, ένας ανά γραμμή, σαν να δόθηκε ο καθένας με --dest. Οι κενές γραμμές και όσες ο πρώτος μη κενός χαρακτήρας τους είναι # παραλείπονται· τίποτε άλλο σε μια γραμμή δεν περικόπτεται. Επαναλαμβανόμενο."
+
+msgid "A name for this copy, shown in the summary and recorded with the result."
+msgstr "Ένα όνομα για αυτή την αντιγραφή, που εμφανίζεται στη σύνοψη και καταγράφεται με το αποτέλεσμα."
+
+msgid "--dests-file {path}: cannot read it ({why})"
+msgstr "--dests-file {path}: δεν μπορεί να διαβαστεί ({why})"
+
+msgid "--dests-file {path} names no destination."
+msgstr "Το --dests-file {path} δεν ορίζει κανέναν προορισμό."
+
+msgid "--job-name goes with --dest or --dests-file."
+msgstr "Το --job-name χρησιμοποιείται με --dest ή --dests-file."
+
+msgid "--job-name must be 1 to 200 printable characters on one line."
+msgstr "Το --job-name πρέπει να έχει 1 έως 200 εκτυπώσιμους χαρακτήρες σε μία γραμμή."
+
+msgid "Job: {name}"
+msgstr "Εργασία: {name}"
+
+msgid "Metadata not applied: {n} item(s) — elevated run with no safe handle on the file (never set through a path when elevated)"
+msgstr "Τα μεταδεδομένα δεν εφαρμόστηκαν: {n} στοιχείο(-α) — εκτέλεση με αυξημένα δικαιώματα χωρίς ασφαλή λαβή στο αρχείο (με αυξημένα δικαιώματα δεν ορίζονται ποτέ μέσω διαδρομής)"
+
+msgid "'{name}' is both a folder here and a saved connection. Write ./{name} for the folder, or {name}: for the connection."
+msgstr "Το '{name}' είναι εδώ και φάκελος και αποθηκευμένη σύνδεση. Γράψτε ./{name} για τον φάκελο ή {name}: για τη σύνδεση."
+
+msgid "'{name}' is both a file here and a saved connection. Write ./{name} for the file, or {name}: for the connection."
+msgstr "Το '{name}' είναι εδώ και αρχείο και αποθηκευμένη σύνδεση. Γράψτε ./{name} για το αρχείο ή {name}: για τη σύνδεση."
+
+msgid "{rel}: the destination folder was replaced during the run (not followed when elevated)"
+msgstr "{rel}: ο φάκελος προορισμού αντικαταστάθηκε κατά την εκτέλεση (δεν ακολουθείται με αυξημένα δικαιώματα)"
+
+msgid "{rel}: a symlinked folder on the way (not followed when elevated)"
+msgstr "{rel}: ένας φάκελος στη διαδρομή είναι συμβολικός σύνδεσμος (δεν ακολουθείται με αυξημένα δικαιώματα)"
+
+msgid "replaced since the scan; not copied when elevated"
+msgstr "αντικαταστάθηκε μετά τη σάρωση· δεν αντιγράφεται με αυξημένα δικαιώματα"
+
+msgid "--dest {name} is a saved connection; only local folders are destinations with --dest in this version. For a local folder of that name, write ./{name}."
+msgstr "Το --dest {name} είναι αποθηκευμένη σύνδεση· σε αυτή την έκδοση μόνο τοπικοί φάκελοι μπορούν να είναι προορισμοί με --dest. Για τοπικό φάκελο με αυτό το όνομα, γράψτε ./{name}."
+
+msgid "its ASC MHL history cannot be read ({why})"
+msgstr "το ιστορικό ASC MHL του δεν μπορεί να διαβαστεί ({why})"
+
+msgid "its ASC MHL history does not match its chain file ({path})"
+msgstr "το ιστορικό ASC MHL του δεν συμφωνεί με το αρχείο αλυσίδας ({path})"
+
+msgid "no manifest written, the history was left as it is"
+msgstr "δεν γράφτηκε manifest, το ιστορικό έμεινε όπως ήταν"
+
+msgid "{n} names cannot be written into the ASC MHL file (control characters); they are in {list} only"
+msgstr "{n} ονόματα δεν μπορούν να γραφτούν στο αρχείο ASC MHL (χαρακτήρες ελέγχου)· υπάρχουν μόνο στο {list}"
+
+msgid "no manifest: the xxhash package is not installed"
+msgstr "χωρίς manifest: το πακέτο xxhash δεν είναι εγκατεστημένο"
+
+msgid "the manifest could not be written: {why}"
+msgstr "το manifest δεν μπόρεσε να γραφτεί: {why}"
+
+msgid "Manifest: {mhl} and {lst}"
+msgstr "Manifest: {mhl} και {lst}"
+
+msgid "manifest"
+msgstr "manifest"
+
+msgid "{rel}: not a regular file"
+msgstr "{rel}: δεν είναι κανονικό αρχείο"
+
+msgid "{rel}: too large for a manifest"
+msgstr "{rel}: πολύ μεγάλο για manifest"
+
+msgid "Check a destination against its own manifest (ascmhl/ or blitcp.xxh128), without the source: every file it lists is read back and hashed. Writes nothing."
+msgstr "Έλεγχος ενός προορισμού με το δικό του manifest (ascmhl/ ή blitcp.xxh128), χωρίς την πηγή: κάθε αρχείο που αναφέρει διαβάζεται ξανά και κατακερματίζεται. Δεν γράφει τίποτα."
+
+msgid "--verify-manifest takes only the destination to check."
+msgstr "Το --verify-manifest δέχεται μόνο τον προορισμό που θα ελεγχθεί."
+
+msgid "--verify-manifest needs the xxhash package."
+msgstr "Το --verify-manifest χρειάζεται το πακέτο xxhash."
+
+msgid "{dest}: no answer for {n} s"
+msgstr "{dest}: καμία απόκριση για {n} s"
+
+msgid "{dest}: no such folder"
+msgstr "{dest}: δεν υπάρχει τέτοιος φάκελος"
+
+msgid "{dest} has no manifest ({mhl}/ or {lst})."
+msgstr "Ο {dest} δεν έχει manifest ({mhl}/ ή {lst})."
+
+msgid "checking {dest} against its manifest ({n} files)"
+msgstr "έλεγχος του {dest} με το manifest του ({n} αρχεία)"
+
+msgid "{k} of {n} checked"
+msgstr "{k} από {n} ελέγχθηκαν"
+
+msgid "All {n} files match the manifest"
+msgstr "Και τα {n} αρχεία ταιριάζουν με το manifest"
+
+msgid "{bad} of {n} files do not match the manifest ({differ} differ, {missing} missing)"
+msgstr "{bad} από {n} αρχεία δεν ταιριάζουν με το manifest ({differ} διαφέρουν, {missing} λείπουν)"
+
+msgid "{rel}: missing"
+msgstr "{rel}: λείπει"
+
+msgid "Up to date: the source matches the xxh128 its manifest records for all {n} files, and each is there at the recorded size; not read back this run — blitcp --verify-manifest checks them"
+msgstr "Ενημερωμένος: η πηγή ταιριάζει με το xxh128 που καταγράφει το manifest του για όλα τα {n} αρχεία, και καθένα υπάρχει με το καταγεγραμμένο μέγεθος· δεν διαβάστηκαν ξανά σε αυτή την εκτέλεση — το blitcp --verify-manifest τα ελέγχει"
+
+msgid "{n} unchanged — the source matches the xxh128 its manifest records, and each is there at the recorded size; not written or read back again"
+msgstr "{n} αμετάβλητα — η πηγή ταιριάζει με το xxh128 που καταγράφει το manifest του, και καθένα υπάρχει με το καταγεγραμμένο μέγεθος· δεν γράφτηκαν ούτε διαβάστηκαν ξανά"
+
+msgid "{n} files were read a second time: read to compare with what the destination recorded for them, found changed, and read again to be written"
+msgstr "{n} αρχεία διαβάστηκαν δεύτερη φορά: διαβάστηκαν για σύγκριση με όσα είχε καταγράψει γι' αυτά ο προορισμός, βρέθηκαν αλλαγμένα και διαβάστηκαν ξανά για να γραφτούν"
+
+msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
+msgstr "{n} αρχεία εδώ είναι νέα έκδοση αρχείου που ήδη υπήρχε στο ιστορικό ASC MHL· το ascmhl θα τα αναφέρει με βάση την προηγούμενη εγγραφή (το ASC MHL θεωρεί ότι τα μέσα δεν αλλάζουν). Το blitcp --verify-manifest και το {lst} ελέγχουν την τρέχουσα έκδοση."
+
+msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
+msgstr "Συνέχιση μιας διακοπείσας εκτέλεσης --dest: τα αρχεία που είχε ήδη γράψει και των οποίων το μέγεθος, ο χρόνος και το xxh128 ταιριάζουν ακόμη με την πηγή δεν αντιγράφονται ξανά (όσα δεν είχαν επαληθευτεί διαβάζονται ξανά και επαληθεύονται τώρα)."
+
+msgid "--resume goes with --dest or --dests-file."
+msgstr "Το --resume χρησιμοποιείται με --dest ή --dests-file."
+
+msgid "the resume journal could not be written: {why}"
+msgstr "το ημερολόγιο συνέχισης δεν μπόρεσε να γραφτεί: {why}"
+
+msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
+msgstr "Αντικατάσταση αρχείου που το manifest ενός προορισμού καταγράφει με διαφορετικό περιεχόμενο (από προεπιλογή διατηρείται και αναφέρεται: οι κάμερες ξεκινούν την αρίθμηση των clip από την αρχή σε κάθε κάρτα)."
+
+msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
+msgstr "{n} αρχεία υπάρχουν εδώ με διαφορετικό περιεχόμενο — διατηρήθηκαν ως έχουν, δεν αντικαταστάθηκαν (το --overwrite-changed τα αντικαθιστά· ένας φάκελος ανά κάρτα αποφεύγει τη σύγκρουση)"
+
+msgid "… and {n} more"
+msgstr "… και {n} ακόμη"
+
+msgid "not written: running as {user} needs Python 3.9 or later"
+msgstr "δεν γράφτηκε: η εκτέλεση ως {user} απαιτεί Python 3.9 ή νεότερη"
+
+msgid "not written: cannot act as {user}"
+msgstr "δεν γράφτηκε: δεν είναι δυνατή η ενέργεια ως {user}"
+
+msgid "no host name to record"
+msgstr "κανένα όνομα host για καταγραφή"
+
+msgid "Warning: {old} is deprecated and stops working in 5.0 — use {new}."
+msgstr "Προειδοποίηση: το {old} είναι παρωχημένο και παύει να λειτουργεί στην 5.0 — χρησιμοποιήστε το {new}."
+
+msgid "blitcp-gui cannot start: PySide6 {qt} crashes on Python older than {good}. Install another version (pip install \"PySide6!={qt}\") or use Python {good} or later."
+msgstr "Το blitcp-gui δεν μπορεί να ξεκινήσει: το PySide6 {qt} καταρρέει σε Python παλαιότερη από {good}. Εγκαταστήστε άλλη έκδοση (pip install \"PySide6!={qt}\") ή χρησιμοποιήστε Python {good} ή νεότερη."
+
+msgid "Note: the SSH dedup cache is not kept between runs under sudo — it lives in your home folder, which this run does not write as root."
+msgstr "Σημείωση: η κρυφή μνήμη αποδιπλασιασμού SSH δεν διατηρείται μεταξύ εκτελέσεων υπό sudo — βρίσκεται στον προσωπικό σας φάκελο, στον οποίο αυτή η εκτέλεση δεν γράφει ως root."
+
+msgid "not written: a frozen build cannot act as {user}"
+msgstr "δεν γράφτηκε: μια πακεταρισμένη έκδοση δεν μπορεί να ενεργήσει ως {user}"
+
+msgid "{dir} is not writable by {user} (an earlier blitcp run under sudo may have created it as root). Fix: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+msgstr "Ο φάκελος {dir} δεν είναι εγγράψιμος από τον {user} (μια προηγούμενη εκτέλεση του blitcp με sudo ίσως τον δημιούργησε ως root). Διόρθωση: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+
+msgid "Note: {path} not saved: {why}"
+msgstr "Σημείωση: το {path} δεν αποθηκεύτηκε: {why}"
+
+msgid "cannot connect: {err}"
+msgstr "αδυναμία σύνδεσης: {err}"
+
+msgid "content differs on the remote host"
+msgstr "το περιεχόμενο διαφέρει στον απομακρυσμένο υπολογιστή"
+
+msgid "no hash came back from the remote host"
+msgstr "δεν επέστρεψε hash από τον απομακρυσμένο υπολογιστή"
+
+msgid "not written by this run"
+msgstr "δεν γράφτηκε από αυτή την εκτέλεση"
+
+msgid "the bytes sent differ from the bytes read"
+msgstr "τα bytes που στάλθηκαν διαφέρουν από αυτά που διαβάστηκαν"
+
+msgid "{path} is a symlink to {where}: the files would land somewhere else than the folder named; nothing was written"
+msgstr "το {path} είναι συμβολικός σύνδεσμος προς το {where}: τα αρχεία θα κατέληγαν αλλού από τον φάκελο που ορίστηκε· δεν γράφτηκε τίποτα"
+
+msgid "{src}: an SSH source must be the only source of a --dest run."
+msgstr "{src}: μια πηγή SSH πρέπει να είναι η μόνη πηγή μιας εκτέλεσης με --dest."
+
+msgid "--ssh-no-sftp is not supported with --dest: the fan-out reads and writes SSH over SFTP."
+msgstr "το --ssh-no-sftp δεν υποστηρίζεται με --dest: η διανομή διαβάζει και γράφει SSH μέσω SFTP."
+
+msgid "no such folder or file on the remote ({err})"
+msgstr "δεν υπάρχει τέτοιος φάκελος ή αρχείο στον απομακρυσμένο υπολογιστή ({err})"
+
+msgid "not listed on the remote"
+msgstr "δεν καταγράφηκε στον απομακρυσμένο υπολογιστή"
+
+msgid "the remote listing ended with exit code {rc}"
+msgstr "η απομακρυσμένη καταγραφή τερμάτισε με κωδικό εξόδου {rc}"
+
+msgid "the remote listing is larger than {n} MB; copy a smaller folder"
+msgstr "η απομακρυσμένη καταγραφή είναι μεγαλύτερη από {n} MB· αντιγράψτε μικρότερο φάκελο"
+
+msgid "{rel}: the name is not UTF-8, and SFTP cannot carry it"
+msgstr "{rel}: το όνομα δεν είναι UTF-8 και το SFTP δεν μπορεί να το μεταφέρει"
+
+msgid "--dest {a} and --dest {b} are the same place, reached two ways; that is one copy, not two."
+msgstr "Τα --dest {a} και --dest {b} είναι το ίδιο σημείο, από δύο δρόμους· αυτό είναι ένα αντίγραφο, όχι δύο."
+
+msgid "--dest {dest}: not a destination blitcp can write. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--dest {dest}: δεν είναι προορισμός όπου μπορεί να γράψει το blitcp. Δώστε έναν τοπικό φάκελο, user@host:/διαδρομή, s3:// az:// gs://, smb://host/share ή μια αποθηκευμένη σύνδεση ως NAME: ή NAME:διαδρομή."
+
+msgid "--dest {name} is a saved connection: write {name}: to copy to it, or ./{name} for a local folder of that name."
+msgstr "Το --dest {name} είναι αποθηκευμένη σύνδεση: γράψτε {name}: για αντιγραφή εκεί, ή ./{name} για τοπικό φάκελο με αυτό το όνομα."
+
+msgid "SMB password: "
+msgstr "Κωδικός SMB: "
+
+msgid "a Windows device name (CON, NUL, COM1…) is not a file on a share"
+msgstr "ένα όνομα συσκευής των Windows (CON, NUL, COM1…) δεν είναι αρχείο σε κοινόχρηστο φάκελο"
+
+msgid "a share cannot hold \\ : * ? \" < > | or control characters in a name"
+msgstr "ένας κοινόχρηστος φάκελος δεν δέχεται \\ : * ? \" < > | ή χαρακτήρες ελέγχου σε όνομα"
+
+msgid "a share may drop a trailing dot or space, making this name another file's"
+msgstr "ένας κοινόχρηστος φάκελος μπορεί να αφαιρέσει τελεία ή κενό στο τέλος, κάνοντας το όνομα αυτό όνομα άλλου αρχείου"
+
+msgid "content differs on the destination"
+msgstr "το περιεχόμενο διαφέρει στον προορισμό"
+
+msgid "the probe object {key} could not be removed: {err}"
+msgstr "το αντικείμενο ελέγχου {key} δεν αφαιρέθηκε: {err}"
+
+msgid "{rel}: the name is not UTF-8, and an object store cannot hold it"
+msgstr "{rel}: το όνομα δεν είναι UTF-8 και ένας χώρος αντικειμένων δεν μπορεί να το κρατήσει"
+
+msgid "{rel}: the share cannot store this name"
+msgstr "{rel}: ο κοινόχρηστος φάκελος δεν μπορεί να αποθηκεύσει αυτό το όνομα"
+
+msgid "Spool folder {path} cannot be used ({err}); spilling to {tmp}, which may be memory. Set BLITCP_SPOOL_DIR to a folder on disk."
+msgstr "Ο φάκελος spool {path} δεν μπορεί να χρησιμοποιηθεί ({err})· η υπερχείλιση πηγαίνει στο {tmp}, που μπορεί να είναι μνήμη. Ορίστε το BLITCP_SPOOL_DIR σε φάκελο στον δίσκο."
+
+msgid "--deep goes with --verify-manifest."
+msgstr "Το --deep πάει μαζί με το --verify-manifest."
+
+msgid "--verify-manifest {dest}: not a destination blitcp can check. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--verify-manifest {dest}: δεν είναι προορισμός που μπορεί να ελέγξει το blitcp. Δώστε έναν τοπικό φάκελο, user@host:/διαδρομή, s3:// az:// gs://, smb://host/share ή μια αποθηκευμένη σύνδεση ως NAME: ή NAME:διαδρομή."
+
+msgid "All {n} files are present with the sizes the manifest records — content not compared; --deep reads them back and hashes them"
+msgstr "Και τα {n} αρχεία υπάρχουν με τα μεγέθη που καταγράφει το manifest — το περιεχόμενο δεν συγκρίθηκε· το --deep τα διαβάζει ξανά και τα κατακερματίζει"
+
+msgid "With --verify-manifest on an SSH, SMB or object-store destination: download every file and hash it here, instead of asking the remote host or the store."
+msgstr "Με το --verify-manifest σε προορισμό SSH, SMB ή αποθήκευσης αντικειμένων: κατέβασε κάθε αρχείο και κατακερμάτισέ το εδώ, αντί να ρωτηθεί ο απομακρυσμένος υπολογιστής ή ο χώρος αποθήκευσης."
+
+msgid "cannot check whether --dest {a} and --dest {b} are one place ({why}); no file was written. Fix that destination, or copy to them in separate runs."
+msgstr "δεν μπορεί να ελεγχθεί αν τα --dest {a} και --dest {b} είναι το ίδιο σημείο ({why})· δεν γράφτηκε κανένα αρχείο. Διορθώστε αυτόν τον προορισμό ή αντιγράψτε σε ξεχωριστές εκτελέσεις."
+
+msgid "its own probe, just written, is not in the remote listing"
+msgstr "το δικό του αρχείο ελέγχου, που μόλις γράφτηκε, λείπει από την απομακρυσμένη λίστα"
+
+msgid "its own probe, just written, is not in the store's listing"
+msgstr "το δικό του αντικείμενο ελέγχου, που μόλις γράφτηκε, λείπει από τη λίστα του χώρου αποθήκευσης"
+
+msgid "its own probe, just written, is not visible"
+msgstr "το δικό του αρχείο ελέγχου, που μόλις γράφτηκε, δεν φαίνεται"
+
+msgid "no answer for {n} s"
+msgstr "καμία απάντηση για {n} s"
+
+msgid "no probe could be written to {d}: {why}"
+msgstr "δεν γράφτηκε αρχείο ελέγχου στο {d}: {why}"
+
+msgid "not a regular file"
+msgstr "δεν είναι κανονικό αρχείο"
+
+msgid "size differs from the manifest"
+msgstr "το μέγεθος διαφέρει από το manifest"
+
+msgid "the object carries none of blitcp's hashes (replaced, or written by another tool); --deep compares its bytes"
+msgstr "το αντικείμενο δεν φέρει κανέναν από τους κατακερματισμούς του blitcp (αντικαταστάθηκε ή γράφτηκε από άλλο εργαλείο)· το --deep συγκρίνει τα bytes του"
+
+msgid "the object is not the one the manifest records (its hash differs); --deep compares its bytes"
+msgstr "το αντικείμενο δεν είναι αυτό που καταγράφει το manifest (ο κατακερματισμός του διαφέρει)· το --deep συγκρίνει τα bytes του"
+
+msgid "{n} of them by size only; --deep reads every file back and hashes it"
+msgstr "{n} από αυτά μόνο με βάση το μέγεθος· το --deep διαβάζει ξανά κάθε αρχείο και το κατακερματίζει"
+
+msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
+msgstr "Έλεγχος ενός προορισμού — τοπικού φακέλου, φακέλου SSH, κοινόχρηστου SMB ή bucket — με το δικό του manifest (ascmhl/ ή blitcp.xxh128), χωρίς την πηγή, στο επίπεδο που προσφέρει: ανάγνωση ξανά, κατακερματισμός από τον απομακρυσμένο υπολογιστή ή το δικό του checksum του χώρου αποθήκευσης (το --deep διαβάζει ξανά κάθε αρχείο). Δεν γράφει τίποτα."
+
+msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
+msgstr "Το --deep-verify πάει με το --dest (με το --verify-manifest χρησιμοποιήστε --deep)."
+
+msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
+msgstr "Το --deep-verify {dest} δεν είναι ένας από τους προορισμούς --dest (δώστε το ακριβώς όπως στο --dest, ή 'all')."
+
+msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
+msgstr "Έλεγχος του --dest που ορίζεται (επαναλαμβανόμενο· 'all' για όλους) κατεβάζοντας κάθε αρχείο που του στάλθηκε και κατακερματίζοντάς το εδώ, αντί για το checksum του χώρου αποθήκευσης ή τον κατακερματισμό του απομακρυσμένου υπολογιστή. Για blobs του Azure από 8 MiB και πάνω (εκφορτώσεις βίντεο) είναι ο μόνος έλεγχος περιεχομένου: το Azure δεν κρατά checksum γι' αυτά."
+
+msgid "content differs from the source (store CRC)"
+msgstr "το περιεχόμενο διαφέρει από την πηγή (CRC του χώρου αποθήκευσης)"
+
+msgid "nothing under {src}"
+msgstr "τίποτα κάτω από {src}"
+
+msgid "the store's checksum differs from the one the manifest records; --deep compares its bytes"
+msgstr "το checksum του χώρου αποθήκευσης διαφέρει από αυτό που καταγράφει το manifest· το --deep συγκρίνει τα bytes του"
+
+msgid "{n} matched the store's own full-object CRC"
+msgstr "{n} ταίριαξαν με το CRC ολόκληρου αντικειμένου του χώρου αποθήκευσης"
+
+msgid "{n} object(s) were rewritten in place (a server-side copy) to carry their metadata: this endpoint took no full-object checksum at upload. Each copy rewrites the whole object; on stores with a minimum storage duration (Wasabi, Backblaze B2) the replaced copy may be billed."
+msgstr "{n} αντικείμενο/α ξαναγράφτηκαν στη θέση τους (αντιγραφή στον διακομιστή) για να φέρουν τα μεταδεδομένα τους: αυτό το endpoint δεν δέχτηκε checksum ολόκληρου αντικειμένου στο ανέβασμα. Κάθε αντιγραφή ξαναγράφει όλο το αντικείμενο· σε χώρους με ελάχιστη διάρκεια αποθήκευσης (Wasabi, Backblaze B2) το αντίγραφο που αντικαταστάθηκε μπορεί να χρεωθεί."
+
+msgid "{src}: a remote source must be the only source of a --dest run."
+msgstr "{src}: μια απομακρυσμένη πηγή πρέπει να είναι η μόνη πηγή μιας εκτέλεσης --dest."
+
+msgid "{src}: not a source blitcp can read with --dest. Give a local folder or file, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME:path."
+msgstr "{src}: δεν είναι πηγή που μπορεί να διαβάσει το blitcp με --dest. Δώστε έναν τοπικό φάκελο ή αρχείο, user@host:/διαδρομή, s3:// az:// gs://, smb://host/share ή μια αποθηκευμένη σύνδεση ως NAME:διαδρομή."
+
+msgid "a reparse point on the share (link, junction, tiered or deduplicated file); not copied"
+msgstr "σημείο ανάλυσης (reparse point) στον κοινόχρηστο φάκελο (σύνδεσμος, junction, αρχείο σε tiering ή αποδιπλωμένο)· δεν αντιγράφηκε"
+
+msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
+msgstr "Το δικό manifest της πηγής ({mhl}/, {lst}: {n} αρχεία) δεν αντιγράφεται: κάθε προορισμός γράφει το δικό του."
+
+msgid "--deep-verify: every file read back from this destination and hashed"
+msgstr "--deep-verify: κάθε αρχείο διαβάζεται ξανά από αυτόν τον προορισμό και κατακερματίζεται"
+
+msgid "A folder on this computer or a mounted drive."
+msgstr "Ένας φάκελος σε αυτόν τον υπολογιστή ή σε προσαρτημένη μονάδα."
+
+msgid "A web source cannot be copied to several destinations"
+msgstr "Μια πηγή web δεν μπορεί να αντιγραφεί σε πολλούς προορισμούς"
+
+msgid "Add destination"
+msgstr "Προσθήκη προορισμού"
+
+msgid "Browse SMB"
+msgstr "Περιήγηση SMB"
+
+msgid "Browse SMB share"
+msgstr "Περιήγηση κοινόχρηστου SMB"
+
+msgid "Check this destination against its manifest, without the source (--verify-manifest)"
+msgstr "Έλεγχος αυτού του προορισμού με το manifest του, χωρίς την πηγή (--verify-manifest)"
+
+msgid "Checked again: all {n} files match the manifest"
+msgstr "Ελέγχθηκε ξανά: και τα {n} αρχεία ταιριάζουν με το manifest"
+
+msgid "Checked again: {bad} of {n} files do not match"
+msgstr "Ελέγχθηκε ξανά: {bad} από {n} αρχεία δεν ταιριάζουν"
+
+msgid "Checking against the manifest…"
+msgstr "Έλεγχος με το manifest…"
+
+msgid "Choose destination folder"
+msgstr "Επιλογή φακέλου προορισμού"
+
+msgid "Copied, not verified"
+msgstr "Αντιγράφηκε, δεν ελέγχθηκε"
+
+msgid "Destination presets"
+msgstr "Προεπιλογές προορισμών"
+
+msgid "Destinations saved as {name}"
+msgstr "Οι προορισμοί αποθηκεύτηκαν ως {name}"
+
+msgid "ETA {t}"
+msgstr "Υπόλοιπο {t}"
+
+msgid "ETA —"
+msgstr "Υπόλοιπο —"
+
+msgid "Failed: {why}"
+msgstr "Απέτυχε: {why}"
+
+msgid "Incomplete: {f} failed, {r} refused"
+msgstr "Ελλιπές: {f} απέτυχαν, {r} απορρίφθηκαν"
+
+msgid "Kept files that differ from the source"
+msgstr "Διατηρήθηκαν αρχεία που διαφέρουν από την πηγή"
+
+msgid "Manifest: {where}"
+msgstr "Manifest: {where}"
+
+msgid "New connection…"
+msgstr "Νέα σύνδεση…"
+
+msgid "Not available with several destinations: {opts}"
+msgstr "Μη διαθέσιμο με πολλούς προορισμούς: {opts}"
+
+msgid "Not verified: the source changed during the copy"
+msgstr "Δεν ελέγχθηκε: η πηγή άλλαξε κατά την αντιγραφή"
+
+msgid "Open manifest"
+msgstr "Άνοιγμα manifest"
+
+msgid "Recommended for Azure video offloads: Azure keeps no checksum for blobs of 8 MiB and over, so only a download proves them."
+msgstr "Συνιστάται για εκφορτώσεις βίντεο στο Azure: το Azure δεν κρατά checksum για blobs από 8 MiB και πάνω, οπότε μόνο η λήψη τα αποδεικνύει."
+
+msgid "Remove"
+msgstr "Αφαίρεση"
+
+msgid "Save destinations…"
+msgstr "Αποθήκευση προορισμών…"
+
+msgid "Save these destinations as"
+msgstr "Αποθήκευση αυτών των προορισμών ως"
+
+msgid "Sources → one or more destinations: the source is read once and written to every destination."
+msgstr "Πηγές → ένας ή περισσότεροι προορισμοί: η πηγή διαβάζεται μία φορά και γράφεται σε κάθε προορισμό."
+
+msgid "The check could not run (exit {c})"
+msgstr "Ο έλεγχος δεν μπόρεσε να εκτελεστεί (έξοδος {c})"
+
+msgid "Verified: {n} files"
+msgstr "Ελέγχθηκαν: {n} αρχεία"
+
+msgid "Verify again later"
+msgstr "Επανέλεγχος αργότερα"
+
+msgid "Verify by downloading every file (--deep-verify)"
+msgstr "Έλεγχος με λήψη κάθε αρχείου (--deep-verify)"
+
+msgid "With several destinations, a remote source must be the only source"
+msgstr "Με πολλούς προορισμούς, μια απομακρυσμένη πηγή πρέπει να είναι η μόνη πηγή"
+
+msgid "download to verify"
+msgstr "λήψη για έλεγχο"
+
+msgid "hashed on the remote host"
+msgstr "κατακερματισμός στον απομακρυσμένο υπολογιστή"
+
+msgid "hashed on the remote host (sample)"
+msgstr "κατακερματισμός στον απομακρυσμένο υπολογιστή (δείγμα)"
+
+msgid "links and clones"
+msgstr "σύνδεσμοι και κλώνοι"
+
+msgid "read back from the disk"
+msgstr "ανάγνωση ξανά από τον δίσκο"
+
+msgid "read back over the network"
+msgstr "ανάγνωση ξανά μέσω δικτύου"
+
+msgid "read back through the OS cache"
+msgstr "ανάγνωση ξανά μέσω της cache του λειτουργικού"
+
+msgid "s3://bucket/prefix, az://container/prefix, gs://bucket/prefix, or a saved connection as NAME:path."
+msgstr "s3://bucket/πρόθεμα, az://container/πρόθεμα, gs://bucket/πρόθεμα ή μια αποθηκευμένη σύνδεση ως NAME:διαδρομή."
+
+msgid "size only"
+msgstr "μόνο μέγεθος"
+
+msgid "size only (no store checksum)"
+msgstr "μόνο μέγεθος (χωρίς checksum του χώρου αποθήκευσης)"
+
+msgid "smb://host/share/path, a UNC path, or a saved SMB connection as NAME:path."
+msgstr "smb://host/share/διαδρομή, μια διαδρομή UNC ή μια αποθηκευμένη σύνδεση SMB ως NAME:διαδρομή."
+
+msgid "source unreadable"
+msgstr "η πηγή δεν διαβάζεται"
+
+msgid "the hash recorded at upload"
+msgstr "ο κατακερματισμός που καταγράφηκε στο ανέβασμα"
+
+msgid "the store's own MD5"
+msgstr "το δικό του MD5 του χώρου αποθήκευσης"
+
+msgid "the store's own SHA-256"
+msgstr "το δικό του SHA-256 του χώρου αποθήκευσης"
+
+msgid "the store's own full-object CRC"
+msgstr "το δικό του CRC ολόκληρου αντικειμένου του χώρου αποθήκευσης"
+
+msgid "user@host:/path, or a saved SSH connection as NAME:path."
+msgstr "user@host:/διαδρομή ή μια αποθηκευμένη σύνδεση SSH ως NAME:διαδρομή."
+
+msgid "verification: {level}"
+msgstr "έλεγχος: {level}"
+
+msgid "{done} / {total} files"
+msgstr "{done} / {total} αρχεία"
+
+msgid "{n} files failed verification"
+msgstr "{n} αρχεία απέτυχαν στον έλεγχο"
+
+msgid "{n} files present, sizes match — content not compared"
+msgstr "{n} αρχεία υπάρχουν, τα μεγέθη ταιριάζουν — το περιεχόμενο δεν συγκρίθηκε"
+
+msgid "Verified: {n} files — {levels}"
+msgstr "Ελέγχθηκαν: {n} αρχεία — {levels}"
+
+msgid "Checked again: all {n} files present with the recorded sizes — content not compared"
+msgstr "Ελέγχθηκε ξανά: και τα {n} αρχεία υπάρχουν με τα καταγεγραμμένα μεγέθη — το περιεχόμενο δεν συγκρίθηκε"
+
+msgid "data after the end of the archive"
+msgstr "δεδομένα μετά το τέλος του αρχείου"
+
+msgid "a tar header with a wrong checksum"
+msgstr "μια κεφαλίδα tar με λάθος άθροισμα ελέγχου"
+
+msgid "an oversized tar header"
+msgstr "μια υπερμεγέθη κεφαλίδα tar"
+
+msgid "a hard link"
+msgstr "έναν σκληρό σύνδεσμο"
+
+msgid "a symbolic link"
+msgstr "έναν συμβολικό σύνδεσμο"
+
+msgid "a folder"
+msgstr "έναν φάκελο"
+
+msgid "a special file"
+msgstr "ένα ειδικό αρχείο"
+
+msgid "{name}: {what}, not a file that was asked for"
+msgstr "{name}: {what}, όχι αρχείο που ζητήθηκε"
+
+msgid "{name}: not a file that was asked for"
+msgstr "{name}: όχι αρχείο που ζητήθηκε"
+
+msgid "a malformed pax header"
+msgstr "μια κακοσχηματισμένη κεφαλίδα pax"
+
+msgid "Refused: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "Απορρίφθηκε: το αρχείο του κεντρικού υπολογιστή πηγής περιέχει {what} — σταμάτησε πριν φτάσει στον προορισμό"
+
+msgid "refused: {what}"
+msgstr "απορρίφθηκε: {what}"
+
+msgid "not requested: the source host sent {what} in an earlier batch"
+msgstr "δεν ζητήθηκε: ο κεντρικός υπολογιστής πηγής έστειλε {what} σε προηγούμενη παρτίδα"
+
+msgid "Error: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "Σφάλμα: το αρχείο του κεντρικού υπολογιστή πηγής περιέχει {what} — σταμάτησε πριν φτάσει στον προορισμό"
+
+msgid "a negative number in a tar header"
+msgstr "έναν αρνητικό αριθμό σε κεφαλίδα tar"
+
+msgid "a tar header that is not a number"
+msgstr "μια κεφαλίδα tar που δεν είναι αριθμός"
+
+msgid "{path}: the folder changed after it was checked (it now leads outside the destination); nothing was written there"
+msgstr "{path}: ο φάκελος άλλαξε μετά τον έλεγχο (τώρα οδηγεί έξω από τον προορισμό)· δεν γράφτηκε τίποτα εκεί"
+
+msgid "{rel}: {folder} is a symlink to {where}, outside the destination; nothing was written there"
+msgstr "{rel}: το {folder} είναι συμβολικός σύνδεσμος προς {where}, έξω από τον προορισμό· δεν γράφτηκε τίποτα εκεί"
+
+msgid "a member named twice"
+msgstr "ένα μέλος με δύο ονόματα"
+
+msgid "a pax header that changes what tar makes ({key})"
+msgstr "μια κεφαλίδα pax που αλλάζει ό,τι δημιουργεί το tar ({key})"
+
+msgid "an unknown place"
+msgstr "ένα άγνωστο σημείο"
+
+msgid "Error: {opt} does not apply {where}."
+msgstr "Σφάλμα: το {opt} δεν ισχύει {where}."
+
+msgid "to a copy to one destination"
+msgstr "σε αντιγραφή προς έναν προορισμό"
+
+msgid "with --dest"
+msgstr "με --dest"
+
+msgid "with --verify-manifest"
+msgstr "με --verify-manifest"
+
+msgid "--ssh-no-sftp and --sftp-only exclude each other."
+msgstr "Τα --ssh-no-sftp και --sftp-only αλληλοαποκλείονται."
+
+msgid "the server offers no SFTP, and --sftp-only (or the saved connection's protocol \"sftp\") allows nothing else"
+msgstr "ο διακομιστής δεν προσφέρει SFTP, και το --sftp-only (ή το πρωτόκολλο \"sftp\" της αποθηκευμένης σύνδεσης) δεν επιτρέπει τίποτε άλλο"
+
+msgid "could not be moved into place: {err}"
+msgstr "δεν ήταν δυνατή η μετακίνηση στη θέση του: {err}"
+
+msgid "the remote tar batch failed: {err}"
+msgstr "η απομακρυσμένη παρτίδα tar απέτυχε: {err}"
+
+msgid "not written: {twin}, the file with the same content, did not land"
+msgstr "δεν γράφτηκε: το {twin}, το αρχείο με το ίδιο περιεχόμενο, δεν έφτασε"
+
+msgid "could not be linked on the remote host: {err}"
+msgstr "δεν έγινε σύνδεση (link) στον απομακρυσμένο υπολογιστή: {err}"
+
+msgid "could not be linked or copied on the remote host"
+msgstr "δεν έγινε ούτε σύνδεση ούτε αντιγραφή στον απομακρυσμένο υπολογιστή"
+
+msgid "{n} folder(s) did not take the source folder's mode and time"
+msgstr "{n} φάκελοι δεν πήραν τα δικαιώματα και την ώρα του φακέλου προέλευσης"
+
+msgid "not synced to disk on the remote host (no shell there)"
+msgstr "δεν γράφτηκε στον δίσκο του απομακρυσμένου υπολογιστή (δεν υπάρχει shell εκεί)"
+
+msgid "could not sync the remote destination: the files may still be in its cache"
+msgstr "ο απομακρυσμένος προορισμός δεν συγχρονίστηκε: τα αρχεία μπορεί να είναι ακόμη στην cache του"
+
+msgid "{n} of them hold the same content as another file of this run: hard links to it there"
+msgstr "{n} από αυτά έχουν το ίδιο περιεχόμενο με άλλο αρχείο αυτής της εκτέλεσης: εκεί είναι hard links σε αυτό"
+
+msgid "{n} copied on the remote host (it took no hard link)"
+msgstr "{n} αντιγράφηκαν στον απομακρυσμένο υπολογιστή (δεν δέχτηκε hard link)"
+
+msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
+msgstr "Τοπικοί προορισμοί: κάθε αρχείο γράφεται με κρυφό όνομα, γράφεται στον δίσκο και μετονομάζεται στη θέση του — ένα αρχείο δεν φαίνεται ποτέ μισογραμμένο. Χωρίς αυτό, ένα νέο αρχείο γράφεται απευθείας στη θέση του και ένα αρχείο που υπάρχει ήδη αντικαθίσταται μέσω κρυφού ονόματος."
+
+msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
+msgstr "Τοπικοί προορισμοί: ένα νέο αρχείο γράφεται απευθείας στη θέση του και ένα αρχείο που υπάρχει ήδη αντικαθίσταται μέσω κρυφού ονόματος· ο δίσκος του προορισμού συγχρονίζεται στο τέλος (η προεπιλογή, και για λήψη από αποθήκη αντικειμένων)."
+
+msgid "{opt} goes with --dest."
+msgstr "Το {opt} πάει μαζί με το --dest."
+
+msgid "Note: no deduplication for {dest}: {why}"
+msgstr "Σημείωση: χωρίς αφαίρεση διπλοτύπων για το {dest}: {why}"
+
+msgid "already in place"
+msgstr "ήδη στη θέση του"
+
+msgid "copies (no links here)"
+msgstr "αντίγραφα (χωρίς links εδώ)"
+
+msgid "hard links"
+msgstr "hard links"
+
+msgid "reflinks"
+msgstr "reflinks"
+
+msgid "symlinks"
+msgstr "συμβολικοί σύνδεσμοι"
+
+msgid "the file with the same content changed while linking"
+msgstr "το αρχείο με το ίδιο περιεχόμενο άλλαξε κατά τη σύνδεση"
+
+msgid "the file with the same content is no longer a regular file"
+msgstr "το αρχείο με το ίδιο περιεχόμενο δεν είναι πια κανονικό αρχείο"
+
+msgid "{n} of them have the same content as a file already there or written in this run, and were not written again: {how}"
+msgstr "{n} από αυτά έχουν το ίδιο περιεχόμενο με αρχείο που υπάρχει ήδη εκεί ή γράφτηκε σε αυτή την εκτέλεση, και δεν γράφτηκαν ξανά: {how}"
+
+msgid "the file with the same content is outside the destination (not linked when elevated)"
+msgstr "το αρχείο με το ίδιο περιεχόμενο είναι εκτός του προορισμού (δεν συνδέεται με αυξημένα δικαιώματα)"
+
+msgid "the destination folder was replaced during the run (not followed when elevated)"
+msgstr "ο φάκελος προορισμού αντικαταστάθηκε κατά την εκτέλεση (δεν ακολουθείται με αυξημένα δικαιώματα)"
+
+msgid "a symlinked folder on the way to the file with the same content (not followed when elevated)"
+msgstr "ένας φάκελος-συμβολικός σύνδεσμος στη διαδρομή προς το αρχείο με το ίδιο περιεχόμενο (δεν ακολουθείται με αυξημένα δικαιώματα)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links; every other destination gets a full copy of each file."
+msgstr "Αφαίρεση διπλοτύπων με --dest: σε τοπικό ή SSH προορισμό, τα διπλότυπα αυτής της εκτέλεσης και τα αρχεία που υπάρχουν ήδη εκεί γίνονται links· κάθε άλλος προορισμός παίρνει πλήρες αντίγραφο κάθε αρχείου."
+
+msgid "cannot rename on the destination (each file lands by a rename): {err}"
+msgstr "δεν είναι δυνατή η μετονομασία στον προορισμό (κάθε αρχείο τοποθετείται με μετονομασία): {err}"
+
+msgid "cannot read back what was written (each file is verified so): {err}"
+msgstr "δεν είναι δυνατή η ανάγνωση όσων γράφτηκαν (έτσι ελέγχεται κάθε αρχείο): {err}"
+
+msgid "cannot read back what was written (each file is verified so): the bytes differ"
+msgstr "δεν είναι δυνατή η ανάγνωση όσων γράφτηκαν (έτσι ελέγχεται κάθε αρχείο): τα bytes διαφέρουν"
+
+msgid "The share took {got} of {want} connections: files went {n} at a time."
+msgstr "Ο κοινόχρηστος φάκελος δέχτηκε {got} από {want} συνδέσεις: τα αρχεία πήγαν {n} τη φορά."
+
+msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "Ενημερωμένος: και τα {n} αρχεία είναι αμετάβλητα κατά μέγεθος και χρόνο τροποποίησης (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
+
+msgid "Up to date: nothing here needed writing"
+msgstr "Ενημερωμένος: τίποτα εδώ δεν χρειάστηκε εγγραφή"
+
+msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} αμετάβλητα κατά μέγεθος και χρόνο τροποποίησης (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
+
+msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "Ενημερωμένος: και τα {n} αρχεία είναι αμετάβλητα κατά μέγεθος και ετικέτα έκδοσης του αποθηκευτικού χώρου (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
+
+msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} αμετάβλητα κατά μέγεθος και ετικέτα έκδοσης του αποθηκευτικού χώρου (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
+
+msgid "the object changed after it was listed"
+msgstr "το αντικείμενο άλλαξε αφού καταγράφηκε στη λίστα"
+
+msgid "Removed {n} unfinished files an interrupted run had left here:"
+msgstr "Αφαιρέθηκαν {n} ημιτελή αρχεία που είχε αφήσει εδώ μια εκτέλεση που διακόπηκε:"
+
+msgid "Could not look for unfinished files an interrupted run may have left: {why}"
+msgstr "Δεν ήταν δυνατός ο έλεγχος για ημιτελή αρχεία που μπορεί να άφησε μια εκτέλεση που διακόπηκε: {why}"
+
+msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
+msgstr "Τήρηση manifest ASC MHL και blitcp.xxh128 σε αντιγραφή προς έναν προορισμό (τα --dest, --resume, --overwrite-changed και --job-name το κάνουν πάντα). Με αυτό, τα αμετάβλητα αρχεία παραλείπονται χωρίς ανάγνωση (γρήγορο, εμπιστεύεται τις εγγραφές). Χωρίς αυτό, έναν τοπικό προορισμό τον κρίνουν οι εγγραφές του blitcp (ένα αρχείο που δείχνουν αμετάβλητο και στις δύο πλευρές δεν διαβάζεται· κάθε άλλο αρχείο ίδιου μεγέθους συγκρίνεται)· σε SSH και SMB αποφασίζει η υπογεγραμμένη hash cache του blitcp εκεί, εφόσον το μέγεθος και ο χρόνος τροποποίησης ενός αρχείου είναι αυτά που κατέγραψε, οπότε ένα αρχείο προορισμού που άλλαξε εκτός blitcp με το ίδιο μέγεθος και επαναφερμένο χρόνο δεν εντοπίζεται σε νέα εκτέλεση, εκτός αν χρησιμοποιηθεί το --no-cache."
+
+msgid "hash cache not updated: {why}"
+msgstr "η hash cache δεν ενημερώθηκε: {why}"
+
+msgid "manifest mode — its records ({mhl}) decide what is unchanged"
+msgstr "λειτουργία manifest — οι εγγραφές του ({mhl}) αποφασίζουν τι είναι αμετάβλητο"
+
+msgid "no manifest — a file whose size and modification time there are the ones blitcp's signed hash cache recorded is decided by that cache; one changed there with its time put back is not seen (--no-cache compares the files)"
+msgstr "χωρίς manifest — για ένα αρχείο του οποίου το μέγεθος και ο χρόνος τροποποίησης εκεί είναι αυτά που κατέγραψε η υπογεγραμμένη hash cache του blitcp αποφασίζει εκείνη· ένα που άλλαξε εκεί με επαναφερμένο χρόνο δεν γίνεται αντιληπτό (το --no-cache συγκρίνει τα αρχεία)"
+
+msgid "no manifest — each file of the same size is compared with what is there"
+msgstr "χωρίς manifest — κάθε αρχείο ίδιου μεγέθους συγκρίνεται με ό,τι υπάρχει εκεί"
+
+msgid "no manifest, --no-cache — every file is written again"
+msgstr "χωρίς manifest, --no-cache — κάθε αρχείο γράφεται ξανά"
+
+msgid "{n} files: the dedup database and this destination's manifest record different content at the same size and time — the manifest decided; the database was left as it is:"
+msgstr "{n} αρχεία: η βάση dedup και το manifest αυτού του προορισμού καταγράφουν διαφορετικό περιεχόμενο με το ίδιο μέγεθος και χρόνο — αποφάσισε το manifest· η βάση έμεινε ως είχε:"
+
+msgid "{rel}: the dedup database and the manifest record different hashes for this source file at the same size and time — the manifest decided; the database's record was left as it is (database {db}, manifest {got})"
+msgstr "{rel}: η βάση dedup και το manifest καταγράφουν διαφορετικά hash για αυτό το αρχείο πηγής με το ίδιο μέγεθος και χρόνο — αποφάσισε το manifest· η εγγραφή της βάσης έμεινε ως είχε (βάση {db}, manifest {got})"
+
+msgid "DRY RUN — nothing is written."
+msgstr "ΔΟΚΙΜΑΣΤΙΚΗ ΕΚΤΕΛΕΣΗ — δεν γράφεται τίποτα."
+
+msgid "would write {n} files ({size})"
+msgstr "θα έγραφε {n} αρχεία ({size})"
+
+msgid "{n} unchanged"
+msgstr "{n} αμετάβλητα"
+
+msgid "{n} conflicts (there with other content, kept)"
+msgstr "{n} συγκρούσεις (υπάρχουν εκεί με άλλο περιεχόμενο, διατηρούνται)"
+
+msgid "{n} unreadable at the source"
+msgstr "{n} μη αναγνώσιμα στην πηγή"
+
+msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
+msgstr "Δεν αναζητούνται σε δοκιμαστική εκτέλεση: ημιτελή αρχεία που άφησε μια εκτέλεση που διακόπηκε (το --resume τα αφαιρεί)."
+
+msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
+msgstr "Δεν ελέγχεται σε δοκιμαστική εκτέλεση: αν δύο προορισμοί είναι το ίδιο σημείο (ο έλεγχος γράφει ένα δοκιμαστικό αρχείο)."
+
+msgid "Not planned in a dry run: links to identical files already at a destination; such files are counted as written."
+msgstr "Δεν σχεδιάζονται σε δοκιμαστική εκτέλεση: σύνδεσμοι σε πανομοιότυπα αρχεία που υπάρχουν ήδη σε έναν προορισμό· τέτοια αρχεία μετρώνται ως γραμμένα."
+
+msgid "Whether each destination takes a write is not tested in a dry run (that test writes a probe file)."
+msgstr "Το αν κάθε προορισμός δέχεται εγγραφή δεν ελέγχεται σε δοκιμαστική εκτέλεση (ο έλεγχος γράφει ένα δοκιμαστικό αρχείο)."
+
+msgid "Fail the run when the dedup database at the destination could have been written by someone else (its owner, permissions, or a folder others can replace files in). Default: ignore that database, say so, and copy without the cache."
+msgstr "Αποτυχία της εκτέλεσης όταν η βάση δεδομένων dedup στον προορισμό μπορεί να έχει γραφτεί από κάποιον άλλο (ιδιοκτήτης, δικαιώματα ή φάκελος όπου άλλοι μπορούν να αντικαταστήσουν αρχεία). Προεπιλογή: αγνοείται η βάση, αναφέρεται, και η αντιγραφή γίνεται χωρίς την προσωρινή μνήμη."
+
+msgid "{name} is not a regular file"
+msgstr "το {name} δεν είναι κανονικό αρχείο"
+
+msgid "{name} is owned by another user (uid {uid})"
+msgstr "το {name} ανήκει σε άλλον χρήστη (uid {uid})"
+
+msgid "{name} can be written by others (mode {mode})"
+msgstr "το {name} μπορούν να το γράψουν άλλοι (λειτουργία {mode})"
+
+msgid "its folder {dir} is owned by another user (uid {uid})"
+msgstr "ο φάκελός του {dir} ανήκει σε άλλον χρήστη (uid {uid})"
+
+msgid "its folder {dir} lets anyone replace files in it (mode {mode}, no sticky bit)"
+msgstr "ο φάκελός του {dir} επιτρέπει σε οποιονδήποτε να αντικαθιστά αρχεία (λειτουργία {mode}, χωρίς sticky bit)"
+
+msgid "its folder {dir} lets other members of its group replace files in it (mode {mode})"
+msgstr "ο φάκελός του {dir} επιτρέπει σε άλλα μέλη της ομάδας του να αντικαθιστούν αρχεία (λειτουργία {mode})"
+
+msgid "{name} is a symlink"
+msgstr "το {name} είναι συμβολικός σύνδεσμος"
+
+msgid "{name} was replaced after it was checked"
+msgstr "το {name} αντικαταστάθηκε μετά τον έλεγχο"
+
+msgid "dedup DB ignored: {why} — copying without the cache. Fix:\n      chown {user} {path} && chmod 600 {path}"
+msgstr "η βάση dedup αγνοήθηκε: {why} — η αντιγραφή γίνεται χωρίς την προσωρινή μνήμη. Διόρθωση:\n      chown {user} {path} && chmod 600 {path}"
+
+msgid "Up to date: all {n} files are as blitcp recorded them when it last wrote or compared them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "Ενημερωμένο: και τα {n} αρχεία είναι όπως τα κατέγραψε το blitcp όταν τα έγραψε ή τα σύγκρινε τελευταία φορά (μέγεθος και χρόνοι, και στις δύο πλευρές)· δεν διαβάστηκαν — το --no-cache τα συγκρίνει"
+
+msgid "{n} unchanged as blitcp recorded them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "{n} αμετάβλητα όπως τα κατέγραψε το blitcp (μέγεθος και χρόνοι, και στις δύο πλευρές)· δεν διαβάστηκαν — το --no-cache τα συγκρίνει"
+
+msgid "no manifest — blitcp's records decide: a file they show unchanged on both sides is not read; any other file of the same size is compared with what is there (--no-cache compares every file)"
+msgstr "χωρίς manifest — αποφασίζουν οι καταγραφές του blitcp: ένα αρχείο που δείχνουν αμετάβλητο και στις δύο πλευρές δεν διαβάζεται· κάθε άλλο αρχείο ίδιου μεγέθους συγκρίνεται με ό,τι υπάρχει εκεί (το --no-cache συγκρίνει κάθε αρχείο)"
+
+msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
+msgstr "Απενεργοποίηση των μόνιμων προσωρινών μνημών hash: της βάσης dedup με τις καταγραφές του blitcp και, χωρίς --manifest, της υπογεγραμμένης προσωρινής μνήμης hash του blitcp σε προορισμό SSH ή SMB (.blitcp_manifest.json). Μια επανεκτέλεση τότε διαβάζει και συγκρίνει κάθε αρχείο ίδιου μεγέθους σε τοπικό προορισμό, τα κάνει hash στον κεντρικό υπολογιστή SSH και γράφει ξανά κάθε αρχείο σε κοινόχρηστο SMB. Σε FAT, exFAT, NFS, SMB και FUSE οι καταγραφές αποφασίζουν με βάση το μέγεθος και τον χρόνο τροποποίησης: ένα αρχείο που άλλαξε εκεί με το ίδιο μέγεθος και του επαναφέρθηκε ο χρόνος τροποποίησης εντοπίζεται μόνο με --no-cache."
+
+msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
+msgstr "Ανάγνωση και hash κάθε αρχείου πηγής, ακόμη και όσων το manifest κάθε προορισμού καταγράφει με το ίδιο μέγεθος, χρόνο τροποποίησης και χρόνο αλλαγής (αυτά δεν διαβάζονται χωρίς αυτή την επιλογή). Σε πηγή σε FAT, exFAT, NFS, SMB ή FUSE αποφασίζουν το μέγεθος και ο χρόνος τροποποίησης: ένα αρχείο που άλλαξε εκεί με το ίδιο μέγεθος και του επαναφέρθηκε ο χρόνος τροποποίησης εντοπίζεται μόνο με --verify-source."
+
+msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
+msgstr "Σημείωση: το --relay-spool-mb δεν έχει επίδραση σε αυτή την αντιγραφή: περνά κάθε αρχείο μέσα από το buffer της και δεν αποθηκεύει τίποτα προσωρινά στον δίσκο."
+
+msgid "enabled"
+msgstr "ενεργή"
+
+msgid "disabled (--no-dedup)"
+msgstr "ανενεργή (--no-dedup)"
+
+msgid "{n} files matched"
+msgstr "{n} αρχεία ταιριάζουν"
+
+msgid "Source '{src}' — no matching files or directory found"
+msgstr "Πηγή '{src}' — δεν βρέθηκαν αρχεία ή φάκελος που να ταιριάζουν"
+
+msgid "no remote files matched {pattern!r} in {folder}"
+msgstr "κανένα απομακρυσμένο αρχείο δεν ταιριάζει με {pattern!r} στο {folder}"
+
+msgid "glob characters are only supported in the final path component for remote sources."
+msgstr "Οι χαρακτήρες μπαλαντέρ επιτρέπονται σε απομακρυσμένες πηγές μόνο στο τελευταίο τμήμα της διαδρομής."
+
+msgid "changed after it was found to be a duplicate of {twin}; not linked, and not written — copy it again"
+msgstr "άλλαξε αφού βρέθηκε διπλότυπο του {twin}· δεν συνδέθηκε και δεν γράφτηκε — αντιγράψτε το ξανά"
+
+msgid "Note: {note}"
+msgstr "Σημείωση: {note}"
+
+msgid ""
+"exit codes:\n"
+"  0  everything done\n"
+"  1  the run ran and some files failed (a write to a destination,\n"
+"     a destination that failed mid-run, a file refused or failing\n"
+"     verification)\n"
+"  2  nothing was done: a usage error, a pre-flight failure, a\n"
+"     connection that cannot be made, a host key that cannot be\n"
+"     confirmed\n"
+"  3  only source files could not be read\n"
+msgstr ""
+"κωδικοί εξόδου:\n"
+"  0  όλα ολοκληρώθηκαν\n"
+"  1  η εκτέλεση έγινε και κάποια αρχεία απέτυχαν (εγγραφή σε προορισμό,\n"
+"     προορισμός που απέτυχε στη μέση, αρχείο που απορρίφθηκε ή απέτυχε\n"
+"     στον έλεγχο)\n"
+"  2  δεν έγινε τίποτα: λάθος χρήση, αποτυχία προελέγχου, σύνδεση που\n"
+"     δεν μπορεί να γίνει, κλειδί κεντρικού υπολογιστή που δεν μπορεί να\n"
+"     επιβεβαιωθεί\n"
+"  3  μόνο αρχεία της πηγής δεν μπόρεσαν να διαβαστούν\n"
+
+msgid "{n} file(s) could NOT be read from the source (permission denied / locked); everything else copied OK — exclude or unlock them and re-run."
+msgstr "{n} αρχείο(α) ΔΕΝ μπόρεσαν να διαβαστούν από την πηγή (άρνηση πρόσβασης / κλειδωμένα)· όλα τα υπόλοιπα αντιγράφηκαν σωστά — εξαιρέστε ή ξεκλειδώστε τα και ξανατρέξτε."
+
+msgid "{n} duplicate(s) named by the source host are downloaded too: the host's word is not proof that they match"
+msgstr "{n} διπλότυπα που ονόμασε ο κεντρικός υπολογιστής προέλευσης κατεβαίνουν κι αυτά: ο λόγος του υπολογιστή δεν αποδεικνύει ότι ταιριάζουν"
+
+msgid "{n} file(s) the source host called duplicates differ here: kept as separate copies"
+msgstr "{n} αρχεία που ο κεντρικός υπολογιστής προέλευσης χαρακτήρισε διπλότυπα διαφέρουν εδώ: κρατήθηκαν ως ξεχωριστά αντίγραφα"
+
+msgid "could not compare what is there ({why}): every file is written again, except one dedup finds already in place"
+msgstr "δεν ήταν δυνατή η σύγκριση με ό,τι υπάρχει ({why}): κάθε αρχείο γράφεται ξανά, εκτός από όσα η αποδιπλοποίηση βρίσκει ήδη στη θέση τους"
+
+msgid "{dir} is in a cloud-synced folder: the sync client would upload the dedup database (--dedup-in-sync-folder keeps it there)"
+msgstr "Το {dir} βρίσκεται σε φάκελο που συγχρονίζεται με cloud: ο πελάτης συγχρονισμού θα ανέβαζε τη βάση αποδιπλοποίησης (το --dedup-in-sync-folder την κρατά εκεί)"
+
+msgid "It also keeps blitcp's dedup database in such a folder, which is otherwise not made there."
+msgstr "Κρατά επίσης τη βάση αποδιπλοποίησης του blitcp σε τέτοιο φάκελο, που αλλιώς δεν δημιουργείται εκεί."
+
+msgid "changed after it was read; not written — copy it again"
+msgstr "άλλαξε αφού διαβάστηκε· δεν γράφτηκε — αντιγράψτε το ξανά"
+
+msgid "Stages (wall clock): pre-flight {pre} · copy {copy} · verify {verify} · records and close {close}"
+msgstr "Στάδια (πραγματικός χρόνος): προέλεγχος {pre} · αντιγραφή {copy} · επαλήθευση {verify} · εγγραφές και κλείσιμο {close}"
+
+msgid "no manifest: the xxhash package is not installed (pip install xxhash)"
+msgstr "χωρίς manifest: το πακέτο xxhash δεν είναι εγκατεστημένο (pip install xxhash)"
+
+msgid "Up to date: all {n} files have the same content here as at the source (read on both sides and compared); not written again"
+msgstr "Ενημερωμένο: και τα {n} αρχεία έχουν εδώ το ίδιο περιεχόμενο με την πηγή (διαβάστηκαν και από τις δύο πλευρές και συγκρίθηκαν)· δεν γράφτηκαν ξανά"
+
+msgid "{n} unchanged — the same content here as at the source (read on both sides and compared); not written again"
+msgstr "{n} αμετάβλητα — το ίδιο περιεχόμενο εδώ με την πηγή (διαβάστηκαν και από τις δύο πλευρές και συγκρίθηκαν)· δεν γράφτηκαν ξανά"
+
+msgid "interrupted"
+msgstr "διακόπηκε"
+
+msgid "To retry once there is room: {cmd}"
+msgstr "Για να ξαναδοκιμάσετε όταν υπάρχει χώρος: {cmd}"
+
+msgid "out of file descriptors even for one file at a time ({err})"
+msgstr "εξαντλήθηκαν οι περιγραφείς αρχείων ακόμη και για ένα αρχείο τη φορά ({err})"
+
+msgid "the process ran out of file descriptors ({err})"
+msgstr "η διεργασία εξάντλησε τους περιγραφείς αρχείων ({err})"
+
+msgid "{written} written · {skipped} skipped · {cloned} cloned · {linked} linked within run · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{written} γράφτηκαν · {skipped} παραλείφθηκαν · {cloned} κλωνοποιήθηκαν · {linked} συνδέθηκαν μέσα στην εκτέλεση · {refused} απορρίφθηκαν · {failed} απέτυχαν · {src} μη αναγνώσιμα στην πηγή"
+
+msgid "links only within this destination folder; a new folder is a full copy"
+msgstr "links μόνο μέσα σε αυτόν τον φάκελο προορισμού· ένας νέος φάκελος είναι πλήρες αντίγραφο"
+
+msgid "links anywhere on the drive (--index-existing)"
+msgstr "links οπουδήποτε στον δίσκο (--index-existing)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links — {scope}; every other destination gets a full copy of each file."
+msgstr "Αφαίρεση διπλοτύπων με --dest: σε τοπικό ή SSH προορισμό, τα διπλότυπα αυτής της εκτέλεσης και τα αρχεία που υπάρχουν ήδη εκεί γίνονται links — {scope}· κάθε άλλος προορισμός παίρνει πλήρες αντίγραφο κάθε αρχείου."
+
+msgid "Stages (wall clock): scan source {scan} · scan destination {dest} · compare {compare} · dedup lookup {lookup} · plan {plan} · copy {copy} · verify {verify} · records {close}"
+msgstr "Στάδια (πραγματικός χρόνος): σάρωση πηγής {scan} · σάρωση προορισμού {dest} · σύγκριση {compare} · αναζήτηση διπλοτύπων {lookup} · σχέδιο {plan} · αντιγραφή {copy} · επαλήθευση {verify} · εγγραφές {close}"
+
+msgid "Linked to a copy already here: {n} — the list: {path}"
+msgstr "Συνδέθηκαν με αντίγραφο που ήδη υπάρχει εδώ: {n} — η λίστα: {path}"
+
+msgid "input {input}"
+msgstr "εισαγωγή {input}"
+
+msgid "other destinations {others}"
+msgstr "άλλοι προορισμοί {others}"
+
+msgid "Up to date: all {n} files have the same content here as at the source — the source read for each; here {rec} as this destination's records hold them (not read), {read} read and compared; not written again"
+msgstr "Ενημερωμένο: και τα {n} αρχεία έχουν εδώ το ίδιο περιεχόμενο με την πηγή — η πηγή διαβάστηκε για το καθένα· εδώ {rec} όπως τα καταγράφουν οι εγγραφές αυτού του προορισμού (δεν διαβάστηκαν), {read} διαβάστηκαν και συγκρίθηκαν· δεν γράφτηκαν ξανά"
+
+msgid "could not look at what is there: {why} — nothing written to it"
+msgstr "δεν ήταν δυνατό να εξεταστεί τι υπάρχει εκεί: {why} — δεν γράφτηκε τίποτα εκεί"
+
+msgid "the host could not look at a file there: {why}"
+msgstr "ο υπολογιστής δεν μπόρεσε να εξετάσει ένα αρχείο εκεί: {why}"
+
+msgid "Source"
+msgstr "Πηγή"
+
+msgid "Destination"
+msgstr "Προορισμός"
+
+msgid "Dedup DB"
+msgstr "Dedup DB"
+
+msgid "Hash"
+msgstr "Hash"
+
+msgid "Manifest"
+msgstr "Manifest"
+
+msgid "Write"
+msgstr "Εγγραφή"
+
+msgid "Journal"
+msgstr "Ημερολόγιο"
+
+msgid "Verify"
+msgstr "Επαλήθευση"
+
+msgid "{n} (tables below)"
+msgstr "{n} (πίνακες παρακάτω)"
+
+msgid "manifest {state}"
+msgstr "manifest {state}"
+
+msgid "verify {how}"
+msgstr "επαλήθευση {how}"
+
+msgid "Phase"
+msgstr "Φάση"
+
+msgid "progress"
+msgstr "πρόοδος"
+
+msgid "verified"
+msgstr "επαληθεύτηκε"
+
+msgid "mismatch"
+msgstr "ασυμφωνία"
+
+msgid "Link"
+msgstr "Σύνδεση"
+
+msgid "Files/s"
+msgstr "Αρχεία/s"
+
+msgid "Rate"
+msgstr "Ρυθμός"
+
+msgid "State"
+msgstr "Κατάσταση"
+
+msgid "{n} files/s"
+msgstr "{n} αρχεία/s"
+
+msgid "buffer {pct} % full"
+msgstr "buffer {pct} % γεμάτο"
+
+msgid "waiting on #{n}"
+msgstr "αναμονή για #{n}"
+
+msgid "Reader"
+msgstr "Reader"
+
+msgid "Method"
+msgstr "Μέθοδος"
+
+msgid "Copied"
+msgstr "Αντιγρ."
+
+msgid "Skipped"
+msgstr "Παραλ."
+
+msgid "Cloned"
+msgstr "Κλώνοι"
+
+msgid "Linked"
+msgstr "Δεσμοί"
+
+msgid "Time"
+msgstr "Χρόνος"
+
+msgid "Result"
+msgstr "Αποτέλεσμα"
+
+msgid "{n} FAILED"
+msgstr "{n} ΑΠΕΤΥΧΑΝ"
+
+msgid "Done"
+msgstr "Τέλος"
+
+msgid "{n} written"
+msgstr "{n} γράφτηκαν"
+
+msgid "{n} destinations"
+msgstr "{n} προορισμοί"
+
+msgid "source read once"
+msgstr "η πηγή διαβάστηκε μία φορά"
+
+msgid "none left"
+msgstr "καμία"
+
+msgid "{n} left {dash} see list"
+msgstr "{n} έμειναν {dash} δείτε τη λίστα"
+
+msgid "+{n} records"
+msgstr "+{n} εγγραφές"
+
+msgid "Timings"
+msgstr "Χρόνοι"
+
+msgid "{why} while writing"
+msgstr "{why} κατά την εγγραφή"
+
+msgid "{why} while reading the source"
+msgstr "{why} κατά την ανάγνωση της πηγής"
+
+msgid "(and {n} other errors {dash} see list)"
+msgstr "(και {n} άλλα σφάλματα {dash} δείτε τη λίστα)"
+
+msgid "{n} files on {dest}"
+msgstr "{n} αρχεία στο {dest}"
+
+msgid "1 file on {dest}"
+msgstr "1 αρχείο στο {dest}"
+
+msgid "first"
+msgstr "πρώτο"
+
+msgid "list"
+msgstr "λίστα"
+
+msgid "retry"
+msgstr "επανάληψη"
+
+msgid "partitions of the same {bus} disk ({disk})"
+msgstr "κατατμήσεις του ίδιου δίσκου {bus} ({disk})"
+
+msgid "partitions of the same disk ({disk})"
+msgstr "κατατμήσεις του ίδιου δίσκου ({disk})"
+
+msgid "#{a} and #{b} are {what}. They share one spindle, so each"
+msgstr "Τα #{a} και #{b} είναι {what}. Μοιράζονται έναν δίσκο, άρα το καθένα"
+
+msgid "Note"
+msgstr "Σημ."
+
+msgid "gets about half the speed. To copy them one after the other instead:"
+msgstr "παίρνει περίπου τη μισή ταχύτητα. Για να αντιγραφούν το ένα μετά το άλλο:"
+
+msgid "Verified"
+msgstr "Επαληθ."
+
+msgid "read back device"
+msgstr "ανάγνωση συσκευής"
+
+msgid "read back from device (O_DIRECT)"
+msgstr "ανάγνωση από τη συσκευή (O_DIRECT)"
+
+msgid "device"
+msgstr "συσκευή"
+
+msgid "{n} read back from device"
+msgstr "{n} διαβάστηκαν από τη συσκευή"
+
+msgid "verified from device"
+msgstr "επαληθεύτηκε από τη συσκευή"
+
+msgid "read back (cache)"
+msgstr "ανάγνωση (cache)"
+
+msgid "OS cache"
+msgstr "cache ΛΣ"
+
+msgid "{n} read back through the OS cache"
+msgstr "{n} διαβάστηκαν μέσω της cache του ΛΣ"
+
+msgid "verified through the OS cache"
+msgstr "επαληθεύτηκε μέσω της cache του ΛΣ"
+
+msgid "read back network"
+msgstr "ανάγνωση δικτύου"
+
+msgid "network"
+msgstr "δίκτυο"
+
+msgid "verified over the network"
+msgstr "επαληθεύτηκε μέσω δικτύου"
+
+msgid "remote hash check"
+msgstr "έλεγχος hash απομ."
+
+msgid "remote hash"
+msgstr "απομακρ. hash"
+
+msgid "{n} hash-checked on the remote"
+msgstr "{n} ελέγχθηκαν με hash στον απομακρυσμένο"
+
+msgid "verified by remote hash"
+msgstr "επαληθεύτηκε με απομακρυσμένο hash"
+
+msgid "remote hash sample"
+msgstr "δείγμα απομ. hash"
+
+msgid "remote hash check (random sample)"
+msgstr "έλεγχος απομακρυσμένου hash (τυχαίο δείγμα)"
+
+msgid "remote sample"
+msgstr "απομακρ. δείγμα"
+
+msgid "{n} hash-checked on the remote (sample)"
+msgstr "{n} ελέγχθηκαν με hash στον απομακρυσμένο (δείγμα)"
+
+msgid "a sample verified by remote hash"
+msgstr "δείγμα επαληθεύτηκε με απομακρυσμένο hash"
+
+msgid "store checksum"
+msgstr "checksum αποθήκης"
+
+msgid "the store's own checksum"
+msgstr "το checksum της ίδιας της αποθήκης"
+
+msgid "{n} matched the store's checksum"
+msgstr "{n} ταιριάζουν με το checksum της αποθήκης"
+
+msgid "verified by the store's checksum"
+msgstr "επαληθεύτηκε με το checksum της αποθήκης"
+
+msgid "existence and size only"
+msgstr "μόνο ύπαρξη και μέγεθος"
+
+msgid "{n} present at the right size"
+msgstr "{n} υπάρχουν με το σωστό μέγεθος"
+
+msgid "sizes match, content not compared"
+msgstr "τα μεγέθη ταιριάζουν, το περιεχόμενο δεν συγκρίθηκε"
+
+msgid "Warning"
+msgstr "Προειδ."
+
+msgid "Error"
+msgstr "Σφάλμα"
+
+msgid "{n} sources"
+msgstr "{n} πηγές"
+
+msgid "off"
+msgstr "όχι"
+
+msgid "on"
+msgstr "ναι"
+
+msgid "(xxhash is not installed)"
+msgstr "(το xxhash δεν είναι εγκατεστημένο)"
+
+msgid "(the destination has one)"
+msgstr "(ο προορισμός έχει ήδη)"
+
+msgid "(the store's sidecar)"
+msgstr "(sidecar της αποθήκης)"
+
+msgid "(on with --manifest/--resume)"
+msgstr "(ναι με --manifest/--resume)"
+
+msgid "partial"
+msgstr "partial"
+
+msgid "partial (--partial)"
+msgstr "partial (--partial)"
+
+msgid "partial, renamed into place"
+msgstr "partial, μετονομασία στη θέση του"
+
+msgid "objects"
+msgstr "αντικείμενα"
+
+msgid "whole objects"
+msgstr "ολόκληρα αντικείμενα"
+
+msgid "partial, renamed when complete"
+msgstr "partial, μετονομασία όταν ολοκληρωθεί"
+
+msgid "in-place"
+msgstr "επιτόπου"
+
+msgid "partial only on replace"
+msgstr "partial μόνο σε αντικατάσταση"
+
+msgid "resume"
+msgstr "συνέχιση"
+
+msgid "remote hash, or read back by SFTP"
+msgstr "απομακρ. hash, αλλιώς ανάγνωση με SFTP"
+
+msgid "remote"
+msgstr "απομακρυσμένα"
+
+msgid "this machine's hash cache"
+msgstr "cache hash αυτού του υπολογιστή"
+
+msgid "(with the manifest)"
+msgstr "(μαζί με το manifest)"
+
+msgid "hashed once, at source"
+msgstr "hash μία φορά, στην πηγή"
+
+msgid "stalled"
+msgstr "κόλλησε"
+
+msgid "empty"
+msgstr "άδειος"
+
+msgid "not there yet"
+msgstr "δεν υπάρχει ακόμη"
+
+msgid "{n} existing"
+msgstr "{n} υπάρχουν"
+
+msgid "{n} known"
+msgstr "{n} γνωστά"
+
+msgid "{n} to link"
+msgstr "{n} για σύνδεση"
+
+msgid "{n} to copy"
+msgstr "{n} για αντιγραφή"
+
+msgid "dedup off (--no-dedup)"
+msgstr "dedup όχι (--no-dedup)"
+
+msgid "1 lane"
+msgstr "1 λωρίδα"
+
+msgid "{size} batches"
+msgstr "δέσμες {size}"
+
+msgid "each file through a partial"
+msgstr "κάθε αρχείο μέσω partial"
+
+msgid "1 reader"
+msgstr "1 reader"
+
+msgid "fan-out"
+msgstr "fan-out"
+
+msgid "{n} lanes"
+msgstr "{n} λωρίδες"
+
+msgid "pace = slowest lane"
+msgstr "ρυθμός = η πιο αργή λωρίδα"
+
+msgid "physical order: {n} files mapped"
+msgstr "φυσική σειρά: {n} αρχεία χαρτογραφήθηκαν"
+
+msgid "physical order: skipped (SSD)"
+msgstr "φυσική σειρά: παραλείφθηκε (SSD)"
+
+msgid "physical order: unavailable (the source filesystem gives no offsets)"
+msgstr "φυσική σειρά: μη διαθέσιμη (το σύστημα αρχείων της πηγής δεν δίνει offsets)"
+
+msgid "tar push"
+msgstr "tar push"
+
+msgid "Copy"
+msgstr "Αντιγραφή"
+
+msgid "copied {done} / {total}"
+msgstr "αντιγράφηκαν {done} / {total}"
+
+msgid "ETA {eta}"
+msgstr "ETA {eta}"
+
+msgid "checked {done} / {total}"
+msgstr "ελέγχθηκαν {done} / {total}"
+
+msgid "nothing to copy"
+msgstr "τίποτα για αντιγραφή"
+
+msgid "1 file"
+msgstr "1 αρχείο"
+
+msgid "{n} files"
+msgstr "{n} αρχεία"
+
+msgid "{n} cloned"
+msgstr "{n} κλώνοι"
+
+msgid "all done"
+msgstr "όλα έτοιμα"
+
+msgid "{n} failed on #{idx}"
+msgstr "{n} απέτυχαν στο #{idx}"
+
+msgid "{n} MISMATCH"
+msgstr "{n} ΑΣΥΜΦΩΝΙΑ"
+
+msgid "nothing written"
+msgstr "δεν γράφτηκε τίποτα"
+
+msgid "sizes only"
+msgstr "μόνο μεγέθη"
+
+msgid "all match"
+msgstr "όλα ταιριάζουν"
+
+msgid "nothing to verify (nothing was written)"
+msgstr "τίποτα για επαλήθευση (δεν γράφτηκε τίποτα)"
+
+msgid "the destination failed"
+msgstr "ο προορισμός απέτυχε"
+
+msgid "not verified (--no-verify)"
+msgstr "χωρίς επαλήθευση (--no-verify)"
+
+msgid "not verified: the source changed"
+msgstr "χωρίς επαλήθευση: η πηγή άλλαξε"
+
+msgid "incomplete"
+msgstr "ελλιπές"
+
+msgid "nothing written, nothing to verify"
+msgstr "δεν γράφτηκε τίποτα, τίποτα για επαλήθευση"
+
+msgid "the source"
+msgstr "η πηγή"
+
+msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
+msgstr "υπάρχουν εκεί με άλλο περιεχόμενο, έμειναν ως έχουν (το --overwrite-changed τα αντικαθιστά)"
+
+msgid "hash mismatch after write"
+msgstr "ασυμφωνία hash μετά την εγγραφή"
+
+msgid "scan"
+msgstr "σάρωση"
+
+msgid "plan"
+msgstr "σχέδιο"
+
+msgid "copy"
+msgstr "αντιγραφή"
+
+msgid "sync"
+msgstr "sync"
+
+msgid "records"
+msgstr "εγγραφές"
+
+msgid "input"
+msgstr "είσοδος"
+
+msgid "scan source"
+msgstr "σάρωση πηγής"
+
+msgid "scan destination"
+msgstr "σάρωση προορισμού"
+
+msgid "compare"
+msgstr "σύγκριση"
+
+msgid "dedup lookup"
+msgstr "αναζήτηση dedup"
+
+msgid "other destinations"
+msgstr "άλλοι προορισμοί"
+
+msgid "Stages"
+msgstr "Στάδια"
+
+msgid "one destination"
+msgstr "ένας προορισμός"
+
+msgid "several"
+msgstr "πολλοί"
+
+msgid "no destination given."
+msgstr "δεν δόθηκε προορισμός."
+
+msgid "no source and no destination given."
+msgstr "δεν δόθηκε ούτε πηγή ούτε προορισμός."
+
+msgid "A copy needs a source and at least one destination:"
+msgstr "Μια αντιγραφή θέλει μια πηγή και τουλάχιστον έναν προορισμό:"
+
+msgid "--dest and a positional destination cannot be mixed."
+msgstr "το --dest και ένας προορισμός ως όρισμα θέσης δεν συνδυάζονται."
+
+msgid "You gave --dest {dest} and also {extra}: a second source, or a mistyped destination? Say which:"
+msgstr "Δώσατε --dest {dest} και επίσης {extra}: δεύτερη πηγή ή λάθος γραμμένος προορισμός; Πείτε ποιο:"
+
+msgid "a destination too"
+msgstr "επίσης προορισμός"
+
+msgid "a second source"
+msgstr "δεύτερη πηγή"
+
+msgid "source not found: {src}"
+msgstr "η πηγή δεν βρέθηκε: {src}"
+
+msgid "No matching files or directory found. With your destination, the command is:"
+msgstr "Δεν βρέθηκαν αρχεία ή φάκελος που να ταιριάζουν. Με τον προορισμό σας, η εντολή είναι:"
+
+msgid "the destination {dest} is inside the source {src}."
+msgstr "ο προορισμός {dest} βρίσκεται μέσα στην πηγή {src}."
+
+msgid "the destination {dest} contains the source {src}."
+msgstr "ο προορισμός {dest} περιέχει την πηγή {src}."
+
+msgid "A copy must not land in what it is reading. Give a destination apart from the source:"
+msgstr "Μια αντιγραφή δεν πρέπει να γράφει μέσα σε αυτό που διαβάζει. Δώστε προορισμό εκτός της πηγής:"
+
+msgid "the destination {dest} is given twice."
+msgstr "ο προορισμός {dest} δόθηκε δύο φορές."
+
+msgid "Each destination is one copy; give it once:"
+msgstr "Κάθε προορισμός είναι ένα αντίγραφο· δώστε τον μία φορά:"
+
+msgid "Scan source"
+msgstr "Σάρωση πηγής"
+
+msgid "listing"
+msgstr "καταγραφή"
+
+msgid "{n} dirs"
+msgstr "{n} φάκελοι"
+
+msgid "{n} unreadable"
+msgstr "{n} μη αναγνώσιμα"
+
+msgid "Scan destination"
+msgstr "Σάρωση προορ."
+
+msgid "Scan destinations"
+msgstr "Σάρωση προορ."
+
+msgid "looking"
+msgstr "έλεγχος"
+
+msgid "Dedup lookup"
+msgstr "Αναζήτ. dedup"
+
+msgid "looking up"
+msgstr "αναζήτηση"
+
+msgid "Dedup DB: {path}"
+msgstr "Dedup DB: {path}"
+
+msgid "Plan"
+msgstr "Σχέδιο"
+
+msgid "syncing the destination and writing the records"
+msgstr "συγχρονισμός προορισμού και εγγραφή αρχείων καταγραφής"
+
+msgid "No bars and no redrawing: each phase as one line when it has finished, as when the output is not a terminal."
+msgstr "Χωρίς μπάρες και χωρίς επανασχεδίαση: κάθε φάση σε μία γραμμή όταν τελειώσει, όπως όταν η έξοδος δεν είναι τερματικό."
+
+msgid "1 destination FAILED"
+msgstr "1 προορισμός ΑΠΕΤΥΧΕ"
+
+msgid "{n} destinations FAILED"
+msgstr "{n} προορισμοί ΑΠΕΤΥΧΑΝ"
+
+msgid "{dest} failed: {why}"
+msgstr "το {dest} απέτυχε: {why}"
+
+msgid "{n} files not written"
+msgstr "{n} αρχεία δεν γράφτηκαν"
+
+msgid "nothing to verify"
+msgstr "τίποτα για επαλήθευση"
+
+msgid "read back"
+msgstr "ανάγνωση ελέγχου"
+
+msgid "links anywhere on the drive"
+msgstr "σύνδεσμοι οπουδήποτε στον δίσκο"
+
+msgid "links within this folder only"
+msgstr "σύνδεσμοι μόνο μέσα σε αυτόν τον φάκελο"
+
+msgid "{n} files not written or not verified"
+msgstr "{n} αρχεία δεν γράφτηκαν ή δεν επαληθεύτηκαν"
+
+msgid "Dedup"
+msgstr "Dedup"
+
+msgid "no DB {dash} {why}"
+msgstr "χωρίς DB {dash} {why}"
+
+msgid "kept for local and SSH destinations only"
+msgstr "τηρείται μόνο για τοπικούς και SSH προορισμούς"
+
+msgid "links anywhere on this drive"
+msgstr "σύνδεσμοι οπουδήποτε σε αυτόν τον δίσκο"
+
+msgid "Written"
+msgstr "Γράφτ."
+
+msgid "written"
+msgstr "γράφτηκαν"
+
+msgid "written {done} / {total}"
+msgstr "γράφτηκαν {done} / {total}"
+
+msgid "{n} of {total} files are not at this destination"
+msgstr "{n} από {total} αρχεία δεν βρίσκονται σε αυτόν τον προορισμό"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "All {n} files are already up to date."
+msgstr "Όλα τα {n} αρχεία είναι ήδη ενημερωμένα."
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out before the copy"
+msgstr "παραλείφθηκε πριν από την αντιγραφή"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out — nothing is written there"
+msgstr "παραλείφθηκε — τίποτα δεν γράφεται εκεί"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{a} and {b} are one folder, or one holds the other"
+msgstr "{a} και {b} είναι ένας φάκελος, ή ο ένας περιέχει τον άλλον"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{d} is the source, inside it, or holds it"
+msgstr "{d} είναι η πηγή, βρίσκεται μέσα της ή την περιέχει"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{opt} takes one destination for now"
+msgstr "Το {opt} δέχεται προς το παρόν έναν προορισμό"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "Warning:"
+msgstr "Προειδοποίηση:"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{dests} are on one filesystem: together they need {need}, it has {free} free"
+msgstr "Τα {dests} βρίσκονται στο ίδιο σύστημα αρχείων: μαζί χρειάζονται {need}, έχει {free} ελεύθερα"
+
+msgid "stalled: no answer for {n} s — dropped"
+msgstr "κόλλησε: καμία απάντηση για {n} δ — εγκαταλείφθηκε"
+
+msgid "stalled after the copy: no answer for {n} s"
+msgstr "κόλλησε μετά την αντιγραφή: καμία απάντηση για {n} δ"
+
+msgid "stalled during verification: no answer for {n} s"
+msgstr "κόλλησε στον έλεγχο: καμία απάντηση για {n} δ"
+
+msgid "dropped; what it holds is not verified"
+msgstr "εγκαταλείφθηκε· τα περιεχόμενά του δεν ελέγχθηκαν"
+
+msgid "stalled: no answer for {n} s"
+msgstr "κόλλησε: καμία απάντηση για {n} δ"
+
+msgid "stalled during the copy: no answer for {n} s"
+msgstr "κόλλησε κατά την αντιγραφή: καμία απάντηση για {n} δ"
+
+msgid "half-written:"
+msgstr "μισογραμμένα:"
+
+msgid "not checked"
+msgstr "δεν ελέγχθηκε"
+
+msgid "{opt} does not apply to several local or SSH destinations"
+msgstr "Το {opt} δεν ισχύει για πολλούς τοπικούς ή SSH προορισμούς"
+
+msgid "could not be checked against the sources ({err}); nothing was written there"
+msgstr "δεν ήταν δυνατός ο έλεγχος έναντι των πηγών ({err}); δεν γράφτηκε τίποτα εκεί"
+
+msgid "the host offers none"
+msgstr "ο υπολογιστής δεν προσφέρει"
+
+msgid "no SFTP ({how}) — with several destinations an SSH destination needs SFTP; copy to it on its own"
+msgstr "χωρίς SFTP ({how}) — με πολλούς προορισμούς ένας προορισμός SSH χρειάζεται SFTP· αντιγράψτε σε αυτόν μόνο του"
+
+msgid "no SFTP and no tar there ({how}) — nothing can write to it"
+msgstr "ούτε SFTP ούτε tar εκεί ({how}) — τίποτε δεν μπορεί να γράψει σε αυτόν"
+
+msgid "copied, not verified: {why}"
+msgstr "αντιγράφηκε, δεν επαληθεύτηκε: {why}"
+
+msgid "copied, not verified"
+msgstr "αντιγράφηκε, δεν επαληθεύτηκε"
+
+#: blitcp.py (×N --use-sudo)
+msgid "{src}: with several destinations, --use-sudo takes a local source"
+msgstr "{src}: με πολλούς προορισμούς, το --use-sudo δέχεται τοπική πηγή"
+
+msgid "{opt} does not take --use-sudo with several destinations"
+msgstr "Το {opt} δεν συνδυάζεται με το --use-sudo σε πολλούς προορισμούς"
+
+msgid "an SMB or cloud destination does not take --use-sudo"
+msgstr "ένας προορισμός SMB ή cloud δεν δέχεται το --use-sudo"
+
+msgid "an SSH destination or a saved connection does not take --use-sudo yet — copy to it without --use-sudo"
+msgstr "ένας προορισμός SSH ή μια αποθηκευμένη σύνδεση δεν δέχεται ακόμα το --use-sudo — αντιγράψτε εκεί χωρίς --use-sudo"
+
+msgid "{mnt} is not mounted — mount it, or name another destination"
+msgstr "Το {mnt} δεν είναι προσαρτημένο — προσαρτήστε το ή δώστε άλλον προορισμό"
+
+#: blitcp.py (the fan-out's options, gone)
+msgid "{opt} is not available in this version"
+msgstr "Το {opt} δεν είναι διαθέσιμο σε αυτή την έκδοση"
+
+msgid "{opt} goes with several destinations"
+msgstr "Το {opt} ισχύει μόνο με πολλούς προορισμούς"
+
+#: blitcp.py (several destinations: the fan-out's shapes)
+msgid "{src}: several destinations take a local source"
+msgstr "{src}: οι πολλοί προορισμοί θέλουν τοπική πηγή"
+
+msgid "a bare name — write it as NAME:folder/ for a saved connection, or ./{name} for a folder here"
+msgstr "σκέτο όνομα — γράψτε NAME:φάκελος/ για αποθηκευμένη σύνδεση ή ./{name} για φάκελο εδώ"
+
+#: blitcp_gui.py (several destinations: a verdict without a count)
+msgid "Verification failed"
+msgstr "Η επαλήθευση απέτυχε"
+
+#: blitcp.py (--manifest on the 4.2.15 engine)
+msgid "--manifest takes a local source, xxh128 hashes and verification"
+msgstr "Το --manifest θέλει τοπική πηγή, hash xxh128 και επαλήθευση"
+
+msgid "manifest {name}"
+msgstr "manifest {name}"
+
+msgid "no manifest: its verification did not pass"
+msgstr "χωρίς manifest: η επαλήθευσή του δεν πέτυχε"
+
+msgid "no manifest: nothing new to record"
+msgstr "χωρίς manifest: τίποτα νέο για καταγραφή"
+
+msgid "{n} files are not in its manifest: this run has no xxh128 of them"
+msgstr "{n} αρχεία δεν είναι στο manifest του: αυτή η εκτέλεση δεν έχει xxh128 τους"
+
+#: blitcp.py (--manifest: files it does not hold)
+msgid "manifest incomplete: {n} files"
+msgstr "ελλιπές manifest: {n} αρχεία"
+
+#: blitcp.py (several destinations: a kind they do not take)
+msgid "not a destination several destinations take — a local folder, user@host:/path, smb://, s3://, az:// or gs://"
+msgstr "δεν είναι προορισμός που δέχονται οι πολλαπλοί προορισμοί — τοπικός φάκελος, user@host:/διαδρομή, smb://, s3://, az:// ή gs://"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "{why} — not written"
+msgstr "{why} — δεν γράφτηκε"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "the destination folder is not the one this run started with"
+msgstr "ο φάκελος προορισμού δεν είναι αυτός με τον οποίο ξεκίνησε αυτή η εκτέλεση"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not a name under the destination"
+msgstr "δεν είναι όνομα κάτω από τον προορισμό"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "a folder on the way resolves outside the destination"
+msgstr "ένας φάκελος στη διαδρομή οδηγεί έξω από τον προορισμό"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "this destination folder is inside a source folder (the same folder on disk)"
+msgstr "αυτός ο φάκελος προορισμού βρίσκεται μέσα σε φάκελο προέλευσης (ο ίδιος φάκελος στον δίσκο)"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "could not be reached from the destination root"
+msgstr "δεν ήταν προσβάσιμο από τη ρίζα του προορισμού"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not the file the scan found (it, or a folder on the way, changed since) — not read"
+msgstr "δεν είναι το αρχείο που βρήκε η σάρωση (το ίδιο ή ένας φάκελος στη διαδρομή άλλαξε από τότε) — δεν διαβάστηκε"
+msgid "1–{n} one destination"
+msgstr "1–{n} ένας προορισμός"
+
+msgid "BLITCP_UI={val} is not lines, dashboard or quiet — ignored"
+msgstr "Το BLITCP_UI={val} δεν είναι lines, dashboard ή quiet — αγνοείται"
+
+msgid "DEDUP"
+msgstr "ΑΠΟΔΙΠΛ"
+
+msgid "DESTINATIONS"
+msgstr "ΠΡΟΟΡΙΣΜΟΙ"
+
+msgid "DETAILS"
+msgstr "ΛΕΠΤΟΜΕΡΕΙΕΣ"
+
+msgid "Deduplication"
+msgstr "Αποδιπλασιασμός"
+
+msgid "Disk layout"
+msgstr "Διάταξη δίσκου"
+
+msgid "FROM"
+msgstr "ΑΠΟ"
+
+msgid "HASH"
+msgstr "HASH"
+
+msgid "How a copy is shown: lines (the default) or dashboard (full screen, a terminal of at least 100 × 24). Also [ui] mode in ~/.config/blitcp/config.toml or BLITCP_UI; -q always wins."
+msgstr "Πώς φαίνεται μια αντιγραφή: lines (προεπιλογή) ή dashboard (πλήρης οθόνη, τερματικό τουλάχιστον 100 × 24). Επίσης [ui] mode στο ~/.config/blitcp/config.toml ή BLITCP_UI· το -q υπερισχύει πάντα."
+
+msgid "Incremental"
+msgstr "Έλεγχος αλλαγών"
+
+msgid "Index existing"
+msgstr "Ευρετήριο υπαρχόντων"
+
+msgid "NOTES"
+msgstr "ΣΗΜΕΙΩΣΕΙΣ"
+
+msgid "Notes"
+msgstr "Σημειώσεις"
+
+msgid "PHASES"
+msgstr "ΦΑΣΕΙΣ"
+
+msgid "READ RATE, last 5 min"
+msgstr "ΡΥΘΜΟΣ ΑΝΑΓΝΩΣΗΣ, τελ. 5 λεπτά"
+
+msgid "Source and {tag}destination are on the same disk ({disk}): reads and writes take turns."
+msgstr "Η πηγή και ο {tag}προορισμός είναι στον ίδιο δίσκο ({disk}): αναγνώσεις και εγγραφές εναλλάσσονται."
+
+msgid "Source and {tag}destinations are on the same disk ({disk}): reads and writes take turns."
+msgstr "Η πηγή και οι {tag}προορισμοί είναι στον ίδιο δίσκο ({disk}): αναγνώσεις και εγγραφές εναλλάσσονται."
+
+msgid "Source on a {dev}: files are read in their order on the disk."
+msgstr "Πηγή σε {dev}: τα αρχεία διαβάζονται με τη σειρά τους στον δίσκο."
+
+msgid "Source on a {dev}: read order does not matter."
+msgstr "Πηγή σε {dev}: η σειρά ανάγνωσης δεν έχει σημασία."
+
+msgid "Space check"
+msgstr "Έλεγχος χώρου"
+
+msgid "Stopped"
+msgstr "Σταμάτησε"
+
+msgid "Stopping safely: the file in progress finishes, the destination is synced, then blitcp exits."
+msgstr "Ασφαλής διακοπή: το τρέχον αρχείο ολοκληρώνεται, ο προορισμός συγχρονίζεται και το blitcp τερματίζει."
+
+msgid "Syncing the destination…"
+msgstr "Συγχρονισμός προορισμού…"
+
+msgid "TO"
+msgstr "ΠΡΟΣ"
+
+msgid "The dashboard without colours (as NO_COLOR)."
+msgstr "Το dashboard χωρίς χρώματα (όπως το NO_COLOR)."
+
+msgid "all the time"
+msgstr "συνεχώς"
+
+msgid "{pct} % of the time"
+msgstr "το {pct} % του χρόνου"
+
+msgid "(a rested HDD: 5–15 ms)"
+msgstr "(ένας ξεκούραστος HDD: 5–15 ms)"
+
+msgid "(a rested SATA SSD: under 1 ms)"
+msgstr "(ένας ξεκούραστος SATA SSD: κάτω από 1 ms)"
+
+msgid "(a rested NVMe drive: under 0.2 ms)"
+msgstr "(ένας ξεκούραστος δίσκος NVMe: κάτω από 0,2 ms)"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "Ο δίσκος πηγής{dev} είναι το όριο: είναι απασχολημένος {busy} και κάθε ανάγνωση περιμένει ~{ms} ms{ref}."
+
+msgid "The source disk{dev} is the limit: it is busy {busy}."
+msgstr "Ο δίσκος πηγής{dev} είναι το όριο: είναι απασχολημένος {busy}."
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else reading from it would help."
+msgstr "Το blitcp τον περιμένει· θα βοηθούσε ένας ταχύτερος δίσκος, ένας ξεκούραστος ή να μη διαβάζει τίποτε άλλο από αυτόν."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "Ο {tag}δίσκος προορισμού{dev} είναι το όριο: είναι απασχολημένος {busy} και κάθε εγγραφή περιμένει ~{ms} ms{ref}."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy}."
+msgstr "Ο {tag}δίσκος προορισμού{dev} είναι το όριο: είναι απασχολημένος {busy}."
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else writing to it would help."
+msgstr "Το blitcp τον περιμένει· θα βοηθούσε ένας ταχύτερος δίσκος, ένας ξεκούραστος ή να μη γράφει τίποτε άλλο σε αυτόν."
+
+msgid "The network is the limit: it carries {pct} % of what its {mbps} Mb/s link can. blitcp is waiting for it; a faster link, or nothing else using it, would help."
+msgstr "Το δίκτυο είναι το όριο: μεταφέρει το {pct} % όσων αντέχει η σύνδεσή του των {mbps} Mb/s. Το blitcp το περιμένει· θα βοηθούσε μια ταχύτερη σύνδεση ή να μην τη χρησιμοποιεί τίποτε άλλο."
+
+msgid "blitcp's CPU is the limit: it keeps one core busy all the time, while the disks and the network have room to spare. A faster CPU would help."
+msgstr "Η CPU είναι το όριο του blitcp: κρατά έναν πυρήνα συνεχώς απασχολημένο, ενώ οι δίσκοι και το δίκτυο έχουν περιθώριο. Θα βοηθούσε μια ταχύτερη CPU."
+
+msgid "The network was the limit for {pct} % of the run."
+msgstr "Το δίκτυο ήταν το όριο για το {pct} % της εκτέλεσης."
+
+msgid "The source disk was the limit for {pct} % of the run."
+msgstr "Ο δίσκος πηγής ήταν το όριο για το {pct} % της εκτέλεσης."
+
+msgid "The {tag}destination disk was the limit for {pct} % of the run."
+msgstr "Ο {tag}δίσκος προορισμού ήταν το όριο για το {pct} % της εκτέλεσης."
+
+msgid "Total"
+msgstr "Σύνολο"
+
+msgid "VERIFY"
+msgstr "ΕΛΕΓΧΟΣ"
+
+msgid "WHAT LIMITS THE SPEED"
+msgstr "ΤΙ ΠΕΡΙΟΡΙΖΕΙ ΤΗΝ ΤΑΧΥΤΗΤΑ"
+
+msgid "WRITE"
+msgstr "ΕΓΓΡΑΦΗ"
+
+msgid "WRITE RATE, last 5 min"
+msgstr "ΡΥΘΜΟΣ ΕΓΓΡΑΦΗΣ, τελ. 5 λεπτά"
+
+msgid "before the copy began; nothing was written"
+msgstr "πριν ξεκινήσει η αντιγραφή· δεν γράφτηκε τίποτα"
+
+msgid "blitcp's CPU was the limit for {pct} % of the run."
+msgstr "Η CPU του blitcp ήταν το όριο για το {pct} % της εκτέλεσης."
+
+msgid "blitcp: the terminal is {c} × {r}; the dashboard needs 100 × 24. The copy goes on."
+msgstr "blitcp: το τερματικό είναι {c} × {r}· το dashboard θέλει 100 × 24. Η αντιγραφή συνεχίζεται."
+
+msgid "busy %  wait ms  read/s     write/s    r/s     w/s"
+msgstr "φόρτ %  αναμ ms  ανάγν/s    εγγρ/s     r/s     w/s"
+
+msgid "cpu"
+msgstr "cpu"
+
+msgid "dashboard: {err}"
+msgstr "dashboard: {err}"
+
+msgid "dest"
+msgstr "προορ"
+
+msgid "engine"
+msgstr "μηχανή"
+
+msgid "error — see notes"
+msgstr "σφάλμα — δες σημειώσεις"
+
+msgid "g graph"
+msgstr "g γράφημα"
+
+msgid "half-written: {name} ({done} of {total})"
+msgstr "μισογραμμένο: {name} ({done} από {total})"
+
+msgid "in place"
+msgstr "επί τόπου"
+
+msgid "index"
+msgstr "ευρετ"
+
+msgid "layout"
+msgstr "διάταξη"
+
+msgid "limit: "
+msgstr "όριο: "
+
+msgid "limit: blitcp"
+msgstr "όριο: blitcp"
+
+msgid "n notes"
+msgstr "n σημειώσεις"
+
+msgid "net"
+msgstr "δίκτυο"
+
+msgid "no disk statistics"
+msgstr "χωρίς στατιστικά δίσκου"
+
+msgid "not verified"
+msgstr "δεν ελέγχθηκε"
+
+msgid "nothing half-written"
+msgstr "τίποτα μισογραμμένο"
+
+msgid "now"
+msgstr "τώρα"
+
+msgid "now {rate}"
+msgstr "τώρα {rate}"
+
+msgid "of one core"
+msgstr "ενός πυρήνα"
+
+msgid "one core busy ◀"
+msgstr "ένας πυρήνας γεμάτος ◀"
+
+msgid "over SSH"
+msgstr "μέσω SSH"
+
+msgid "q stop safely"
+msgstr "q ασφαλής διακοπή"
+
+msgid "rate"
+msgstr "ρυθμός"
+
+msgid "send {tx} · receive {rx} · link {mbps}"
+msgstr "αποστολή {tx} · λήψη {rx} · σύνδεση {mbps}"
+
+msgid "source"
+msgstr "πηγή"
+
+msgid "source files skipped"
+msgstr "αρχεία πηγής παραλείφθηκαν"
+
+msgid "space"
+msgstr "χώρος"
+
+msgid "state"
+msgstr "κατάσταση"
+
+msgid "to continue: {cmd}"
+msgstr "για συνέχεια: {cmd}"
+
+msgid "v back"
+msgstr "v πίσω"
+
+msgid "v details"
+msgstr "v λεπτομέρειες"
+
+msgid "verification FAILED"
+msgstr "ο έλεγχος ΑΠΕΤΥΧΕ"
+
+msgid "verified from disk"
+msgstr "ελέγχθηκε από τον δίσκο"
+
+msgid "waits for [{k}]"
+msgstr "περιμένει το [{k}]"
+
+msgid "writing"
+msgstr "γράφει"
+
+msgid "{c} copied · {s} skipped · {l} linked · {f} failed"
+msgstr "{c} αντιγράφηκαν · {s} παραλείφθηκαν · {l} συνδέθηκαν · {f} απέτυχαν"
+
+msgid "{f} of {t} files copied · {b}"
+msgstr "{f} από {t} αρχεία αντιγράφηκαν · {b}"
+
+msgid "{ms} ms/read ◀"
+msgstr "{ms} ms/ανάγνωση ◀"
+
+msgid "{ms} ms/write ◀"
+msgstr "{ms} ms/εγγραφή ◀"
+
+msgid "{n} destinations · {ok} done · {bad} failed"
+msgstr "{n} προορισμοί · {ok} ολοκληρώθηκαν · {bad} απέτυχαν"
+
+msgid "{n} duplicates"
+msgstr "{n} διπλότυπα"
+
+msgid "{path}: cannot be read ({why}) — ignored"
+msgstr "{path}: δεν διαβάζεται ({why}) — αγνοείται"
+
+msgid "{path}: not valid TOML ({why}) — ignored"
+msgstr "{path}: μη έγκυρο TOML ({why}) — αγνοείται"
+
+msgid "{path}: this Python cannot read TOML — ignored"
+msgstr "{path}: αυτή η Python δεν διαβάζει TOML — αγνοείται"
+
+msgid "{path}: ui.{key} = {val!r} is not allowed — ignored"
+msgstr "{path}: το ui.{key} = {val!r} δεν επιτρέπεται — αγνοείται"
+
+msgid "{path}: unknown key '{key}' — ignored"
+msgstr "{path}: άγνωστο κλειδί '{key}' — αγνοείται"
+
+msgid "left out"
+msgstr "εκτός"
+
+msgid "dropped — see notes"
+msgstr "εγκαταλείφθηκε — δείτε τις σημειώσεις"
+
+msgid "stalled — see notes"
+msgstr "κόλλησε — δείτε τις σημειώσεις"
+
+msgid "{pct} % of {mbps} Mb/s"
+msgstr "{pct} % από {mbps} Mb/s"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "Ο δίσκος πηγής{dev} είναι το όριο: είναι απασχολημένος {busy} και κάθε εγγραφή περιμένει ~{ms} ms{ref}."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "Ο {tag}δίσκος προορισμού{dev} είναι το όριο: είναι απασχολημένος {busy} και κάθε ανάγνωση περιμένει ~{ms} ms{ref}."
+
+msgid "{rate} · {f} / {t} files"
+msgstr "{rate} · {f} / {t} αρχεία"
+
+msgid "↑↓ notes"
+msgstr "↑↓ σημειώσεις"
+
+msgid "◀ limit: cpu"
+msgstr "◀ όριο: cpu"
+
+msgid "◀ limit: disk {pct} %"
+msgstr "◀ όριο: δίσκος {pct} %"
+
+msgid "◀ limit: network {mbps} Mb/s"
+msgstr "◀ όριο: δίκτυο {mbps} Mb/s"
+
+msgid "The small files finish first; no large file is started."
+msgstr "Τα μικρά αρχεία ολοκληρώνονται πρώτα· κανένα μεγάλο αρχείο δεν ξεκινά."
+
+msgid "Stopped: the copied files get their links, folders, records and sync…"
+msgstr "Σταμάτησε: τα αντιγραμμένα αρχεία παίρνουν συνδέσμους, φακέλους, εγγραφές και συγχρονισμό…"
+
+msgid "Stopping safely: the files in progress finish, what was copied gets its links, folders, records and sync, then blitcp exits."
+msgstr "Ασφαλής διακοπή: τα τρέχοντα αρχεία ολοκληρώνονται, ό,τι αντιγράφηκε παίρνει συνδέσμους, φακέλους, εγγραφές και συγχρονισμό, και το blitcp τερματίζει."
+
+msgid "size checked"
+msgstr "ελέγχθηκε το μέγεθος"
+
+
+msgid "owner {owner}, mode {mode}"
+msgstr "ιδιοκτήτης {owner}, δικαιώματα {mode}"
+
+msgid "local folder {path}"
+msgstr "τοπικός φάκελος {path}"
+
+msgid "{where}, folder {path}"
+msgstr "{where}, φάκελος {path}"
+
+msgid "shares there: {names}"
+msgstr "κοινόχρηστοι φάκελοι εκεί: {names}"
+
+msgid "SMB share {share} on {host}, folder {path}"
+msgstr "κοινόχρηστος φάκελος SMB {share} στο {host}, φάκελος {path}"
+
+msgid "{scheme} bucket {bucket}, prefix {prefix} (listed, nothing written)"
+msgstr "{scheme} bucket {bucket}, πρόθεμα {prefix} (λίστα, τίποτα δεν γράφτηκε)"
+
+msgid "no answer from {host} in {n} s: is it on, reachable, firewalled?"
+msgstr "καμία απάντηση από το {host} σε {n} s: είναι ανοιχτό, προσβάσιμο, πίσω από τείχος προστασίας;"
+
+msgid "folder not writable: {folder} ({detail}) — give {user} write access, or choose another folder"
+msgstr "ο φάκελος δεν είναι εγγράψιμος: {folder} ({detail}) — δώστε στον {user} δικαίωμα εγγραφής ή επιλέξτε άλλο φάκελο"
+
+msgid "cannot connect to {host}: {err}"
+msgstr "δεν είναι δυνατή η σύνδεση στο {host}: {err}"
+
+msgid "the host key could not be confirmed"
+msgstr "το κλειδί του διακομιστή δεν επιβεβαιώθηκε"
+
+msgid "cannot list {where}: {err}"
+msgstr "δεν είναι δυνατή η λίστα του {where}: {err}"
+
+msgid "OK — connected, folder writable: {what}"
+msgstr "OK — συνδέθηκε, ο φάκελος είναι εγγράψιμος: {what}"
+
+msgid "OK — connected, bucket listed: {what}"
+msgstr "OK — συνδέθηκε, το bucket διαβάστηκε: {what}"
+
+msgid "connection {name!r} has no valid type"
+msgstr "η σύνδεση {name!r} δεν έχει έγκυρο τύπο"
+
+msgid "{path} is not a folder"
+msgstr "το {path} δεν είναι φάκελος"
+
+msgid "{host} does not accept {proto} on port {port} — check the port"
+msgstr "το {host} δεν δέχεται {proto} στη θύρα {port} — ελέγξτε τη θύρα"
+
+msgid "cannot find host {host}: check its name"
+msgstr "δεν βρέθηκε ο διακομιστής {host}: ελέγξτε το όνομα"
+
+msgid "its shares could not be listed: {err}"
+msgstr "οι κοινόχρηστοι φάκελοί του δεν μπόρεσαν να εμφανιστούν: {err}"
+
+msgid "the share {share} is a path — a share is a name, not a path: set the share to {head} and put {rest} in the path"
+msgstr "ο κοινόχρηστος φάκελος {share} είναι διαδρομή — ένας κοινόχρηστος φάκελος είναι όνομα, όχι διαδρομή: ορίστε ως κοινόχρηστο το {head} και βάλτε το {rest} στη διαδρομή"
+
+msgid "share {share} not found on {host}; {shares}. If it is a folder, put it in the path"
+msgstr "ο κοινόχρηστος φάκελος {share} δεν βρέθηκε στο {host}· {shares}. Αν είναι φάκελος, βάλτε τον στη διαδρομή"
+
+msgid "{who} refused the login (user {user}). Set the user and password in this connection"
+msgstr "το {who} απέρριψε τη σύνδεση (χρήστης {user}). Ορίστε χρήστη και κωδικό σε αυτή τη σύνδεση"
+
+msgid "bucket {bucket} not found — check its name, and the region or account of this connection"
+msgstr "το bucket {bucket} δεν βρέθηκε — ελέγξτε το όνομα και την περιοχή ή τον λογαριασμό αυτής της σύνδεσης"
+
+msgid "access denied to bucket {bucket} — check the keys of this connection and what they may read"
+msgstr "άρνηση πρόσβασης στο bucket {bucket} — ελέγξτε τα κλειδιά αυτής της σύνδεσης και τι επιτρέπεται να διαβάζουν"
+
+msgid "the endpoint {endpoint} does not answer as a storage service — check the endpoint URL"
+msgstr "το endpoint {endpoint} δεν απαντά ως υπηρεσία αποθήκευσης — ελέγξτε το URL του endpoint"
+
+msgid "this connection has no host"
+msgstr "αυτή η σύνδεση δεν έχει διακομιστή"
+
+msgid "access denied"
+msgstr "άρνηση πρόσβασης"
+
+msgid "cannot check {dest}: {err}"
+msgstr "δεν είναι δυνατός ο έλεγχος του {dest}: {err}"
+
+msgid "this connection has no share; {shares}"
+msgstr "αυτή η σύνδεση δεν έχει κοινόχρηστο φάκελο· {shares}"
+
+msgid "this connection has no default bucket: test it as {name}:BUCKET in a run, or set one with: blitcp creds edit {name}"
+msgstr "αυτή η σύνδεση δεν έχει προεπιλεγμένο bucket: δοκιμάστε την ως {name}:BUCKET σε μια εκτέλεση ή ορίστε ένα με: blitcp creds edit {name}"
+
+msgid "Password for {who}: "
+msgstr "Κωδικός για {who}: "
+
+msgid "the host key of {host} is not known yet (SHA256:{fp}) — connect once from a terminal to confirm it, or add it to {path}"
+msgstr "το κλειδί του {host} δεν είναι ακόμη γνωστό (SHA256:{fp}) — συνδεθείτε μία φορά από τερματικό για να το επιβεβαιώσετε ή προσθέστε το στο {path}"
+
+msgid "{host} has no SFTP, and this connection is SFTP only"
+msgstr "το {host} δεν έχει SFTP, και αυτή η σύνδεση είναι μόνο SFTP"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection"
+msgstr "το {who} απέρριψε τη σύνδεση. Δοκιμάστηκαν: {tried}. Ορίστε κωδικό ή κλειδί σε αυτή τη σύνδεση"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection, or give --ssh-key / --ssh-password-env"
+msgstr "το {who} απέρριψε τη σύνδεση. Δοκιμάστηκαν: {tried}. Ορίστε κωδικό ή κλειδί σε αυτή τη σύνδεση, ή δώστε --ssh-key / --ssh-password-env"
+
+msgid "cannot be tested without the engine"
+msgstr "δεν μπορεί να ελεγχθεί χωρίς τη μηχανή"
+
+msgid "test failed"
+msgstr "ο έλεγχος απέτυχε"
+
+msgid "SSH {who} port {port}"
+msgstr "SSH {who} θύρα {port}"
+
+msgid "dashboard closed ({err}); the copy goes on below"
+msgstr "ο πίνακας έκλεισε ({err})· η αντιγραφή συνεχίζεται παρακάτω"
+
+msgid "dashboard: that view could not be drawn ({err}); back to the main view"
+msgstr "πίνακας: αυτή η προβολή δεν σχεδιάστηκε ({err})· επιστροφή στην κύρια προβολή"
+
+msgid "the endpoint {endpoint} is not a valid URL — check the endpoint URL (for example https://host:port)"
+msgstr "το endpoint {endpoint} δεν είναι έγκυρο URL — ελέγξτε το URL του endpoint (για παράδειγμα https://host:port)"
+
+msgid "Warning: could not read the cookies in {src} for {host} ({why}) — downloading without them"
+msgstr "Προειδοποίηση: δεν ήταν δυνατή η ανάγνωση των cookies στο {src} για το {host} ({why}) — λήψη χωρίς αυτά"
+
+msgid "no such file"
+msgstr "δεν υπάρχει τέτοιο αρχείο"
+
+msgid "not a cookies.txt file: {err}"
+msgstr "δεν είναι αρχείο cookies.txt: {err}"
+
+msgid "this build cannot read a browser's session; export the browser's cookies to a cookies.txt and use --cookies FILE"
+msgstr "αυτή η έκδοση δεν διαβάζει συνεδρία φυλλομετρητή· εξαγάγετε τα cookies του φυλλομετρητή σε cookies.txt και χρησιμοποιήστε --cookies FILE"
+
+msgid "browser_cookie3 is not installed: python -m pip install browser-cookie3"
+msgstr "το browser_cookie3 δεν είναι εγκατεστημένο: python -m pip install browser-cookie3"
+
+msgid "this build cannot read {src}"
+msgstr "αυτή η έκδοση δεν διαβάζει το {src}"
+
+msgid "this site needs sign-in: open it in {browser} and sign in, or set cookies"
+msgstr "αυτός ο ιστότοπος θέλει σύνδεση: ανοίξτε τον στο {browser} και συνδεθείτε, ή ορίστε cookies"
+
+msgid "this site needs sign-in: open it in your browser and sign in, then choose it as the live session, or set cookies (--cookies FILE / --cookies-from-browser NAME)"
+msgstr "αυτός ο ιστότοπος θέλει σύνδεση: ανοίξτε τον στον φυλλομετρητή σας, συνδεθείτε και επιλέξτε τον ως ζωντανή συνεδρία, ή ορίστε cookies (--cookies FILE / --cookies-from-browser NAME)"
+
+msgid "Dry run…"
+msgstr "Δοκιμαστική εκτέλεση…"
+
+msgid "Starting…"
+msgstr "Εκκίνηση…"
+
+msgid "copied — waiting for the others"
+msgstr "αντιγράφηκε — αναμονή για τα υπόλοιπα"
+
+msgid " and mtime"
+msgstr " και ώρα τροποποίησης"
+
+msgid "HTTP → {n} destinations  [one download]"
+msgstr "HTTP → {n} προορισμοί  [μία λήψη]"
+
+msgid "SSH transfers require paramiko"
+msgstr "οι μεταφορές SSH χρειάζονται το paramiko"
+
+msgid "Up to date — skipped (same size{and_mtime})."
+msgstr "Ενημερωμένο — παραλείφθηκε (ίδιο μέγεθος{and_mtime})."
+
+msgid "a web source does not go to a cloud store — relay via an SSH or SMB destination"
+msgstr "μια πηγή web δεν πηγαίνει σε αποθήκη cloud — αναμεταδώστε μέσω προορισμού SSH ή SMB"
+
+msgid "no destination is left to write to"
+msgstr "δεν απέμεινε προορισμός για εγγραφή"
+
+msgid "transfer truncated"
+msgstr "η μεταφορά διακόπηκε πριν το τέλος"
+
+msgid "{path}: {why}"
+msgstr "{path}: {why}"
+
+msgid "Write a manifest (MHL)"
+msgstr "Εγγραφή manifest (MHL)"
+
+msgid "Drop a destination that stops answering after {n} s"
+msgstr "Εγκατάλειψη προορισμού που δεν απαντά για {n} s"
+
+msgid "Verify against manifest"
+msgstr "Έλεγχος με βάση το manifest"
+
+msgid "Check a destination against the manifest a copy wrote there, without the source (--verify-manifest)"
+msgstr "Έλεγχος ενός προορισμού με βάση το manifest που έγραψε εκεί μια αντιγραφή, χωρίς την πηγή (--verify-manifest)"
+
+msgid "Destination folder"
+msgstr "Φάκελος προορισμού"
+
+msgid "Read every file back (--deep)"
+msgstr "Ανάγνωση κάθε αρχείου ξανά (--deep)"
+
+msgid "manifest (MHL)"
+msgstr "manifest (MHL)"
+
+msgid "no manifest: {why}"
+msgstr "χωρίς manifest: {why}"
+
+msgid "The saved connections are locked — the run needs them"
+msgstr "Οι αποθηκευμένες συνδέσεις είναι κλειδωμένες — η εκτέλεση τις χρειάζεται"
+
+msgid "{dest}: connecting…"
+msgstr "{dest}: σύνδεση…"
+
+msgid "Check cancelled"
+msgstr "Ο έλεγχος ακυρώθηκε"
+
+msgid "up to date"
+msgstr "ενημερωμένο"
+
+msgid "sample-hashed"
+msgstr "δειγματοληπτικός έλεγχος hash"
+
+msgid "--ui dashboard needs blitcp_dashboard.py beside blitcp.py — get it with: blitcp --fetch-modules (lines for now)"
+msgstr "το --ui dashboard χρειάζεται το blitcp_dashboard.py δίπλα στο blitcp.py — πάρτε το με: blitcp --fetch-modules (γραμμές προς το παρόν)"
+
+msgid "Write an ASC MHL generation (ascmhl/ and blitcp.xxh128) at each destination whose check found no fault, from the hashes this run already has (a local source, xxh128). What is skipped is decided as without it. Check a destination later, without the source, with --verify-manifest DEST."
+msgstr "Γράφει μια γενιά ASC MHL (ascmhl/ και blitcp.xxh128) σε κάθε προορισμό που πέρασε τον έλεγχο, από τα hash που ήδη έχει αυτή η εκτέλεση (τοπική πηγή, xxh128). Το τι παραλείπεται αποφασίζεται όπως και χωρίς αυτό. Έλεγχος ενός προορισμού αργότερα, χωρίς την πηγή: --verify-manifest DEST."

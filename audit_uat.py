@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-audit_uat.py — Full security + UAT audit for fast-copy.
+audit_uat.py — Full security + UAT audit for blitcp.
 
 A single, self-contained, stdlib-only auditor that:
 
@@ -52,6 +52,8 @@ import contextlib
 import builtins
 import io
 import os
+import testtmp  # test data under ~/.cache/blitcp-tests, never /tmp (RAM)
+testtmp.use_test_tmp()
 import random
 import re
 import shutil
@@ -179,7 +181,7 @@ _SENSITIVE_ENV = (
 
 
 def run_fc(target, args, timeout=120, tmpdir=None, extra_env=None):
-    """Invoke the fast-copy script as a child process.
+    """Invoke the blitcp script as a child process.
 
     Redirects the child's temp directory to ``tmpdir`` (when given) so leak
     checks can inspect a private scratch area, and scrubs cloud/SSH secrets
@@ -188,6 +190,13 @@ def run_fc(target, args, timeout=120, tmpdir=None, extra_env=None):
     env = dict(os.environ)
     for k in _SENSITIVE_ENV:
         env.pop(k, None)
+    # The terminal layout (4.4.0) draws "·" in a UTF-8 locale and "-"
+    # otherwise; the checks below read the UTF-8 form, so the child gets a
+    # UTF-8 locale when the caller's environment names none.
+    loc = next((env[k] for k in ("LC_ALL", "LC_CTYPE", "LANG")
+                if env.get(k)), "")
+    if "utf-8" not in loc.lower() and "utf8" not in loc.lower():
+        env["LC_ALL"] = "C.UTF-8"       # none set, or a C locale
     if tmpdir:
         env["TMPDIR"] = tmpdir
         env["TMP"] = tmpdir
@@ -490,7 +499,7 @@ class _VulnVisitor(ast.NodeVisitor):
 
 
 # Marker the engine writes into an encrypted credentials envelope
-# (encrypt_conns / _is_encrypted in fast_copy.py). Must stay in sync.
+# (encrypt_conns / _is_encrypted in blitcp.py). Must stay in sync.
 CREDS_MAGIC = "FC-CREDS-ENC-v1"
 
 
@@ -561,6 +570,106 @@ def _mentions_not_encrypted(test):
     return False
 
 
+# ── A check that inspected nothing must fail ─────────────────────────────
+# The GUI-credentials check spent months "passing" on the 13-line
+# fast_copy_modern_gui shim: the file existed, held no credential-write path,
+# and the check reported a skip instead of the fact that it had looked at
+# nothing. Every check that scans a file goes through require_target(): the
+# file must exist, be the size a real one is, and contain the symbols the check
+# is there to verify — otherwise it is a FAIL.
+MIN_TARGET_BYTES = {"blitcp.py": 200_000, "blitcp_gui.py": 50_000,
+                    "build.py": 2_000, "release.yml": 1_000,
+                    "blitcp_iface.py": 8_000, "blitcp_cloud.py": 60_000}
+
+# What each engine module must hold (the module split before C12; the
+# fan-out's Source classes went with it, the Sinks --verify-manifest reads
+# through stay): a module that is there but holds none of it is not the
+# module.
+MODULE_SYMBOLS = {
+    "blitcp_iface.py": ("class Host", "class Sink"),
+    "blitcp_cloud.py": ("class CloudSink", "class SMBSink"),
+}
+
+
+def check_module_targets(rep, modules):
+    """Each module given: there, real-sized, holding what it must (FAIL
+    otherwise — never a skip over a file that is not the real one)."""
+    for path in modules:
+        name = os.path.basename(path)
+        text = require_target(rep, "module " + name, path,
+                              symbols=MODULE_SYMBOLS.get(name, ()))
+        if text is not None:
+            rep.ok("module " + name,
+                      "%s holds %s" % (name, ", ".join(
+                          MODULE_SYMBOLS.get(name, ())) or "its code"))
+
+
+# The engine is blitcp.py plus the modules it composes beside it (the
+# 4.4.0 split moved the cloud and SMB code to blitcp_cloud.py, the shared
+# contract to blitcp_iface.py). A static check of the engine reads all of
+# it: one that read blitcp.py alone would pass, unseeing, over the code it
+# was written to watch. A missing or stub module FAILs "module <name>"
+# (check_module_targets, run on every audit) — not each check that reads.
+ENGINE_MODULES = ("blitcp_iface.py", "blitcp_cloud.py")
+
+
+def engine_module_paths(target):
+    here = os.path.dirname(os.path.abspath(target))
+    return [os.path.join(here, m) for m in ENGINE_MODULES]
+
+
+def engine_text(target):
+    """target's text followed by each engine module's beside it, as one
+    source (concatenated modules parse as one)."""
+    parts = []
+    for path in [target] + engine_module_paths(target):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                parts.append(f.read())
+        except FileNotFoundError:
+            if path == target:
+                raise
+    return "\n".join(parts)
+
+
+def require_target(rep, check, path, symbols=(), min_bytes=None):
+    """The file's text, or None after a FAIL saying why the check would have
+    inspected nothing (missing, too small to be the real file, or without the
+    symbols it verifies)."""
+    name = os.path.basename(path)
+    if not os.path.isfile(path):
+        rep.fail(check, "%s not found — this check has nothing to inspect" % name)
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        rep.fail(check, "%s cannot be read: %s" % (name, e))
+        return None
+    need = MIN_TARGET_BYTES.get(name, 1) if min_bytes is None else min_bytes
+    size = len(text.encode("utf-8"))
+    if size < need:
+        rep.fail(check, "%s is %d bytes, less than the %d a real one has — "
+                 "not the file this check verifies" % (name, size, need))
+        return None
+    missing = [sym for sym in symbols if sym not in text]
+    if missing:
+        rep.fail(check, "%s has no %s — the check would verify nothing"
+                 % (name, ", ".join(missing)))
+        return None
+    return text
+
+
+def require_attrs(rep, check, mod, names):
+    """Module attributes a check verifies; FAIL (not skip) when absent."""
+    missing = [n for n in names if getattr(mod, n, None) is None]
+    if missing:
+        rep.fail(check, "the target has no %s — the check would verify "
+                 "nothing" % ", ".join(missing))
+        return False
+    return True
+
+
 def _check_gui_creds_enforce_encryption(rep, repo):
     """Catch the 'decline passphrase -> plaintext credentials' bug class.
 
@@ -571,15 +680,18 @@ def _check_gui_creds_enforce_encryption(rep, repo):
     FAIL — this is exactly the GUI flaw where pressing Cancel persisted
     passwords in cleartext.
     """
-    path = os.path.join(repo, "fast_copy_modern_gui.py")
-    if not os.path.exists(path):
-        rep.skip("GUI creds encryption enforced", "no GUI file present")
+    # The GUI itself — not the 13-line fast_copy_modern_gui shim this used to
+    # scan (gone since 4.4.0), which left the check looking at nothing.
+    path = os.path.join(repo, "blitcp_gui.py")
+    text = require_target(rep, "GUI creds encryption enforced", path,
+                          symbols=("_save_credentials_file",))
+    if text is None:
         return
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            tree = ast.parse(f.read(), filename=path)
+        tree = ast.parse(text, filename=path)
     except (OSError, SyntaxError) as e:
-        rep.skip("GUI creds encryption enforced", str(e))
+        rep.fail("GUI creds encryption enforced", "blitcp_gui.py does not "
+                 "parse: %s" % e)
         return
 
     def save_call(fn):
@@ -611,8 +723,9 @@ def _check_gui_creds_enforce_encryption(rep, repo):
             offenders.append(f"{fn.name}() @L{call.lineno}")
 
     if checked == 0:
-        rep.skip("GUI creds encryption enforced",
-                 "no credential-write paths found")
+        rep.fail("GUI creds encryption enforced",
+                 "no credential-write path found to check — the check "
+                 "inspected nothing")
     elif offenders:
         rep.fail("GUI creds encryption enforced",
                  "cleartext credential write reachable without encryption "
@@ -635,7 +748,7 @@ _SECRET_PATTERNS = [
 
 
 def _import_target(ctx):
-    """Import the fast_copy.py under test as a module (its CLI is __main__-guarded
+    """Import the blitcp.py under test as a module (its CLI is __main__-guarded
     so import has no side effects). Cached on ctx."""
     if ctx.get("_mod") is not None:
         return ctx["_mod"]
@@ -712,10 +825,9 @@ def _check_py_older_fstring_compat(rep, ctx):
         return
     targets = [ctx["target"]]
     d = os.path.dirname(ctx["target"])
-    for extra in ("blitcp_gui.py", "fast_copy.py", "fast_copy_modern_gui.py",
-                  "build.py"):
+    for extra in ENGINE_MODULES + ("blitcp_gui.py", "build.py"):
         p = os.path.join(d, extra)
-        if os.path.exists(p):
+        if require_target(rep, "f-string scan targets", p) is not None:
             targets.append(p)
     bad = []
     for path in targets:
@@ -757,10 +869,10 @@ def _check_passphrase_generator(rep, ctx):
     except Exception as e:
         rep.fail("passphrase generator", f"target import failed: {e}")
         return
-    if not hasattr(mod, "generate_passphrase"):
-        rep.skip("passphrase generator", "not present in target")
+    if not require_attrs(rep, "passphrase generator", mod,
+                         ("generate_passphrase",)):
         return
-    src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+    src = engine_text(ctx["target"])
     fn_src = src.split("def generate_passphrase", 1)[1].split("\ndef ", 1)[0]
     problems = []
     if "secrets.choice" not in fn_src:
@@ -795,8 +907,7 @@ def _check_rename_migration(rep, ctx):
     """Regression checks for the fast-copy → blitcp rename (v4.0.0).
 
     The compatibility contract: legacy on-disk names stay recognized forever,
-    the manifest HMAC seed string never changes, and the fast_copy import shim
-    keeps old imports working. Each of these silently breaking would strand
+    and manifests signed with the pre-rename HMAC seed (v1) keep verifying. Each of these silently breaking would strand
     existing users' dedup state, manifests or scripts."""
     try:
         mod = _import_target(ctx)
@@ -811,6 +922,9 @@ def _check_rename_migration(rep, ctx):
         "LEGACY_REMOTE_MANIFEST_NAME": ".fast_copy_manifest.json",
         "LEGACY_CLOUD_MANIFEST_NAME": ".fast_copy_manifest.json",
         "LEGACY_TAR_BUNDLE_NAME": ".fast_copy_bundle.tar",
+        "LEGACY_SALT_NAME": ".fast_copy_salt",
+        "LEGACY_CONFIG_DIR_NAME": "fast_copy",
+        "LEGACY_ENV_PREFIX": "FAST_COPY_",
     }
     bad = [f"{k}={getattr(mod, k, None)!r}"
            for k, v in frozen.items() if getattr(mod, k, None) != v]
@@ -819,15 +933,55 @@ def _check_rename_migration(rep, ctx):
     else:
         rep.ok("rename: frozen legacy names", f"{len(frozen)} constants intact")
 
-    # 2) The HMAC seed literal must still be the pre-rename string.
-    with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-        src = f.read()
-    if 'f"fast_copy:{getpass.getuser()}' in src:
-        rep.ok("rename: manifest HMAC seed frozen", "fast_copy: seed present")
+    # 2) Manifests signed before 4.4.0 (v1: the pre-rename seed) still
+    #    verify, new ones are v2, and the version cannot be relabelled. The v1
+    #    key is rebuilt here from first principles, not read from the target.
+    import getpass as _gp
+    import hashlib as _hl
+    import hmac as _hm
+    import json as _js
+    import platform as _pf
+    import tempfile as _tf
+    need = ("_manifest_key", "_sign_manifest", "_verify_manifest",
+            "HMAC_VERSION", "_MANIFEST_SALT_FILE")
+    missing = [n for n in need if not hasattr(mod, n)]
+    if missing:
+        rep.fail("rename: manifest HMAC v1 verifies",
+                 "missing from target: " + ", ".join(missing))
     else:
-        rep.fail("rename: manifest HMAC seed frozen",
-                 "seed literal changed — every existing manifest would be "
-                 "rejected as tampered")
+        saved = mod._MANIFEST_SALT_FILE
+        with _tf.TemporaryDirectory() as td:
+            salt = os.urandom(32)
+            sp = os.path.join(td, "salt")
+            with open(sp, "wb") as f:
+                f.write(salt)
+            os.chmod(sp, 0o600)
+            mod._MANIFEST_SALT_FILE = sp
+            try:
+                entries = {"a": {"size": 1, "hash": "h"}}
+                k1 = _hl.sha256(("fast_copy:%s:%s:" % (
+                    _gp.getuser(), _pf.node())).encode() + salt).digest()
+                v1 = dict(entries)
+                v1["__hmac__"] = _hm.new(
+                    k1, _js.dumps(entries, sort_keys=True).encode(),
+                    _hl.sha256).hexdigest()
+                v2 = mod._sign_manifest(entries)
+                ok_v1 = mod._verify_manifest(v1) == entries
+                ok_v2 = (v2.get("__hmac_v__") == 2 == mod.HMAC_VERSION
+                         and mod._verify_manifest(v2) == entries)
+                relabel = mod._verify_manifest(dict(v2, __hmac_v__=1))
+            finally:
+                mod._MANIFEST_SALT_FILE = saved
+        if ok_v1 and ok_v2 and relabel is None:
+            rep.ok("rename: manifest HMAC v1 verifies",
+                   "v1 (pre-rename seed) verifies, new data is v2, "
+                   "relabelling refused")
+        else:
+            v1_txt = ("OK" if ok_v1 else "REJECTED — every existing "
+                      "manifest would be treated as tampered")
+            rep.fail("rename: manifest HMAC v1 verifies",
+                     f"v1={v1_txt} v2={'OK' if ok_v2 else 'BROKEN'} "
+                     f"relabel={'refused' if relabel is None else 'ACCEPTED'}")
 
     # 3) _migrate_local_sidecar: renames legacy in place, preserves content,
     #    and never clobbers an existing new-name file.
@@ -835,7 +989,6 @@ def _check_rename_migration(rep, ctx):
         rep.fail("rename: sidecar migration",
                  "_migrate_local_sidecar missing from target")
         return
-    import tempfile as _tf
     with _tf.TemporaryDirectory() as td:
         old = os.path.join(td, ".fast_copy_dedup.db")
         new = os.path.join(td, ".blitcp_dedup.db")
@@ -883,18 +1036,28 @@ def _check_rename_migration(rep, ctx):
             if v is not None:
                 os.environ[k] = v
 
-    # 5) Import shim: `import fast_copy` must resolve to the blitcp module.
-    shim = os.path.join(os.path.dirname(ctx["target"]), "fast_copy.py")
-    if not os.path.exists(shim):
-        rep.warn("rename: fast_copy shim", "fast_copy.py shim not found "
-                 "beside target (breaks old imports/scripts)")
-    elif "sys.modules[__name__] = blitcp" in open(shim, encoding="utf-8").read():
-        rep.ok("rename: fast_copy shim", "module alias present")
+    # 5) The fast_copy / fast_copy_modern_gui import shims are gone (4.4.0,
+    # breaking): nothing shipped may import the old module names.
+    here = os.path.dirname(ctx["target"])
+    olds = []
+    for fn in ("blitcp.py",) + ENGINE_MODULES + ("blitcp_gui.py", "build.py"):
+        p_ = os.path.join(here, fn)
+        if os.path.exists(p_):
+            for n_, line in enumerate(open(p_, encoding="utf-8",
+                                           errors="replace"), 1):
+                if re.match(r"\s*(import|from)\s+fast_copy(_modern_gui)?\b",
+                            line):
+                    olds.append("%s:%d" % (fn, n_))
+    if olds:
+        rep.fail("rename: no fast_copy imports",
+                 "the fast_copy module is gone; still imported at "
+                 + ", ".join(olds))
     else:
-        rep.fail("rename: fast_copy shim",
-                 "shim exists but does not alias the blitcp module")
+        rep.ok("rename: no fast_copy imports",
+               "blitcp / blitcp_gui only (the shims were removed in 4.4.0)")
 
     # 6) Source-tree excludes must cover the legacy sidecar names too.
+    src = engine_text(ctx["target"])
     if src.count("LEGACY_DEDUP_DB_NAME,") >= 2:
         rep.ok("rename: legacy names excluded from copies",
                "legacy sidecars in exclude_patterns")
@@ -912,10 +1075,9 @@ def _check_smb_parse(rep, ctx):
     except Exception as e:
         rep.skip("SMB URL parsing", f"could not import target: {e}")
         return
-    p = getattr(mod, "parse_smb_url", None)
-    if not p:
-        rep.skip("SMB URL parsing", "parse_smb_url not present")
+    if not require_attrs(rep, "SMB URL parsing", mod, ("parse_smb_url",)):
         return
+    p = mod.parse_smb_url
     bad = []
 
     def check(inp, want):
@@ -963,8 +1125,7 @@ def _check_posix_only_os_calls(rep, ctx):
     WATCH = {"fchmod", "fchown", "lchmod", "fchdir", "fdatasync",
              "posix_fadvise", "posix_fallocate", "mkfifo", "mknod"}
     try:
-        with open(ctx["target"], "r", encoding="utf-8", errors="replace") as f:
-            tree = ast.parse(f.read(), filename=ctx["target"])
+        tree = ast.parse(engine_text(ctx["target"]), filename=ctx["target"])
     except (OSError, SyntaxError) as e:
         rep.skip("POSIX-only os.* guards", str(e))
         return
@@ -1053,8 +1214,7 @@ def _check_streaming_relay_invariants(rep, ctx):
     (c) The relay paths must stay streaming: no dataset-sized blitcp_relay_
         temp dir may reappear in _cloud_to_cloud / _relay_object_ssh."""
     try:
-        with open(ctx["target"], "r", encoding="utf-8", errors="replace") as f:
-            src = f.read()
+        src = engine_text(ctx["target"])
         tree = ast.parse(src, filename=ctx["target"])
     except (OSError, SyntaxError) as e:
         rep.skip("streaming relay invariants", str(e))
@@ -1099,7 +1259,15 @@ def _check_streaming_relay_invariants(rep, ctx):
     # HTTP-source guards (2026-09-02): a login/terms page returned instead of
     # the file was saved silently with "Verified ✓" — both HTTP legs must run
     # the HTML-wall check before writing anything.
+    # The one-destination legs run _http_one (the steps around the pump);
+    # several destinations run _http_to_many (4.4.0): each must guard.
     for fn in ("_http_to_ssh", "_http_to_smb"):
+        body = funcs.get(fn)
+        if body is None:
+            bad.append(f"{fn} missing")
+        elif "_http_one(" not in body:
+            bad.append(f"{fn} no longer runs _http_one (its HTML-wall guard)")
+    for fn in ("_http_one", "_http_to_many"):
         body = funcs.get(fn)
         if body is None:
             bad.append(f"{fn} missing")
@@ -1127,12 +1295,10 @@ def _check_http_auth_handling(rep, ctx):
         cookies.txt export. build.py must therefore bundle the reader."""
     root = os.path.dirname(os.path.abspath(ctx["target"]))
     gui = os.path.join(root, "blitcp_gui.py")
-    if not os.path.isfile(gui):
-        rep.skip("http auth handling", "no blitcp_gui.py beside the target")
+    if require_target(rep, "http auth handling", gui) is None:
         return
     try:
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            eng = f.read()
+        eng = engine_text(ctx["target"])
         with open(gui, encoding="utf-8", errors="replace") as f:
             gsrc = f.read()
         gtree = ast.parse(gsrc, filename=gui)
@@ -1257,22 +1423,23 @@ def _check_http_auth_handling(rep, ctx):
     # its own dependency set instead of going through build.py, and shipped
     # 4.2.4 without it while the release went green.
     wf = os.path.join(root, ".github", "workflows", "release.yml")
-    if os.path.isfile(wf):
-        with open(wf, encoding="utf-8", errors="replace") as f:
-            wsrc = f.read()
-        intel = wsrc.split("build-macos-intel:", 1)
-        if len(intel) == 2 and "browser-cookie3" not in intel[1]:
-            bad.append("the macOS-Intel build leg no longer installs "
-                       "browser-cookie3 — that binary alone would ship "
-                       "unable to read a browser session")
+    wsrc = require_target(rep, "http auth handling", wf,
+                          symbols=("build-macos-intel:",))
+    if wsrc is None:
+        return
+    intel = wsrc.split("build-macos-intel:", 1)
+    if len(intel) == 2 and "browser-cookie3" not in intel[1]:
+        bad.append("the macOS-Intel build leg no longer installs "
+                   "browser-cookie3 — that binary alone would ship "
+                   "unable to read a browser session")
 
     build_py = os.path.join(root, "build.py")
-    if os.path.isfile(build_py):
-        with open(build_py, encoding="utf-8", errors="replace") as f:
-            bsrc = f.read()
-        if "browser_cookie3" not in bsrc:
-            bad.append("build.py no longer bundles browser_cookie3 — "
-                       "--cookies-from-browser would be dead in the binaries")
+    bsrc = require_target(rep, "http auth handling", build_py)
+    if bsrc is None:
+        return
+    if "browser_cookie3" not in bsrc:
+        bad.append("build.py no longer bundles browser_cookie3 — "
+                   "--cookies-from-browser would be dead in the binaries")
 
     if bad:
         rep.fail("http auth handling", "; ".join(bad[:6]))
@@ -1297,16 +1464,12 @@ def _check_sudo_preflight_and_log(rep, ctx):
         the fix."""
     root = os.path.dirname(os.path.abspath(ctx["target"]))
     gui = os.path.join(root, "blitcp_gui.py")
-    try:
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            eng = f.read()
-        gsrc = ""
-        if os.path.isfile(gui):
-            with open(gui, encoding="utf-8", errors="replace") as f:
-                gsrc = f.read()
-    except OSError as e:
-        rep.skip("sudo preflight + log legibility", str(e))
+    eng = require_target(rep, "sudo preflight + log legibility",
+                         ctx["target"])
+    gsrc = require_target(rep, "sudo preflight + log legibility", gui)
+    if eng is None or gsrc is None:
         return
+    eng = engine_text(ctx["target"])
 
     bad = []
     # Scoped to _check_safe_for_sudo, not the whole file. As a file-wide string
@@ -1381,12 +1544,10 @@ def _check_gui_phase_labels(rep, ctx):
     lists rather than a fixed set."""
     root = os.path.dirname(os.path.abspath(ctx["target"]))
     gui = os.path.join(root, "blitcp_gui.py")
-    if not os.path.isfile(gui):
-        rep.skip("GUI phase labels", "no blitcp_gui.py beside the target")
+    if require_target(rep, "GUI phase labels", gui) is None:
         return
     try:
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            eng = f.read()
+        eng = engine_text(ctx["target"])
         with open(gui, encoding="utf-8", errors="replace") as f:
             gsrc = f.read()
     except OSError as e:
@@ -1395,7 +1556,8 @@ def _check_gui_phase_labels(rep, ctx):
 
     phases = sorted(set(re.findall(r'banner\(f?"(Phase [^"]+)"', eng)))
     if not phases:
-        rep.skip("GUI phase labels", "no phase banners found")
+        rep.fail("GUI phase labels", "no phase banners found — the check "
+                 "inspected nothing")
         return
     m = re.search(r"_PHASE_LABELS = \((.*?)\)\n", gsrc, re.S)
     if not m:
@@ -1424,12 +1586,10 @@ def _check_gui_version_pin(rep, ctx):
     the Settings card, and _download_core() fetched the v4.2.3 engine."""
     root = os.path.dirname(os.path.abspath(ctx["target"]))
     gui = os.path.join(root, "blitcp_gui.py")
-    if not os.path.isfile(gui):
-        rep.skip("GUI version pin", "no blitcp_gui.py beside the target")
+    if require_target(rep, "GUI version pin", gui) is None:
         return
     try:
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            eng = f.read()
+        eng = engine_text(ctx["target"])
         with open(gui, encoding="utf-8", errors="replace") as f:
             gsrc = f.read()
     except OSError as e:
@@ -1465,14 +1625,12 @@ def _check_gui_browse_offthread(rep, ctx):
     import ast
     root = os.path.dirname(os.path.abspath(ctx["target"]))
     gui = os.path.join(root, "blitcp_gui.py")
-    if not os.path.isfile(gui):
-        rep.skip("GUI browse off the UI thread", "no blitcp_gui.py beside the target")
+    if require_target(rep, "GUI browse off the UI thread", gui) is None:
         return
     try:
         with open(gui, encoding="utf-8", errors="replace") as f:
             gtree = ast.parse(f.read())
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            etree = ast.parse(f.read())
+        etree = ast.parse(engine_text(ctx["target"]))
     except (OSError, SyntaxError) as e:
         rep.skip("GUI browse off the UI thread", str(e))
         return
@@ -1523,8 +1681,7 @@ def _check_r2r_hash_negotiation(rep, ctx):
     deduplication and, far worse, verification, while the banner still
     advertised both and the summary printed no Verify line at all."""
     try:
-        with open(ctx["target"], encoding="utf-8", errors="replace") as f:
-            eng = f.read()
+        eng = engine_text(ctx["target"])
     except OSError as e:
         rep.skip("r2r hash negotiation", str(e))
         return
@@ -1562,12 +1719,48 @@ def _check_r2r_hash_negotiation(rep, ctx):
                "lists; the banner and summary state what actually ran")
 
 
+def _check_dedup_db_trust(rep, ctx):
+    """2026-11-12: a dedup DB others could write was used — its rows decide
+    what a run skips and links. The DB must be checked on the open file
+    before SQLite opens it, and SQLite must then hold the file checked."""
+    name = "dedup DB trusted only when nobody else could write it"
+    src = require_target(rep, name, ctx["target"],
+                         symbols=("def _open_db", "def _check_trust",
+                                  "def _dedup_db_taint", "def _fds_on"))
+    if src is None:
+        return
+    def body(fn):
+        i = src.find("def %s(" % fn)
+        j = src.find("\n    def ", i + 1)
+        k = src.find("\ndef ", i + 1)
+        ends = [x for x in (j, k) if x > 0]
+        return src[i:min(ends)] if ends else src[i:]
+    open_db = body("_open_db")
+    taint = body("_dedup_db_taint")
+    problems = []
+    a, b = open_db.find("_check_trust("), open_db.find("sqlite3.connect(")
+    if a < 0 or b < 0 or a > b:
+        problems.append("_open_db does not run _check_trust before "
+                        "sqlite3.connect")
+    if "_fds_on(" not in open_db[b:] if b >= 0 else True:
+        problems.append("_open_db does not check that SQLite holds the file "
+                        "that was checked")
+    for need in ("os.fstat(fd)", "st_uid", "S_IWOTH", "S_IWGRP",
+                 "S_ISREG"):
+        if need not in taint:
+            problems.append("_dedup_db_taint lacks %s" % need)
+    if problems:
+        rep.fail(name, "; ".join(problems))
+    else:
+        rep.ok(name, "fd checks before connect, identity checked after")
+
+
 def section_security(rep, ctx):
     targets = [ctx["target"]]
     repo = os.path.dirname(os.path.abspath(ctx["target"]))
-    for extra in ("fast_copy_modern_gui.py", "build.py"):
+    for extra in ENGINE_MODULES + ("blitcp_gui.py", "build.py"):
         p = os.path.join(repo, extra)
-        if os.path.exists(p):
+        if require_target(rep, "security scan targets", p) is not None:
             targets.append(p)
 
     total_fail = total_warn = 0
@@ -1653,6 +1846,7 @@ def section_security(rep, ctx):
     _check_gui_version_pin(rep, ctx)
     _check_gui_browse_offthread(rep, ctx)
     _check_r2r_hash_negotiation(rep, ctx)
+    _check_dedup_db_trust(rep, ctx)
 
     # external scanners (best effort)
     _run_external_scanner(rep, "bandit",
@@ -2211,6 +2405,8 @@ def _check_quiet_mode(rep, ctx):
         # 1. Success: one line on stdout, nothing on stderr, exit 0.
         rc, out, err = run_fc(target, ["-q", src, os.path.join(ws, "dst")])
         lines = [ln for ln in out.splitlines() if ln.strip()]
+        # `blitcp SRC DST` takes the 4.2.15 route again (owner, 2026-11-20):
+        # its one line is 4.2.15's "OK: copied …", as dcec245 prints it.
         if rc == 0 and len(lines) == 1 and lines[0].startswith("OK") \
                 and not err.strip():
             rep.ok("quiet success", "single OK line, clean stderr")
@@ -2236,8 +2432,8 @@ def _check_quiet_mode(rep, ctx):
                      f"rc={rc} stdout={out[:80]!r} stderr={err[:160]!r}")
 
         # 3. Never OK on a non-zero exit — the actual regression.
-        if rc != 0 and "OK" not in out:
-            rep.ok("quiet verdict honesty", "no OK on a failed run")
+        if rc != 0 and "OK" not in out and "0 failed" not in out:
+            rep.ok("quiet verdict honesty", "no success line on a failed run")
         else:
             rep.fail("quiet verdict honesty",
                      f"reported OK while exiting {rc}")
@@ -2246,6 +2442,8 @@ def _check_quiet_mode(rep, ctx):
         #    the sink that quiet mode installs over stdout, so a regression
         #    there shows up as an OK line with no bar in front of it.
         rc, out, err = run_fc(target, ["-p", src, os.path.join(ws, "dstp")])
+        # The 4.2.15 route (owner, 2026-11-20), as dcec245: the bar kept,
+        # the banners gone, the OK line last.
         has_bar = "█" in out or "░" in out
         ends_ok = out.strip().splitlines()[-1].startswith("OK") if out.strip() else False
         no_banner = "BLOCK-ORDER COPY" not in out and "Phase 1" not in out
@@ -2544,7 +2742,7 @@ def _check_translation_coverage(rep, ctx):
         return
 
     def literals(path):
-        if not os.path.isfile(path):
+        if require_target(rep, "translation coverage", path) is None:
             return set()
         try:
             tree = _ast.parse(open(path, encoding="utf-8").read())
@@ -2573,10 +2771,13 @@ def _check_translation_coverage(rep, ctx):
     try:
         used = literals(ctx["target"]) | literals(
             os.path.join(root, "blitcp_gui.py"))
+        for path in engine_module_paths(ctx["target"]):
+            used |= literals(path)
     except SyntaxError:
         return
     if not used:
-        rep.skip("translation coverage", "no _tr() literals found")
+        rep.fail("translation coverage", "no _tr() literals found — the "
+                 "check inspected nothing")
         return
 
     def catalog(po):
@@ -2649,8 +2850,7 @@ def _check_streamer_parity(rep, ctx):
              "copy_block_stream_remote_to_local"),
             ("relay", "_stream_tar_batch_r2r", "copy_block_stream_r2r")):
         i, c = getattr(mod, inner, None), getattr(mod, caller, None)
-        if i is None or c is None:
-            rep.skip("streamer parity", f"{label} pair not present")
+        if not require_attrs(rep, "streamer parity", mod, (inner, caller)):
             return
         pairs.append((label, inspect.getsource(i), inspect.getsource(c)))
 
@@ -2727,7 +2927,8 @@ def _check_relay_reports_truth(rep, ctx):
     class _SSH:
         def __init__(self, chan): self._chan, self.caps = chan, {}
         def open_channel(self): return self._chan
-        def exec_cmd(self, cmd, input_data=None, timeout=300): return "", "", 0
+        def exec_cmd(self, cmd, input_data=None, timeout=300, raw=False):
+            return (b"" if raw else ""), "", 0
 
     entry = mod.FileEntry(src="/x/a.bin", rel="a.bin", size=12800,
                           physical_offset=None, content_hash=None)
@@ -2848,14 +3049,18 @@ def _check_http_relay_honors_transport(rep, ctx):
     """
     name = "http relay honors ssh transport"
     try:
-        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+        src = engine_text(ctx["target"])
     except OSError as e:                                    # noqa: BLE001
         rep.skip(name, f"could not read target: {e}")
         return
-    relay = _source_block(src, "def _http_to_ssh(")
+    # The SSH leg's steps live in _HttpSshDest (one destination and
+    # several, 4.4.0); _http_to_ssh drives them.
+    relay = (_source_block(src, "def _http_to_ssh(")
+             + _source_block(src, "class _HttpSshDest"))
     writer = _source_block(src, "class _SshExecWriter")
-    if not relay:
-        rep.fail(name, "_http_to_ssh is gone")
+    if not _source_block(src, "def _http_to_ssh(") \
+            or not _source_block(src, "class _HttpSshDest"):
+        rep.fail(name, "_http_to_ssh or _HttpSshDest is gone")
         return
     if not writer:
         rep.fail(name, "_SshExecWriter is gone — no exec-channel write path")
@@ -2896,7 +3101,7 @@ def _check_cookie_domain_scope(rep, ctx):
     name = "cookie domain scope"
     try:
         mod = _import_target(ctx)
-        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+        src = engine_text(ctx["target"])
     except Exception as e:                                  # noqa: BLE001
         rep.skip(name, f"could not load target: {e}")
         return
@@ -2943,7 +3148,7 @@ def _check_sftp_fallback_contract(rep, ctx):
     """
     name = "sftp fallback contract"
     try:
-        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+        src = engine_text(ctx["target"])
     except OSError as e:                                    # noqa: BLE001
         rep.skip(name, f"could not read target: {e}")
         return
@@ -2968,7 +3173,7 @@ def _check_sftp_fallback_contract(rep, ctx):
                        "basename — an auto-selected transport would relocate "
                        "the user's files")
         return
-    relay = _source_block(src, "def _http_to_ssh(")
+    relay = _source_block(src, "class _HttpSshDest")
     # The fallback is silent by design (the banner names the transport), so
     # assert the BEHAVIOUR — the SFTP failure lands on the exec writer — and
     # never the wording of a message.
@@ -2992,7 +3197,7 @@ def _check_relay_errors_are_debuggable(rep, ctx):
     """
     name = "relay errors honor BLITCP_TRACEBACK"
     try:
-        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+        src = engine_text(ctx["target"])
     except OSError as e:                                    # noqa: BLE001
         rep.skip(name, f"could not read target: {e}")
         return
@@ -3094,7 +3299,7 @@ def _check_saved_ssh_protocol(rep, ctx):
         problems.append(f"explicit flag still refused: {e}")
 
     # `creds add`/`edit` must offer the field and validate it.
-    src = open(ctx["target"], encoding="utf-8").read()
+    src = engine_text(ctx["target"])
     if "Protocol [ssh/sftp/both]" not in src or "Protocol (ssh/sftp/both)" not in src:
         problems.append("creds add/edit no longer prompt for the protocol")
 
@@ -3143,7 +3348,7 @@ def _check_ls_shell_fallback(rep, ctx):
         def open_sftp(self):
             raise Exception("Channel closed.")
 
-        def exec_cmd(self, cmd, input_data=None, timeout=300):
+        def exec_cmd(self, cmd, input_data=None, timeout=300, raw=False):
             self.cmds.append(cmd)
             if cmd.startswith("if [ -d "):
                 if "/missing" in cmd:
@@ -3151,11 +3356,12 @@ def _check_ls_shell_fallback(rep, ctx):
                 if "/one.bin" in cmd:
                     return "F\n 4096\n", "", 0
                 return "D\n", "", 0
+            # Listings are NUL records (parse_stat_listing), read raw.
             if cmd.startswith("LC_ALL=C find -L "):
-                return "d\t4096\tsub\nf\t10\tb.txt\nf\t2048\ta.bin\n", "", 0
-            if cmd.startswith("LC_ALL=C ls -1ApL "):
-                return "sub/\nb.txt\na.bin\n", "", 0
-            return "", "unexpected", 1
+                return b"d\t4096\tsub\0f\t10\tb.txt\0f\t2048\ta.bin\0", "", 0
+            if " && for f in * " in cmd:            # no GNU find: the glob loop
+                return b"d\tsub\0f\tb.txt\0f\ta.bin\0", "", 0
+            return (b"" if raw else ""), "unexpected", 1
 
     problems = []
     ssh = _NoSftp()
@@ -3233,6 +3439,39 @@ def _check_ls_shell_fallback(rep, ctx):
                      "ls); SFTP-only stays off the shell; hint names the fix")
 
 
+def _check_remote_listings_nul(rep, ctx):
+    """Remote listings and hash lists are NUL-separated end to end (section 3).
+
+    A newline-split listing turned 'new\nline.txt' into 'new', a space-split
+    one dropped leading spaces, and GNU sha256sum's escaped output keyed
+    'a\\b.txt' as 'a\\\\b.txt'. Every remote reply about names is now a NUL
+    record read by parse_stat_listing / parse_hash_list. This fails if a
+    newline-terminated find -printf, a stat -c "%s %n", an xargs -d '\n'
+    name list, or a hash tool fed without -z / the stdin loop comes back."""
+    import re as _re
+    name = "remote listings: NUL-separated end to end"
+    src = require_target(rep, name, ctx["target"],
+                         symbols=("def parse_stat_listing(",
+                                  "def parse_hash_list(",
+                                  "def _nul_hash_cmd("))
+    if src is None:
+        return
+    src = engine_text(ctx["target"])      # the modules' remote commands too
+    bad = []
+    for n, line in enumerate(src.splitlines(), 1):
+        code = line.split("#", 1)[0]
+        if _re.search(r"-printf\s*\\?['\"][^'\"]*\\\\n\\?['\"]", code):
+            bad.append("%d: newline-terminated find -printf" % n)
+        if 'stat -c "%s %n"' in code or "stat -c \\\"%s %n\\\"" in code:
+            bad.append("%d: space-split stat -c" % n)
+        if "xargs -d" in code:
+            bad.append("%d: newline-separated xargs list" % n)
+    if bad:
+        rep.fail(name, "; ".join(bad[:6]))
+    else:
+        rep.ok(name, "every listing and hash list is a NUL record")
+
+
 def _check_remote_scan_targeted(rep, ctx):
     """Checking a few files must not enumerate the whole destination.
 
@@ -3263,23 +3502,29 @@ def _check_remote_scan_targeted(rep, ctx):
             self.cmds = []
             self.raise_exc = raise_exc
 
-        def exec_cmd(self, cmd, input_data=None, timeout=300):
+        def exec_cmd(self, cmd, input_data=None, timeout=300, raw=False):
             self.cmds.append(cmd)
             if "test -d" in cmd:
                 return "", "", 0
             if self.raise_exc is not None:
                 raise self.raise_exc
-            if cmd.startswith("stat -c"):
-                # Probe (the root) and the batch both answer here.
-                if " -- '/dst'" in cmd or ' -- "/dst"' in cmd or "-- /dst " not in cmd:
-                    pass
-                out = []
-                for tok in cmd.split(" -- ", 1)[1].split(" 2>/dev/null")[0].split():
-                    path = tok.strip("'\"")
-                    if path.endswith("keep.bin") or path == "/dst":
-                        out.append("4096 %s" % path)
-                return "\n".join(out), "", 0
-            return "", "", 0
+            # The batch goes out as "LC_ALL=C xargs -0 stat ..." since
+            # 45337c0 (the probe of the root still bare): both are the
+            # stat this stub answers.
+            if cmd.startswith(("xargs -0 stat ", "LC_ALL=C xargs -0 stat ")):
+                # Probe (the root) and the batch both answer here: the
+                # paths come as a NUL list on stdin, the answer as NUL
+                # records b"<raw mode hex>\t<size>\t<path>\0" (GNU stat
+                # --printf '%f\t%s\t%n\0'): a folder for the root, a regular
+                # file for keep.bin.
+                out = b""
+                for path in (input_data or b"").split(b"\0"):
+                    if path == b"/dst":
+                        out += b"41ed\t4096\t" + path + b"\0"
+                    elif path.endswith(b"keep.bin"):
+                        out += b"81a4\t4096\t" + path + b"\0"
+                return out, "", 0
+            return (b"" if raw else ""), "", 0
 
     ssh = _Stub()
     files, targeted = mod.scan_remote_destination(
@@ -3463,6 +3708,113 @@ def _check_lookup_scope_in_sql(rep, ctx):
     rep.ok("lookup scope in SQL",
            "out-of-scope rows filtered in the query; '_' escaped; "
            "drive-wide scope still unfiltered")
+
+
+def _check_verify_names_its_level(rep, ctx):
+    """Every "Verified" says what it measured, and measures what it says.
+
+    Regression guard for four ways a success line outran its check:
+      - a local readback answered from the page cache the copy had just
+        filled (measured: 16 KB fetched from storage to "verify" 64 MB);
+      - object stores "verified" by HEADing 20 random objects and comparing
+        fc_hash — metadata blitcp itself wrote, so a bit-flipped upload passed
+        and the run exited 0 (S3, GCS, Azure and the cloud relay);
+      - --ssh-no-sftp skipped any file the remote hash tool returned nothing
+        for, so a missing file passed;
+      - the SFTP spot-check hashed nothing under --no-dedup and still printed
+        "✓ Verified: all N files OK on remote".
+
+    Static: the "✓ Verified" wording exists only inside _verify_headline, and
+    no function that verifies samples with random.sample. Behavioural: the
+    readback level never claims a device read on a memory/FUSE filesystem,
+    and _verify_objects fails on a wrong, missing or resized object.
+    """
+    import ast as _ast
+    name = "verify names its level"
+    try:
+        src = engine_text(ctx["target"])
+        tree = _ast.parse(src)
+    except (OSError, SyntaxError) as e:
+        rep.fail(name, f"cannot parse target: {e}")
+        return
+    problems = []
+    for fn in _ast.walk(tree):
+        if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        body = _ast.get_source_segment(src, fn) or ""
+        doc = None
+        if fn.body and isinstance(fn.body[0], _ast.Expr) \
+                and isinstance(getattr(fn.body[0], "value", None), _ast.Constant):
+            doc = fn.body[0].value
+        if fn.name != "_verify_headline":
+            for node in _ast.walk(fn):
+                if node is not doc and isinstance(node, _ast.Constant) \
+                        and isinstance(node.value, str) \
+                        and "✓ Verified" in node.value:
+                    problems.append(f"{fn.name} prints its own '✓ Verified' "
+                                    f"(must go through _verify_headline)")
+                    break
+        # A sample is allowed only when it is reported AS a sample.
+        if "random.sample" in body and "Verif" in body \
+                and "VL_SAMPLE" not in body:
+            problems.append(f"{fn.name} verifies a random sample and does not "
+                            f"say so")
+    vc = next((f for f in _ast.walk(tree) if isinstance(f, _ast.FunctionDef)
+               and f.name == "verify_copy"), None)
+    if vc is None or "hash_file_device(" not in (_ast.get_source_segment(src, vc) or ""):
+        problems.append("verify_copy no longer reads back through hash_file_device")
+    if problems:
+        rep.fail(name, "; ".join(sorted(set(problems))[:6]))
+        return
+
+    try:
+        mod = _import_target(ctx)
+    except Exception as e:                                     # noqa: BLE001
+        rep.skip(name, f"could not import target: {e}")
+        return
+    real = mod._fstype_linux
+    try:
+        for fs, never in (("tmpfs", mod.VL_DIRECT), ("fuseblk", mod.VL_DIRECT),
+                          ("overlay", mod.VL_DIRECT), ("zfs", mod.VL_DIRECT),
+                          ("btrfs", mod.VL_DIRECT)):
+            mod._fstype_linux = lambda p, fs=fs: fs
+            if mod._readback_level("/x") == never:
+                problems.append(f"{fs} readback is labelled a device read")
+    finally:
+        mod._fstype_linux = real
+
+    class _Store:
+        native_checksum = "sha256"
+
+        def __init__(self, answers):
+            self.answers = answers
+
+        def server_checksum(self, key):
+            return self.answers[key]
+
+    nd = mod._NativeDigests("sha256", 5)
+    nd.update(b"hello")
+    good = nd.result()
+    bad = dict(good, sha256="AAAA" + good["sha256"][4:])
+    cases = (
+        ("matching checksum", {"k": {"size": 5, "sha256": good["sha256"]}}, 0),
+        ("wrong checksum", {"k": {"size": 5, "sha256": bad["sha256"]}}, 1),
+        ("missing object", {"k": None}, 1),
+        ("size differs", {"k": {"size": 6, "sha256": good["sha256"]}}, 1),
+    )
+    import contextlib
+    import io as _io
+    for label, answers, want in cases:
+        with contextlib.redirect_stdout(_io.StringIO()):
+            got = mod._verify_objects(_Store(answers), [("r", "k", 5, good)], 1)
+        if got != want:
+            problems.append(f"_verify_objects: {label} → {got} failure(s), "
+                            f"expected {want}")
+    if problems:
+        rep.fail(name, "; ".join(problems))
+    else:
+        rep.ok(name, "one headline, no sampling, honest readback level, every "
+                     "object checked against the store")
 
 
 def _check_sparse_verification_sees_content(rep, ctx):
@@ -3943,7 +4295,7 @@ def _check_sudo_askpass_route(rep, ctx):
     """
     name = "sudo prompt works without a tty"
     try:
-        src = open(ctx["target"], encoding="utf-8", errors="replace").read()
+        src = engine_text(ctx["target"])
     except OSError as e:                                    # noqa: BLE001
         rep.skip(name, f"could not read target: {e}")
         return
@@ -3967,6 +4319,78 @@ def _check_sudo_askpass_route(rep, ctx):
                        "askpass helper it does not have")
         return
     rep.ok(name, "sudo -A only when SUDO_ASKPASS is set")
+
+
+def _check_sudo_covers_engine_modules(rep, ctx):
+    """--use-sudo checks, before elevating, the code root will run.
+
+    Regression guard (module-split review, 2026-11-08). The check covered the
+    script, its folder and the interpreter — all of the code while it lived
+    in one file. Once the cloud code moved to blitcp_cloud.py, a module (or
+    its cached .pyc) that someone else could rewrite went unchecked into the
+    root process. The check must walk the engine's modules, and their
+    bytecode cache. (tests/integration/test_module_split.py drives it.)
+    """
+    name = "sudo checks the engine modules"
+    src = engine_text(ctx["target"])
+    blk = _source_block(src, "def _reexec_under_sudo(")
+    if not blk:
+        rep.fail(name, "_reexec_under_sudo is gone")
+        return
+    missing = [t for t in ("_ENGINE_MODULES", "cache_from_source")
+               if t not in blk]
+    if missing:
+        rep.fail(name, "the pre-elevation check does not walk "
+                 + " / ".join(missing) + " — a module or its .pyc that "
+                 "others can rewrite would run as root")
+        return
+    rep.ok(name, "each engine module, its folder and its cached bytecode "
+           "are checked before elevating")
+
+
+def _check_release_files_checked(rep, ctx):
+    """Every file self-update or the module bootstrap writes beside blitcp
+    matches the release's SHA256SUMS.txt first.
+
+    Regression guard (2026-11-08). Since the module split a script install
+    is three files; self-update fetched blitcp.py alone, and its hash was
+    printed, not checked. Both writers must take release files through
+    _release_sums + _release_fetch (all or nothing), and the bootstrap must
+    check the running blitcp.py against the sums and refuse root / sudo /
+    --use-sudo and an unwritable folder. (tests/integration/
+    test_release_bootstrap.py drives them against a stub release server.)
+    """
+    name = "release files checked against SHA256SUMS"
+    src = engine_text(ctx["target"])
+    problems = []
+    for fn, needs in (
+            ("def self_update(", ("_release_sums(", "_release_fetch(",
+                                  "_place_release_files(")),
+            # The bootstrap (a module missing at start) and --fetch-modules
+            # (the dashboard module missing) fetch through one function.
+            ("def _bootstrap_engine_modules(", ("_fetch_release_modules(",)),
+            ("def _fetch_release_modules(", (
+                "_release_sums(", "_release_fetch(", "_file_sha256(me)",
+                "_place_release_files(", "replace=False", '"--use-sudo"',
+                # under sudo: asked of _sudo_user(), the one reading of
+                # SUDO_USER (a test fakes it there, never in the environment)
+                "_sudo_user()", "geteuid", "_dir_really_writable(",
+                "isatty()"))):
+        blk = _source_block(src, fn)
+        if not blk:
+            problems.append(fn[4:-1] + " is gone")
+            continue
+        miss = [t for t in needs if t not in blk]
+        if miss:
+            problems.append("%s lacks %s" % (fn[4:-1], ", ".join(miss)))
+    blk = _source_block(src, "def _release_fetch(")
+    if not blk or "hashlib.sha256(data).hexdigest() != want" not in blk:
+        problems.append("_release_fetch does not compare each file's SHA-256")
+    if problems:
+        rep.fail(name, "; ".join(problems))
+        return
+    rep.ok(name, "self-update and the module bootstrap write only files "
+           "that match the release's sums")
 
 
 def _check_fuseblk_is_local(rep, ctx):
@@ -4063,7 +4487,7 @@ def _check_memory_fs_detection(rep, ctx):
         return
 
     ram = None
-    for cand in ("/dev/shm", "/run", "/tmp"):
+    for cand in ("/dev/shm", "/run", "/tmp"):  # nosemgrep: blitcp-test-literal-tmp — a candidate in memory-FS detection; read only
         try:
             with open("/proc/self/mounts") as f:
                 for line in f:
@@ -4401,7 +4825,7 @@ def _check_wsl_drvfs_hint(rep, ctx):
             got = fn(path, _version_file=vfile, _fstype=fstype)
             if bool(got) != want:
                 problems.append(f"{what}: got {got!r}, wanted {want}")
-    src = open(target, encoding="utf-8", errors="replace").read()
+    src = engine_text(target)
     if "_dest_wsl_drvfs" not in src.split("def _dest_wsl_drvfs", 1)[-1]:
         problems.append("nothing outside the definition consults "
                         "_dest_wsl_drvfs — the banner cannot be using it")
@@ -4497,8 +4921,14 @@ def _localhost_ssh_ok():
 # and remote flows moved to perf_counter (a +3h wall-clock correction during a
 # copy once printed "Time: 3h 11m 36s" against an 11m 36s phase table); the
 # tar-over-SSH flows still read time.time(). Both spell the same event.
+# time.monotonic: the fan-out engine's run clock, gone with it (2026-11-24);
+# still matched, so a run clock read from it is seen.
+# `durable = time.perf_counter()`: the local flow's clock since its tail is
+# shared with ×N (_dest_tail) — read right after the flush; unseen by this
+# check while `blitcp SRC DST` took the fan-out (until 2026-11-20).
 _CLOCK_LINE = re.compile(
-    r"\s*_?elapsed\s*=\s*time\.(time|perf_counter)\(\)\s*-\s*(t0|start)\b")
+    r"\s*(_?elapsed\s*=\s*time\.(time|perf_counter|monotonic)\(\)\s*-\s*"
+    r"(t0|start)\b|durable\s*=\s*time\.perf_counter\(\))")
 
 
 class _ClockSpy:
@@ -4526,6 +4956,9 @@ class _ClockSpy:
 
     def perf_counter(self):
         return self._spy("perf_counter")
+
+    def monotonic(self):
+        return self._spy("monotonic")
 
 
 def _check_flush_before_clock(rep, ctx):
@@ -4968,6 +5401,15 @@ def _check_small_files_rate_in_summary(rep, ctx):
                                            os.path.join(ws, "dst-" + os.path.basename(src))],
                                   extra_env=env)
             speed = [ln for ln in out.splitlines() if "Speed:" in ln]
+            # 4.4.0: the one layout's phase 5 line carries the rates, MB/s
+            # and files/s both, for any run that wrote something.
+            phase5 = [ln for ln in out.splitlines()
+                      if re.match(r"(?i)phase 5\s", ln)]
+            if rc == 0 and not speed and phase5:
+                if "MB/s" not in phase5[-1] or "files/s" not in phase5[-1]:
+                    problems.append(f"{name}: phase 5 line "
+                                    f"{phase5[-1].strip()!r} lacks a rate")
+                continue
             if rc != 0 or not speed:
                 problems.append(f"{name}: exit {rc}, no Speed line")
                 continue
@@ -4975,7 +5417,7 @@ def _check_small_files_rate_in_summary(rep, ctx):
             if has != want:
                 problems.append(f"{name}: Speed line {speed[-1].strip()!r} "
                                 f"{'lacks' if want else 'should not carry'} files/s")
-    src = open(target, encoding="utf-8", errors="replace").read()
+    src = engine_text(target)
     n = src.count("_tr('Speed:')")
     if n != 1:
         problems.append(f"{n} places print the Speed line; one writer expected")
@@ -5804,7 +6246,7 @@ def _check_pull_reports_rejections(rep, ctx):
     # And the driver must actually use it, rather than deciding on verification
     # alone — which does not run under --no-verify.
     try:
-        eng = open(target, encoding="utf-8", errors="replace").read()
+        eng = engine_text(target)
         tree = ast.parse(eng, filename=target)
     except Exception as e:                                  # noqa: BLE001
         rep.skip("pull reports rejections", f"could not parse target: {e}")
@@ -5846,7 +6288,7 @@ def _check_pull_link_target_validated(rep, ctx):
     """
     target = ctx["target"]
     try:
-        eng = open(target, encoding="utf-8", errors="replace").read()
+        eng = engine_text(target)
         tree = ast.parse(eng, filename=target)
     except Exception as e:                                  # noqa: BLE001
         rep.skip("pull link target validated", f"could not parse target: {e}")
@@ -5856,7 +6298,8 @@ def _check_pull_link_target_validated(rep, ctx):
         if isinstance(n, ast.FunctionDef) and n.name == "_ssh_pull_smart":
             driver = n
     if driver is None:
-        rep.skip("pull link target validated", "_ssh_pull_smart not found")
+        rep.fail("pull link target validated", "_ssh_pull_smart not found — "
+                 "the check would verify nothing")
         return
 
     # Find the loop that creates the links, then check what reaches os.link.
@@ -6169,7 +6612,7 @@ def _check_trust_remote_modes_optout(rep, ctx):
 
     # And it has to be reachable from the command line, and visible when on.
     try:
-        eng = open(target, encoding="utf-8", errors="replace").read()
+        eng = engine_text(target)
     except OSError:
         eng = ""
     if "--trust-remote-modes" not in eng:
@@ -6372,7 +6815,7 @@ def _check_preflight_in_dry_run_and_cloud(rep, ctx):
     # structurally because standing up an object store here would test the
     # fake, not the code.
     try:
-        eng = open(target, encoding="utf-8", errors="replace").read()
+        eng = engine_text(target)
         tree = ast.parse(eng, filename=target)
     except Exception as e:                                  # noqa: BLE001
         rep.skip("preflight in dry-run and cloud", f"could not parse: {e}")
@@ -6400,18 +6843,19 @@ def _check_preflight_in_dry_run_and_cloud(rep, ctx):
 def _symlinked_case(mod, ws, argv, elevated=False, sudo_user=False):
     """Run one variant of the symlinked-destination scenario end to end."""
     src, dst, outside = _symlinked_dst_tree(ws)
-    real_env = os.environ.get("SUDO_USER")
+    # Under sudo, faked in this process — never by setting SUDO_USER, which
+    # sent the audit record to that user's real log (owner, 2026-11-13).
+    real_user, real_home = mod._sudo_user, mod._sudo_user_home
     try:
         if sudo_user:
-            os.environ["SUDO_USER"] = "someone"
+            home = os.path.join(ws, "sudo-home")
+            os.makedirs(home, exist_ok=True)
+            mod._sudo_user = lambda: "someone"
+            mod._sudo_user_home = lambda: home
         rc, out = _run_main_inprocess(mod, [src + os.sep, dst] + argv,
                                       elevated=elevated)
     finally:
-        if sudo_user:
-            if real_env is None:
-                os.environ.pop("SUDO_USER", None)
-            else:
-                os.environ["SUDO_USER"] = real_env
+        mod._sudo_user, mod._sudo_user_home = real_user, real_home
     return rc, out, sorted(os.listdir(outside)), dst
 
 
@@ -6473,14 +6917,21 @@ def _check_refused_links_are_counted(rep, ctx):
         rep.skip("refused duplicates counted once", f"could not import: {e}")
         return
 
-    real_env = os.environ.get("SUDO_USER")
+    real_user = mod._sudo_user
     real_audit = mod.write_sudo_audit
     audit = {}
     with temp_workspace() as ws:
         src, dst, outside = _symlinked_dst_dedup_tree(ws)
         log_path = os.path.join(ws, "run.json")
+        real_engine = os.environ.get("BLITCP_ENGINE")
         try:
-            os.environ["SUDO_USER"] = "someone"
+            # Under sudo, faked in this process — never via SUDO_USER.
+            mod._sudo_user = lambda: "someone"
+            # The sudo audit record is the --use-sudo route's — the legacy
+            # engines since E1 (a plain run under sudo takes the unified
+            # engine, which writes none): that route, through the test-only
+            # override, since this check cannot be root.
+            os.environ["BLITCP_ENGINE"] = "legacy"
             # The audit file goes to $SUDO_USER's home and is then made
             # immutable, which a test must not do to a real account. Capturing
             # the record it would write asserts the same thing.
@@ -6490,10 +6941,11 @@ def _check_refused_links_are_counted(rep, ctx):
                 elevated=False)
         finally:
             mod.write_sudo_audit = real_audit
-            if real_env is None:
-                os.environ.pop("SUDO_USER", None)
+            mod._sudo_user = real_user
+            if real_engine is None:
+                os.environ.pop("BLITCP_ENGINE", None)
             else:
-                os.environ["SUDO_USER"] = real_env
+                os.environ["BLITCP_ENGINE"] = real_engine
         landed = sorted(os.listdir(outside))
         try:
             with open(log_path, encoding="utf-8") as f:
@@ -6570,8 +7022,7 @@ def _check_summaries_share_one_reader(rep, ctx):
     """
     target = ctx["target"]
     try:
-        with open(target, encoding="utf-8") as f:
-            src = f.read()
+        src = engine_text(target)
     except OSError as e:
         rep.skip("one reader for the summary", str(e))
         return
@@ -6587,9 +7038,15 @@ def _check_summaries_share_one_reader(rep, ctx):
     bad = []
     helper = _span("_print_files_summary")
     ssh_twin = _span("_ssh_done_summary")
-    if helper is None:
+    # C21: the Files line and its self-checks live in _files_summary_line
+    # (called by _print_files_summary and by the fan-out's one-destination
+    # DONE block); the Skipped/Data/Time/Speed lines in _print_done_counts.
+    line_writer = _span("_files_summary_line")
+    done_counts = _span("_print_done_counts")
+    if helper is None or line_writer is None or done_counts is None:
         rep.fail("one reader for the summary",
-                 "_print_files_summary() is gone; every summary is counting "
+                 "_print_files_summary(), _files_summary_line() or "
+                 "_print_done_counts() is gone; every summary is counting "
                  "for itself again")
         return
 
@@ -6599,6 +7056,8 @@ def _check_summaries_share_one_reader(rep, ctx):
         if "total" not in seg and "{_tr(" not in seg:
             continue                       # not a DONE summary line
         if helper[0] <= m.start() < helper[1]:
+            continue
+        if line_writer[0] <= m.start() < line_writer[1]:
             continue
         if ssh_twin and ssh_twin[0] <= m.start() < ssh_twin[1]:
             continue
@@ -6611,18 +7070,33 @@ def _check_summaries_share_one_reader(rep, ctx):
     for verb in ("written", "downloaded", "relayed", "sent"):
         for m in re.finditer(r"Data:\s+\{C\.BOLD\}[^\n]{0,80}\}\s*" + verb,
                              src):
+            if done_counts[0] <= m.start() < done_counts[1]:
+                continue           # the shared writer; its callers below
             block = src[max(0, m.start() - 3000):m.start()]
             if "_print_files_summary(" not in block:
                 bad.append("the summary printing 'Data: ... %s' (line %d) "
                            "does not go through _print_files_summary()"
                            % (verb, src.count("\n", 0, m.start()) + 1))
+    # 3) Every caller of the shared Data writer counted through one of the
+    #    two counting writers just before it.
+    for m in re.finditer(r"_print_done_counts\(", src):
+        if done_counts[0] <= m.start() < done_counts[1]:
+            continue
+        block = src[max(0, m.start() - 3000):m.start()]
+        if not ("_print_files_summary(" in block
+                or "_files_summary_line(" in block):
+            bad.append("_print_done_counts() at line %d is not given totals "
+                       "counted by _print_files_summary() or "
+                       "_files_summary_line()"
+                       % (src.count("\n", 0, m.start()) + 1))
 
     if bad:
         rep.fail("one reader for the summary", "; ".join(sorted(set(bad))[:6]))
     else:
         rep.ok("one reader for the summary",
                "local, pull, push and relay summaries all count through "
-               "_print_files_summary()")
+               "_print_files_summary() / _files_summary_line(); the fan-out's "
+               "one-destination DONE block through the same writers")
 
 
 def _check_engine_parity_symlinked_dst(rep, ctx):
@@ -6693,9 +7167,24 @@ def _check_engine_parity_symlinked_dst(rep, ctx):
                            % (label,
                               out.count("Destination contains a symlinked "
                                         "directory")))
-            if "were refused and not written" not in out:
+            # The single-destination copy's sentence, or the one layout's
+            # Failed block (4.4.0): "5 files on … · refused: …".
+            # (This check runs in-process, under this script's own C
+            # locale: the layout's separator is "-" here, "·" in UTF-8.)
+            new_layout = re.search(r"(?m)^[Dd]one\s+(\d+) written [·-] \d+ "
+                                   r"skipped [·-] (\d+) linked [·-] (\d+) "
+                                   r"FAILED", out)
+            if "were refused and not written" not in out and not re.search(
+                    r"(?m)^Failed   5 of 6 files are not at this destination "
+                    r"[·-] refused: ", out):
                 bad.append("[%s, elevated] never said how many files were "
                            "refused" % label)
+            if new_layout:
+                if new_layout.groups() != ("1", "0", "5"):
+                    bad.append("[%s, elevated] Done line counts %r, expected "
+                               "1 written, 0 linked, 5 FAILED"
+                               % (label, new_layout.groups()))
+                continue
             # 6 files, 5 of them refused: the total stays 6 and the
             # breakdown has to account for all six. (This used to assert the
             # total was NOT 6, back when the summary subtracted refusals from
@@ -6725,6 +7214,7 @@ def section_bugs(rep, ctx):
     _check_lookup_scope_in_sql(rep, ctx)
     _check_error_never_empty(rep, ctx)
     _check_remote_scan_targeted(rep, ctx)
+    _check_remote_listings_nul(rep, ctx)
     _check_saved_ssh_protocol(rep, ctx)
     _check_http_relay_honors_transport(rep, ctx)
     _check_relay_errors_are_debuggable(rep, ctx)
@@ -6738,9 +7228,12 @@ def section_bugs(rep, ctx):
     _check_reported_speed(rep, ctx)
     _check_sparse_copy_integrity(rep, ctx)
     _check_sparse_verification_sees_content(rep, ctx)
+    _check_verify_names_its_level(rep, ctx)
     _check_sync_folder_dedup_downgrade(rep, ctx)
     _check_quiet_time_matches(rep, ctx)
     _check_sudo_askpass_route(rep, ctx)
+    _check_sudo_covers_engine_modules(rep, ctx)
+    _check_release_files_checked(rep, ctx)
     _check_fuseblk_is_local(rep, ctx)
     _check_memory_fs_detection(rep, ctx)
     _check_cache_preload(rep, ctx)
@@ -6827,7 +7320,11 @@ def section_bugs(rep, ctx):
             fs_block = os.statvfs(ws).f_frsize or os.statvfs(ws).f_bsize
         except (AttributeError, OSError):
             fs_block = 4096
-        rc, out, err = run_fc(target, [src, dst, "--no-verify", "--no-cache"])
+        # -v: with room to spare the line is detail (4.4.0); it is on the
+        # default output only when under a tenth of the free space would
+        # be left, or the check fails.
+        rc, out, err = run_fc(target, ["-v", src, dst, "--no-verify",
+                                       "--no-cache"])
         if fs_block <= 1024:
             rep.skip("space check counts block overhead",
                      f"fs block {fs_block}B too small to exercise rounding")
@@ -6996,12 +7493,7 @@ def _locate_target(explicit):
     if explicit:
         return os.path.abspath(explicit)
     here = os.path.dirname(os.path.abspath(__file__))
-    # blitcp.py is the engine; fast_copy.py is only a shim since the rename.
-    for name in ("blitcp.py", "fast_copy.py"):
-        cand = os.path.join(here, name)
-        if os.path.exists(cand):
-            return cand
-    return "blitcp.py"
+    return os.path.join(here, "blitcp.py")
 
 
 def _force_utf8_stdout():
@@ -7021,9 +7513,13 @@ def main(argv=None):
     _force_utf8_stdout()
     p = argparse.ArgumentParser(
         prog="audit_uat.py",
-        description="Full security + UAT audit for fast-copy.")
-    p.add_argument("--target", help="Path to fast_copy.py "
+        description="Full security + UAT audit for blitcp.")
+    p.add_argument("--target", help="Path to blitcp.py "
                    "(default: alongside this script)")
+    p.add_argument("--modules", metavar="A.py,B.py",
+                   help="the engine's module files to require (each must be "
+                        "there, real-sized, with its classes; default: "
+                        "blitcp_iface.py and blitcp_cloud.py beside the target)")
     p.add_argument("--section", action="append", choices=SECTIONS,
                    help="Run only this section (repeatable). Default: all.")
     p.add_argument("--json", dest="json_out", help="Write JSON report to PATH")
@@ -7046,8 +7542,10 @@ def main(argv=None):
     ctx = {"target": target, "allow_remote": args.allow_remote,
            "allow_cloud": args.allow_cloud, "allow_smb": args.allow_smb}
     rep = Reporter(verbose=args.verbose, quiet=args.quiet)
+    check_module_targets(rep, [m for m in args.modules.split(",") if m]
+                         if args.modules else engine_module_paths(target))
 
-    print(f"{C.BOLD}fast-copy audit + UAT{C.RESET}")
+    print(f"{C.BOLD}blitcp audit + UAT{C.RESET}")
     print(f"  target : {target}")
     print(f"  python : {sys.version.split()[0]}")
     print(f"  remote : {'on' if args.allow_remote else 'off (auto-skip)'}   "
@@ -7055,6 +7553,15 @@ def main(argv=None):
 
     sections = args.section or SECTIONS
     start = time.time()
+    # Before anything else: the target must be the engine. Every section
+    # below would otherwise "pass" over a stub (a check that inspected
+    # nothing must fail).
+    rep.begin("target")
+    if require_target(rep, "audit target is the engine", target,
+                      symbols=("def main", "def _dest_policy",
+                               "__version__")) is None:
+        rep.summary()
+        return 1
     for s in sections:
         rep.begin(s)
         try:

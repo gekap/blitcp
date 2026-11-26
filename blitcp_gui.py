@@ -96,7 +96,7 @@ _ensure_std_streams()
 # (_download_core). Nothing else reads it: with the engine loaded, GUI_VERSION
 # below is the engine's own __version__. Bump together with blitcp.py's
 # __version__ on release — uat_gui GUI-VER-1 and the auditor fail otherwise.
-_GUI_PIN = "4.2.15"
+_GUI_PIN = "4.4.0"
 GUI_REPO = "gekap/blitcp"
 # Shown only on the Settings version card, which the user opened on
 # purpose. Static URL — nothing is fetched, nothing is tracked.
@@ -110,14 +110,10 @@ try:
     sys.excepthook = sys.__excepthook__
     FC_OK = True
 except Exception:
-    try:
-        # Pre-rename engine sitting beside an updated GUI still loads.
-        import fast_copy as fc
-        sys.excepthook = sys.__excepthook__
-        FC_OK = True
-    except Exception:
-        fc = None
-        FC_OK = False
+    # No engine beside the GUI: demo mode. (The pre-rename fast_copy module
+    # is gone since 4.4.0 — the engine is blitcp.)
+    fc = None
+    FC_OK = False
 
 # One version for the window title, the Settings card and the update check: the
 # engine's. A literal here drifted — v4.2.13 showed "blitcp 4.2.3".
@@ -132,9 +128,9 @@ I18N_CHOICES = [("en", "English"), ("el", "Ελληνικά"), ("zh_CN", "中文
                 ("ja", "日本語")]
 
 if FC_OK:
-    # getattr-guarded: a pre-rename engine loaded through the fallback below
-    # (fast-copy ≤3.12.x) predates i18n and has no _tr/set_language. The GUI
-    # must still RUN with it — English strings, not a crash.
+    # getattr-guarded: an engine older than the GUI may lack _tr or
+    # set_language. The GUI must still RUN with it — English strings, not a
+    # crash.
     def _tr(s):
         f = getattr(fc, "_tr", None)
         return f(s) if f else s
@@ -165,7 +161,10 @@ def _early_gui_language():
         # Read-only here — new config dir first, pre-rename one as fallback
         # (the instance _config_dir migrates it on first write).
         lang = None
-        for d in ("blitcp", "fast_copy"):
+        legacy = getattr(fc, "LEGACY_CONFIG_DIR_NAME", None) if FC_OK else None
+        for d in ("blitcp", legacy):
+            if not d:
+                continue
             try:
                 with open(os.path.join(base, d, "gui_settings.json")) as f:
                     lang = json.load(f).get("language")
@@ -177,9 +176,41 @@ def _early_gui_language():
     except (OSError, ValueError):
         pass
 
+# ── PySide6 releases this GUI cannot run on ─────────────────────────────────
+# PySide6 6.12.0 drops a reference to None on every Qt call that returns
+# nothing. Where None is not immortal (Python < 3.12) its count runs out and
+# the GUI aborts mid-run: "Fatal Python error: none_dealloc".
+# [measured: 2026-11-05, Python 3.11.16 — 6.12.0 aborts in the log flood,
+# 6.11.2 passes every GUI scenario; refcount(None) falls by 1 per
+# QTextCharFormat.setForeground / QTextCursor.insertBlock on 6.12.0 only]
+# {PySide6 version: first Python on which it does not crash}
+_PYSIDE_BROKEN = {"6.12.0": (3, 12)}
+
+
+def _pyside_refusal(py, qt):
+    """The one-line reason this GUI will not start on Python py (a (major,
+    minor) tuple) with PySide6 qt, or None when it can."""
+    good = _PYSIDE_BROKEN.get(qt)
+    if good is None or tuple(py[:2]) >= good:
+        return None
+    return _tr("blitcp-gui cannot start: PySide6 {qt} crashes on Python older "
+               "than {good}. Install another version (pip install "
+               "\"PySide6!={qt}\") or use Python {good} or later.").format(
+        qt=qt, good="%d.%d" % good)
+
+
+if not (len(sys.argv) > 1 and sys.argv[1] == "--fc-core"):
+    # The engine mode of a frozen build makes no Qt calls: never refuse it.
+    import PySide6 as _pyside
+    _qt = getattr(_pyside, "__version__", "")
+    if _pyside_refusal(sys.version_info, _qt) is not None:
+        _early_gui_language()               # the message in the user's language
+        sys.stderr.write((_pyside_refusal(sys.version_info, _qt) or "") + "\n")
+        sys.exit(1)
+
 from PySide6.QtCore import (
     Qt, QTimer, Signal, Slot, QThread, QObject, QPropertyAnimation, QEasingCurve,
-    QProcess, QProcessEnvironment,
+    QProcess, QProcessEnvironment, QUrl,
 )
 from PySide6.QtGui import (
     QFontDatabase, QFont, QColor, QPixmap, QPainter, QIcon, QTextCharFormat,
@@ -190,7 +221,90 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QScrollArea,
     QDialog, QGraphicsOpacityEffect, QSizePolicy, QFrame, QFormLayout,
     QFileDialog, QMessageBox, QCheckBox, QTextBrowser, QPlainTextEdit,
+    QSpinBox,
 )
+
+# Mounts that are never a drive a user picks: the system's own and pseudo
+# filesystems (by type), and the system's own places (by mount point).
+_PICKER_SKIP_FS = frozenset((
+    "squashfs", "tmpfs", "ramfs", "devtmpfs", "devpts", "proc", "sysfs",
+    "cgroup", "cgroup2", "securityfs", "debugfs", "tracefs", "pstore", "bpf",
+    "configfs", "fusectl", "mqueue", "hugetlbfs", "binfmt_misc", "efivarfs",
+    "nsfs", "autofs", "rpc_pipefs", "overlay", "fuse.snapfuse",
+    "fuse.gvfsd-fuse", "fuse.portal", "fuse.lxcfs"))
+
+
+def _picker_sidebar_paths(mountinfo, user, home, isdir=os.path.isdir):
+    """The places the Linux folder picker's sidebar lists, in order: home,
+    every mounted user volume in mountinfo (the text of /proc/self/mountinfo)
+    — one level under /run/media/USER, /media/USER, /media and /mnt — the
+    udisks2 parent folders that exist, and "/" last. Mount points come
+    decoded (a label "CF AVA Beetle 3" is written CF\\040AVA\\040Beetle\\0403)."""
+    unescape = getattr(fc, "_unescape_mountinfo", None) or (lambda s: s)
+    roots = ([f"/run/media/{user}", f"/media/{user}"] if user else []) \
+        + ["/media", "/mnt"]
+    vols = []
+    for line in (mountinfo or "").splitlines():
+        parts = line.split()
+        if "-" not in parts[6:]:
+            continue
+        sep = parts.index("-", 6)
+        if len(parts) <= sep + 1 or len(parts) < 5:
+            continue
+        mp, fs = unescape(parts[4]), unescape(parts[sep + 1])
+        if fs in _PICKER_SKIP_FS or mp == "/" or mp.startswith(
+                ("/boot", "/snap/", "/proc", "/sys", "/dev", "/run/user")):
+            continue
+        parent, name = os.path.split(mp.rstrip("/"))
+        if not name or parent not in roots or mp in roots:
+            continue
+        if mp not in vols:
+            vols.append(mp)
+    out = [home] if home else []
+    out += sorted(v for v in vols if v not in out)
+    out += [p for p in roots[:2] if p not in out and isdir(p)]
+    if "/" not in out:
+        out.append("/")
+    return out
+
+
+def _kde_session():
+    """A KDE Plasma session (XDG_CURRENT_DESKTOP names KDE)."""
+    return "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":")
+
+
+def _pick_local_dir(parent, title, start=""):
+    """Every local folder picker of the GUI. Windows, macOS and a Linux
+    desktop whose native (GTK) dialog Qt uses: the static native dialog, as
+    always — GTK's sidebar lists udisks2 drives itself, the frozen build's
+    GIO hook included (GIO's own unix volume monitor; checked on the b2
+    binary). KDE: PySide6's Qt cannot load the system's plasma-integration
+    theme, so Qt's own dialog opens with no drives in its sidebar; it gets
+    home, the mounted volumes (read now, never cached) and "/"."""
+    if not (sys.platform.startswith("linux") and _kde_session()):
+        return QFileDialog.getExistingDirectory(parent, title, start)
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8",
+                  errors="surrogateescape") as f:
+            mountinfo = f.read()
+    except OSError:
+        mountinfo = ""
+    import getpass
+    try:
+        user = getpass.getuser()
+    except Exception:                                    # noqa: BLE001
+        user = ""
+    dlg = QFileDialog(parent, title, start)
+    dlg.setFileMode(QFileDialog.FileMode.Directory)
+    dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dlg.setSidebarUrls([QUrl.fromLocalFile(p) for p in _picker_sidebar_paths(
+        mountinfo, user, os.path.expanduser("~"))])
+    if not dlg.exec():
+        return ""
+    got = dlg.selectedFiles()
+    return got[0] if got else ""
+
 
 def _host_env():
     """The environment of the user's session, for programs the GUI launches
@@ -617,6 +731,8 @@ def stylesheet(v):
     QPushButton#opt:hover {{ border-color: {v['line2']}; }}
     QPushButton#opt[active="true"] {{ background: {v['asoft']}; color: {v['atx']};
         border-color: transparent; }}
+    QPushButton#opt:disabled {{ background: transparent; color: {v['faint']};
+        border: 1px dashed {v['line']}; }}
     QLabel#optlbl {{ font-size: 12px; color: {v['muted']}; }}
 
     QComboBox#mini {{ min-height: 32px; border: 1px solid {v['line']}; border-radius: 9px;
@@ -654,6 +770,29 @@ def stylesheet(v):
     QLineEdit#advinput {{ min-height: 34px; border: 1px solid {v['line']}; border-radius: 9px;
         background: {v['bg']}; font-size: 12px; padding: 0 10px; color: {v['txt']}; }}
     QLineEdit#advinput:focus {{ border-color: {v['accent']}; }}
+    /* the stall-timeout box: drawn like advinput — unstyled it kept the
+       platform's base under the theme's text (white on white, George's
+       dark-theme run on 86ca1dd) */
+    QSpinBox#advspin {{ min-height: 32px; min-width: 64px;
+        border: 1px solid {v['line']}; border-radius: 9px;
+        background: {v['bg']}; color: {v['txt']}; font-size: 12px;
+        padding: 0 4px 0 10px; selection-background-color: {v['asoft']};
+        selection-color: {v['atx']}; }}
+    QSpinBox#advspin:focus {{ border-color: {v['accent']}; }}
+    QSpinBox#advspin:disabled {{ color: {v['faint']}; background: {v['panel']}; }}
+    QSpinBox#advspin::up-button, QSpinBox#advspin::down-button {{
+        subcontrol-origin: border; width: 18px; border: none;
+        background: transparent; }}
+    QSpinBox#advspin::up-button {{ subcontrol-position: top right; }}
+    QSpinBox#advspin::down-button {{ subcontrol-position: bottom right; }}
+    QSpinBox#advspin::up-arrow {{ image: none; width: 0; height: 0;
+        border-left: 4px solid transparent; border-right: 4px solid transparent;
+        border-bottom: 5px solid {v['muted']}; }}
+    QSpinBox#advspin::down-arrow {{ image: none; width: 0; height: 0;
+        border-left: 4px solid transparent; border-right: 4px solid transparent;
+        border-top: 5px solid {v['muted']}; }}
+    QSpinBox#advspin::up-arrow:disabled, QSpinBox#advspin::down-arrow:disabled {{
+        border-top-color: {v['faint']}; border-bottom-color: {v['faint']}; }}
     QFrame#chips {{ border: 1px solid {v['line']}; border-radius: 9px; background: {v['bg']}; }}
     QFrame#chip {{ background: {v['p2']}; border-radius: 7px; }}
     QLabel#chiptext {{ font-family: {MONO}; font-size: 11px; color: {v['txt']}; }}
@@ -874,6 +1013,20 @@ class Toast(QLabel):
 
 
 # ───────────────────────────────────────────────────── modal dialogs ──
+# The form's first example paths, in the platform's own form (a Windows
+# path on Linux was what George saw after opening the app, 2026-11-25).
+if os.name == "nt":
+    EXAMPLE_SRC, EXAMPLE_DST = r"C:\projects\backups\data", "F:\\consolidated\\"
+elif sys.platform == "darwin":
+    EXAMPLE_SRC = os.path.join(os.path.expanduser("~"), "projects", "backups",
+                               "data")
+    EXAMPLE_DST = "/Volumes/Backup/consolidated/"
+else:
+    EXAMPLE_SRC = os.path.join(os.path.expanduser("~"), "projects", "backups",
+                               "data")
+    EXAMPLE_DST = "/mnt/backup/consolidated/"
+
+
 class PasswordDialog(QDialog):
     """Generic password / passphrase prompt (matches #pwModal)."""
 
@@ -1501,6 +1654,68 @@ class TextPromptDialog(QDialog):
         QTimer.singleShot(40, self.input.setFocus)
 
 
+class VerifyManifestDialog(QDialog):
+    """A destination folder (typed, or picked with Browse…) and whether
+    to read every file back — the CLI's --verify-manifest DEST [--deep]."""
+
+    def __init__(self, parent, dest=""):
+        super().__init__(parent)
+        self.setModal(True)
+        self.setFixedWidth(460)
+        self.setWindowTitle(_tr("Verify against manifest"))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 22, 24, 22)
+        t = QLabel(_tr("Verify against manifest"))
+        t.setObjectName("sheettitle")
+        lay.addWidget(t)
+        lay.addSpacing(8)
+        sub = QLabel(_tr("Check a destination against the manifest a copy "
+                         "wrote there, without the source "
+                         "(--verify-manifest)"))
+        sub.setObjectName("sub")
+        sub.setWordWrap(True)
+        lay.addWidget(sub)
+        lay.addSpacing(14)
+        ll = QLabel(_tr("Destination folder"))
+        ll.setObjectName("fieldlbl")
+        lay.addWidget(ll)
+        lay.addSpacing(5)
+        prow = QHBoxLayout()
+        self.input = QLineEdit(dest)
+        self.input.setObjectName("fieldinput")
+        self.input.returnPressed.connect(self._ok)
+        prow.addWidget(self.input, 1)
+        browse = textbtn(_tr("Browse…"), oid="btn")
+        browse.clicked.connect(self._browse)
+        prow.addWidget(browse)
+        lay.addLayout(prow)
+        lay.addSpacing(12)
+        self.deep = QCheckBox(_tr("Read every file back (--deep)"))
+        lay.addWidget(self.deep)
+        lay.addSpacing(16)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = textbtn(_tr("Cancel"), oid="btn")
+        cancel.clicked.connect(self.reject)
+        ok = textbtn(_tr("Verify"), oid="btnprimary")
+        ok.clicked.connect(self._ok)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def _browse(self):
+        start = self.input.text().strip()
+        d = _pick_local_dir(
+            self, _tr("Destination folder"),
+            start if os.path.isdir(start) else os.path.expanduser("~"))
+        if d:
+            self.input.setText(d)
+
+    def _ok(self):
+        if self.input.text().strip():
+            self.accept()
+
+
 class RemoteBrowseDialog(QDialog):
     """Popup to browse an SSH server or cloud bucket and pick a path."""
 
@@ -1515,13 +1730,17 @@ class RemoteBrowseDialog(QDialog):
         self._want_req = None             # listing request this dialog waits for
         self._shown = None                # ((name, cwd), entries, err, total)
         self.setModal(True)
-        self.setWindowTitle(_tr("Browse SSH") if kind == "ssh" else _tr("Browse cloud"))
+        self.setWindowTitle(_tr("Browse SSH") if kind == "ssh" else
+                            _tr("Browse SMB") if kind == "smb" else
+                            _tr("Browse cloud"))
         self.resize(580, 580)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(0)
-        title = QLabel(_tr("Browse SSH server") if kind == "ssh" else _tr("Browse cloud storage"))
+        title = QLabel(_tr("Browse SSH server") if kind == "ssh" else
+                       _tr("Browse SMB share") if kind == "smb" else
+                       _tr("Browse cloud storage"))
         title.setObjectName("sheettitle")
         lay.addWidget(title)
         lay.addSpacing(12)
@@ -1717,6 +1936,120 @@ class RemoteBrowseDialog(QDialog):
         self.accept()
 
 
+# Destination kinds the fan-out writes (--dest), in the order offered.
+DEST_KINDS = ("Local", "SSH", "SMB", "Cloud")
+_BROWSE_KIND = {"SSH": "ssh", "SMB": "smb", "Cloud": "cloud"}
+
+
+class AddDestinationDialog(QDialog):
+    """One more destination for a run: its kind, its path (typed, or picked
+    with the same browsers and saved connections as everywhere else) and
+    whether to verify it by downloading every file (--deep-verify)."""
+
+    def __init__(self, gui, initial=None):
+        super().__init__(gui)
+        self.gui = gui
+        self.result = None
+        init = initial or {"t": "Local", "p": "", "deep": False}
+        self.setModal(True)
+        self.setWindowTitle(_tr("Add destination"))
+        self.resize(560, 280)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        title = QLabel(_tr("Add destination"))
+        title.setObjectName("sheettitle")
+        lay.addWidget(title)
+        lay.addSpacing(12)
+
+        row = QHBoxLayout()
+        self.kind = QComboBox()
+        self.kind.setObjectName("mini")
+        for k in DEST_KINDS:
+            self.kind.addItem(_tr(k), k)
+        self.kind.setCurrentIndex(max(0, DEST_KINDS.index(init["t"])
+                                      if init["t"] in DEST_KINDS else 0))
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        row.addWidget(self.kind)
+        self.path = QLineEdit(init.get("p", ""))
+        self.path.setObjectName("path")
+        row.addWidget(self.path, 1)
+        browse = textbtn(_tr("Browse…"), oid="btn")
+        browse.clicked.connect(self._browse)
+        row.addWidget(browse)
+        lay.addLayout(row)
+        lay.addSpacing(8)
+
+        self.hint = QLabel("")
+        self.hint.setObjectName("sub")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
+        lay.addSpacing(8)
+
+        lay.addStretch(1)
+
+        btns = QHBoxLayout()
+        newc = textbtn(_tr("New connection…"), oid="btn")
+        newc.clicked.connect(self._new_connection)
+        btns.addWidget(newc)
+        btns.addStretch(1)
+        cancel = textbtn(_tr("Cancel"), oid="btn")
+        cancel.clicked.connect(self.reject)
+        ok = textbtn(_tr("Add"), oid="btnprimary")
+        ok.clicked.connect(self._accept)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+        self._kind_changed()
+
+    def _key(self):
+        return self.kind.currentData() or "Local"
+
+    def _kind_changed(self):
+        k = self._key()
+        self.hint.setText({
+            "Local": _tr("A folder on this computer or a mounted drive."),
+            "SSH": _tr("user@host:/path, or a saved SSH connection as "
+                       "NAME:path."),
+            "SMB": _tr("smb://host/share/path, a UNC path, or a saved SMB "
+                       "connection as NAME:path."),
+            "Cloud": _tr("s3://bucket/prefix, az://container/prefix, "
+                         "gs://bucket/prefix, or a saved connection as "
+                         "NAME:path."),
+        }[k])
+
+    def _browse(self):
+        k = self._key()
+        if k == "Local":
+            cur = self.path.text()
+            start = cur if os.path.isdir(cur) else self.gui.local_home
+            d = _pick_local_dir(self, _tr("Choose destination folder"), start)
+            if d:
+                self.path.setText(self.gui._normalize_local(d))
+            return
+        self.gui._open_remote_browser(_BROWSE_KIND[k], self.path.text(),
+                                      self.path.setText)
+
+    def _new_connection(self):
+        self.gui.open_conn_modal(None)
+
+    def _accept(self):
+        k, p = self._key(), self.path.text().strip()
+        if not p:
+            self.gui.show_toast(_tr("Set a destination"))
+            return
+        if p.lower().startswith(("http://", "https://")):
+            self.gui.show_toast(_tr("An http(s):// URL can only be the "
+                                    "source — there is no generic HTTP "
+                                    "upload"))
+            return
+        if k == "Local":
+            p = self.gui._normalize_local(p)
+        # No "download to verify": --deep-verify went with the fan-out
+        # engine (owner's decision (a), 2026-11-23).
+        self.result = {"t": k, "p": p, "deep": False}
+        self.accept()
+
+
 def _engine_auto_update_enabled():
     """The engine owns this setting so the CLI and the GUI cannot disagree.
     Unanswered means off here: the GUI checkbox has to show a definite state,
@@ -1742,8 +2075,7 @@ def _auto_update_due():
     the engine's own throttle so launching the GUI ten times does not mean ten
     requests."""
     try:
-        if os.environ.get("BLITCP_NO_UPDATE_CHECK") or \
-                os.environ.get("FAST_COPY_NO_UPDATE_CHECK"):
+        if fc is not None and fc._env("NO_UPDATE_CHECK"):   # FAST_COPY_* too, warned
             return False
         st = fc._load_settings()
         if not st.get("auto_update_check"):
@@ -1814,6 +2146,30 @@ class _ListWorker(QThread):
         self.done.emit(self.req, entries, err, total)
 
 
+class _ProbeWorker(QThread):
+    """A saved connection's Test, off the UI thread: the engine's own
+    destination probe (probe_connection) — connect, the folder, a probe
+    file written and removed; a store listed — never a lighter check.
+    done(name, ok, line)."""
+    done = Signal(str, bool, str)
+
+    def __init__(self, name, conn, creds_path, confirm_host_key):
+        super().__init__()
+        self.name, self.conn, self.creds_path = name, dict(conn), creds_path
+        self.confirm_host_key = confirm_host_key
+
+    def run(self):
+        try:
+            if fc is None:
+                raise RuntimeError(_tr("cannot be tested without the engine"))
+            r = fc.probe_connection(self.name, self.conn, self.creds_path,
+                                    confirm_host_key=self.confirm_host_key)
+            ok, line = r.ok, r.line
+        except Exception as e:                  # the card waits for an answer
+            ok, line = False, BlitcpGUI._clean_err(e)
+        self.done.emit(self.name, ok, line)
+
+
 class _OnUIThread(QObject):
     """Run a callable on the UI thread and wait for its result: the one dialog a
     listing worker can need is the unknown-SSH-host-key prompt."""
@@ -1863,10 +2219,10 @@ class _DownloadWorker(QThread):
             tok = fc._update_token() if (FC_OK and hasattr(fc, "_update_token")) else ""
             if tok:                       # private-repo release assets need auth
                 headers["Authorization"] = f"Bearer {tok}"
-            req = urllib.request.Request(self.url, headers=headers)
+            req = urllib.request.Request(self.url, headers=headers)  # noqa: S310 — the release asset URL from the GitHub API, https
             written = 0
-            with urllib.request.urlopen(req, timeout=60, context=ctx) as r, \
-                    open(self.dest, "wb") as f:
+            resp = urllib.request.urlopen(req, timeout=60, context=ctx)  # noqa: S310 — the release asset URL from the GitHub API, https
+            with resp as r, open(self.dest, "wb") as f:
                 while True:
                     chunk = r.read(262144)
                     if not chunk:
@@ -2041,7 +2397,7 @@ class BlitcpGUI(QWidget):
 
         # ── data model (mirrors the JS state) ──
         self.sources = [
-            {"p": r"C:\projects\backups\data", "t": "Local"},
+            {"p": EXAMPLE_SRC, "t": "Local"},
         ]
         self.dest_type = "Local"
         # One-off sign-in for a Web source (set from HttpAuthDialog). A saved
@@ -2140,31 +2496,37 @@ class BlitcpGUI(QWidget):
         conns = data.get("connections", data) if isinstance(data, dict) else {}
         return conns if isinstance(conns, dict) else {}
 
-    def unlock_credentials(self):
+    def unlock_credentials(self, toast=True):
         """Prompt for the passphrase and load the real entries. No-op if already
-        loaded or the file isn't encrypted."""
+        loaded or the file isn't encrypted. Returns why it is still locked
+        ("" when the dialog was cancelled), else None; toast=False leaves
+        saying it to the caller (one line, not two)."""
         if not FC_OK or self.creds_loaded or not self.creds_encrypted:
-            return
+            return None
         dlg = PasswordDialog(
             self, _tr("Unlock credentials.json"), "", _tr("Enter passphrase"))
         if not dlg.exec():
-            return
+            return ""
         pw = dlg.input.text().encode("utf-8")
+        why = None
         try:
             raw = open(self.creds_path, "rb").read()
             conns, _ = fc.decrypt_conns(raw, pw)
         except SystemExit as e:
-            self.show_toast(str(e).replace("Error: ", "").split(",")[0])
-            return
+            why = str(e).replace("Error: ", "").split(",")[0]
         except Exception as e:
-            self.show_toast(_tr("Could not read credentials:") + " " + str(e).splitlines()[0])
-            return
+            why = _tr("Could not read credentials:") + " " + str(e).splitlines()[0]
+        if why is not None:
+            if toast:
+                self.show_toast(why)
+            return why
         self.conns = conns if isinstance(conns, dict) else {}
         self.creds_pw = pw
         self.creds_loaded = True
         self.render_conns()
         self.fill_conn_sel()
         self.show_toast(f"Unlocked — {len(self.conns)} connection(s)")
+        return None
 
     def reload_credentials(self):
         """Forget the cached passphrase and re-read the file from disk."""
@@ -2338,8 +2700,8 @@ class BlitcpGUI(QWidget):
     # ───────────────────────────────────────────── TRANSFER screen ──
     def _screen_transfer(self, lay):
         self._header(lay, _tr("New transfer"),
-                     _tr("Many sources → one destination. With more than one "
-                         "source, local only."))
+                     _tr("Sources → one or more destinations: the source is "
+                         "read once and written to every destination."))
 
         # sources label + multi pill
         lblrow = QHBoxLayout()
@@ -2406,9 +2768,11 @@ class BlitcpGUI(QWidget):
         self.dst_icon.setCursor(Qt.PointingHandCursor)
         self.dst_icon.setToolTip(_tr("Browse…"))
         self.dst_icon.clicked.connect(self.browse_dest_path)
-        self.dst_input = QLineEdit("F:\\consolidated\\")
+        self.dst_input = QLineEdit(EXAMPLE_DST)
         self.dst_input.setObjectName("path")
         self.dst_input.editingFinished.connect(self._normalize_dest)
+        self.dst_input.textEdited.connect(
+            lambda _t: setattr(self, "main_deep", False))
         dlay.addWidget(self.dst_icon)
         dlay.addWidget(self.dst_input, 1)
         self.dst_tags = {}
@@ -2422,6 +2786,29 @@ class BlitcpGUI(QWidget):
             dlay.addWidget(t)
         lay.addWidget(self.dst_row)
         lay.addSpacing(8)
+
+        # more destinations (--dest fan-out): read once, written to each
+        self.extra_dests = []
+        self.extra_box = QVBoxLayout()
+        self.extra_box.setSpacing(8)
+        lay.addLayout(self.extra_box)
+        drow2 = QHBoxLayout()
+        drow2.setSpacing(8)
+        addd = textbtn(ic("plus") + " " + _tr("Add destination"), oid="add")
+        addd.setCursor(Qt.PointingHandCursor)
+        addd.clicked.connect(self.add_destination)
+        drow2.addWidget(addd)
+        drow2.addStretch(1)
+        self.preset_sel = QComboBox()
+        self.preset_sel.setObjectName("mini")
+        self.preset_sel.activated.connect(self._preset_picked)
+        drow2.addWidget(self.preset_sel)
+        savep = textbtn(_tr("Save destinations…"), oid="btn")
+        savep.clicked.connect(lambda: self.save_dest_preset())
+        drow2.addWidget(savep)
+        lay.addLayout(drow2)
+        lay.addSpacing(8)
+        self._refresh_presets()
 
         # options row
         opts = QHBoxLayout()
@@ -2491,6 +2878,7 @@ class BlitcpGUI(QWidget):
     def _toggle_opt(self, o):
         o.setProperty("active", not o.property("active"))
         repolish(o)
+        self._adv_sync()
 
     def _build_advanced(self):
         adv = QFrame()
@@ -2549,14 +2937,39 @@ class BlitcpGUI(QWidget):
         flags = QHBoxLayout()
         flags.setSpacing(8)
         self.flag_opts = {}
+        # "manifest (MHL)" is the CLI's --manifest (George, 2026-11-25): a
+        # chip like the others — a checkbox there showed no check on
+        # George's desktop (77023c8). It and the stall row are offered
+        # where the CLI takes them — _adv_sync keeps them so.
         for name in ["overwrite all", "force", "no hash cache", "--use-sudo",
-                     "dedup existing", "include node_modules"]:
+                     "dedup existing", "include node_modules",
+                     "manifest (MHL)"]:
             o = self._opt(_tr(name), False)
             self.flag_opts[name] = o
             flags.addWidget(o)
         flags.addStretch(1)
         lay.addLayout(flags)
+        self.stall_row = QFrame()
+        srl = QHBoxLayout(self.stall_row)
+        srl.setContentsMargins(0, 12, 0, 0)
+        srl.setSpacing(6)
+        before, _n, after = _tr("Drop a destination that stops answering "
+                                "after {n} s").partition("{n}")
+        self.stall_spin = QSpinBox()
+        self.stall_spin.setObjectName("advspin")
+        self.stall_spin.setRange(1, 86400)
+        self.stall_spin.setValue(self._stall_default())
+        self.stall_spin.setToolTip("--stall-timeout")
+        if before.strip():
+            srl.addWidget(self._advlbl(before.strip()))
+        srl.addWidget(self.stall_spin)
+        if after.strip():
+            srl.addWidget(self._advlbl(after.strip()))
+        srl.addStretch(1)
+        lay.addWidget(self.stall_row)
         lay.addSpacing(15)
+        self.hash_sel.currentTextChanged.connect(lambda _t: self._adv_sync())
+        self._adv_sync()
 
         lay.addWidget(self._gl(_tr("EXCLUDE PATTERNS")))
         lay.addSpacing(9)
@@ -2579,6 +2992,42 @@ class BlitcpGUI(QWidget):
         lay.addWidget(self.idx_chips_frame)
         self.render_idx_chips()
         return adv
+
+    @staticmethod
+    def _stall_default():
+        return int(getattr(fc, "DEFAULT_STALL_TIMEOUT", 120)) if FC_OK \
+            else 120
+
+    def _manifest_refusal(self):
+        """Why --manifest does not go with the form as it is — the CLI's
+        own line (_manifest_lines) — or None: a local source, xxh128
+        hashes and verification."""
+        live = [sc for sc in self.sources if sc["p"].strip()]
+        h = self.hash_sel.currentText().strip()
+        xxh = h == "xxh128" or (h == "auto" and FC_OK
+                                and bool(getattr(fc, "_HAS_XXHASH", False)))
+        if (not self.transfer_opts["verify"].property("active") or not xxh
+                or any(sc["t"] != "Local" for sc in live)):
+            return _tr("--manifest takes a local source, xxh128 hashes and "
+                       "verification")
+        return None
+
+    def _manifest_on(self):
+        o = getattr(self, "flag_opts", {}).get("manifest (MHL)")
+        return (o is not None and bool(o.property("active"))
+                and self._manifest_refusal() is None)
+
+    def _adv_sync(self):
+        """The manifest chip enabled only where the CLI takes --manifest
+        (greyed, the reason as its tooltip); the stall row shown only with
+        two or more destinations."""
+        if not hasattr(self, "stall_row"):
+            return
+        why = self._manifest_refusal()
+        o = self.flag_opts["manifest (MHL)"]
+        o.setEnabled(why is None)
+        o.setToolTip(why or "--manifest")
+        self.stall_row.setVisible(bool(self.extra_dests))
 
     def _gl(self, text):
         l = QLabel(text)
@@ -2664,7 +3113,7 @@ class BlitcpGUI(QWidget):
     def add_idx_path(self):
         # Must be a real directory on the destination filesystem; the engine
         # warns and skips any path not under the destination mount.
-        d = QFileDialog.getExistingDirectory(self, "Index existing folder")
+        d = _pick_local_dir(self, "Index existing folder")
         if d and d not in self.index_existing_paths:
             self.index_existing_paths.append(d)
             self.render_idx_chips()
@@ -2682,7 +3131,16 @@ class BlitcpGUI(QWidget):
         self.pfiles = QLabel(_tr("0 / 0 files"))
         self.pfiles.setObjectName("pfiles")
         top.addWidget(self.pstate)
+        # Stops a check against a manifest (a destination that does not
+        # answer waits out --stall-timeout before its line): right of the
+        # title, its own place — never on the counter at the far right.
+        self.vm_cancel = textbtn(_tr("Cancel"), oid="btnsm")
+        self.vm_cancel.clicked.connect(self._cancel_verify)
+        self.vm_cancel.hide()
+        top.addSpacing(12)
+        top.addWidget(self.vm_cancel)
         top.addStretch(1)
+        top.addSpacing(12)
         top.addWidget(self.pfiles)
         lay.addLayout(top)
         lay.addSpacing(11)
@@ -2728,6 +3186,16 @@ class BlitcpGUI(QWidget):
         self.pcur.setObjectName("statk")
         lay.addSpacing(4)
         lay.addWidget(self.pcur)
+        lay.addSpacing(9)
+        # One row per destination of a fan-out run (fanout_start creates
+        # them; sink_progress and fanout_result fill them in).
+        self.sink_wrap = QFrame()
+        self.sink_box = QVBoxLayout(self.sink_wrap)
+        self.sink_box.setContentsMargins(0, 0, 0, 0)
+        self.sink_box.setSpacing(8)
+        self.sink_wrap.hide()
+        self.sink_rows = {}
+        lay.addWidget(self.sink_wrap)
         lay.addSpacing(9)
 
         self.log_box = QFrame()
@@ -2842,6 +3310,14 @@ class BlitcpGUI(QWidget):
     def _screen_history(self, lay):
         self._header(lay, _tr("History"),
                      _tr("Past transfers from the saved JSON logs."))
+        vrow = QHBoxLayout()
+        vbtn = textbtn(_tr("Verify against manifest") + "…", "check",
+                       oid="btn")
+        vbtn.clicked.connect(lambda: self.verify_against_manifest())
+        vrow.addWidget(vbtn)
+        vrow.addStretch(1)
+        lay.addLayout(vrow)
+        lay.addSpacing(12)
         self.history_box = QVBoxLayout()
         self.history_box.setSpacing(9)
         lay.addLayout(self.history_box)
@@ -3030,17 +3506,14 @@ class BlitcpGUI(QWidget):
         self.show_toast(_tr("Downloading blitcp.py") + " v" + _GUI_PIN + " …")
         QApplication.processEvents()
         base = "https://raw.githubusercontent.com/" + GUI_REPO
-        # blitcp.py on current tags; blitcp.py covers pre-rename tags.
         urls = [base + "/v" + _GUI_PIN + "/blitcp.py",
                 base + "/" + _GUI_PIN + "/blitcp.py",
-                base + "/main/blitcp.py",
-                base + "/v" + _GUI_PIN + "/fast_copy.py",
-                base + "/main/fast_copy.py"]
+                base + "/main/blitcp.py"]
         dest = os.path.join(HERE, "blitcp.py")
         err = "no source reachable"
         for u in urls:
             try:
-                with urllib.request.urlopen(u, timeout=25) as r:
+                with urllib.request.urlopen(u, timeout=25) as r:  # noqa: S310 — raw.githubusercontent.com URLs built in code, https
                     data = r.read()
                 if b"__version__" in data and b"def main" in data:
                     with open(dest, "wb") as f:
@@ -3205,6 +3678,7 @@ class BlitcpGUI(QWidget):
 
         self._render_source_warnings(counts, multi)
         self._render_http_auth_bar()
+        self._adv_sync()
 
     # ── http(s) source sign-in (cookies / browser session / header) ──
     @staticmethod
@@ -3380,7 +3854,7 @@ class BlitcpGUI(QWidget):
 
     def _conns_of_kind(self, kind):
         """Names of loaded connections matching a browse kind ('ssh'/'cloud')."""
-        wanted = ("ssh",) if kind == "ssh" else ("s3", "az", "gs")
+        wanted = {"ssh": ("ssh",), "smb": ("smb",)}.get(kind, ("s3", "az", "gs"))
         return [n for n, c in self.conns.items()
                 if isinstance(c, dict) and c.get("type") in wanted]
 
@@ -3406,7 +3880,7 @@ class BlitcpGUI(QWidget):
             if not self.creds_loaded:
                 return                       # cancelled / wrong passphrase
         if not self._conns_of_kind(kind):
-            label = "SSH" if kind == "ssh" else "cloud"
+            label = {"ssh": "SSH", "smb": "SMB"}.get(kind, "cloud")
             self.show_toast(f"No {label} connections — add one in Connections")
             return
         dlg = RemoteBrowseDialog(self, kind, start_conn=self._match_conn(kind, path))
@@ -3419,7 +3893,7 @@ class BlitcpGUI(QWidget):
         s = self.sources[idx]
         if s["t"] == "Local":
             start = s["p"] if os.path.isdir(s["p"]) else self.local_home
-            d = QFileDialog.getExistingDirectory(self, "Choose source folder", start)
+            d = _pick_local_dir(self, "Choose source folder", start)
             if d:
                 # Qt returns forward-slash paths even on Windows; show native form.
                 self.sources[idx]["p"] = self._normalize_local(d)
@@ -3441,7 +3915,7 @@ class BlitcpGUI(QWidget):
         if self.dest_type == "Local":
             cur = self.dst_input.text()
             start = cur if os.path.isdir(cur) else self.local_home
-            d = QFileDialog.getExistingDirectory(self, "Choose destination folder", start)
+            d = _pick_local_dir(self, "Choose destination folder", start)
             if d:
                 # Qt returns forward-slash paths even on Windows; show native form.
                 self.dst_input.setText(self._normalize_local(d))
@@ -3490,6 +3964,7 @@ class BlitcpGUI(QWidget):
     # ─────────────────────────────────────────────── destination ──
     def set_dest_type(self, k):
         self.dest_type = k
+        self.main_deep = False
         self.render_dest()
         self._normalize_dest()           # switching to Local → fix E:/ → E:\
 
@@ -3498,6 +3973,121 @@ class BlitcpGUI(QWidget):
         for k, t in self.dst_tags.items():
             t.setProperty("state", "on" if k == self.dest_type else "off")
             repolish(t)
+
+    # ── more destinations (fan-out) ───────────────────────────────────────
+    def add_destination(self):
+        dlg = AddDestinationDialog(self)
+        if dlg.exec() and dlg.result:
+            self.extra_dests.append(dlg.result)
+            self.render_extra_dests()
+
+    def remove_extra_dest(self, idx):
+        if 0 <= idx < len(self.extra_dests):
+            del self.extra_dests[idx]
+            self.render_extra_dests()
+
+    def render_extra_dests(self):
+        while self.extra_box.count():
+            it = self.extra_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for i, d in enumerate(self.extra_dests):
+            row = QFrame()
+            row.setObjectName("row")
+            row.setFixedHeight(42)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(12, 0, 9, 0)
+            rl.setSpacing(9)
+            icon = QLabel(ic(self._src_icon(d["t"] if d["t"] != "SMB"
+                                            else "Cloud")))
+            icon.setObjectName("rowicon")
+            rl.addWidget(icon)
+            path = QLineEdit(d["p"])
+            path.setObjectName("path")
+            path.editingFinished.connect(
+                lambda i=i, w=path: self._edit_extra_path(i, w.text()))
+            rl.addWidget(path, 1)
+            tag = QLabel(_tr(d["t"]))
+            tag.setObjectName("pill")
+            rl.addWidget(tag)
+            rm = iconbtn("x")
+            rm.setToolTip(_tr("Remove"))
+            rm.clicked.connect(lambda _=False, i=i: self.remove_extra_dest(i))
+            rl.addWidget(rm)
+            self.extra_box.addWidget(row)
+        self._adv_sync()
+
+    def _edit_extra_path(self, idx, text):
+        if 0 <= idx < len(self.extra_dests):
+            t = text.strip()
+            if self.extra_dests[idx]["t"] == "Local":
+                t = self._normalize_local(t)
+            self.extra_dests[idx]["p"] = t
+
+    def _all_dests(self):
+        """[{t, p, deep}] — the destination row first, then the others."""
+        dest = self.dst_input.text().strip()
+        if self.dest_type == "Local":
+            dest = self._normalize_local(dest)
+        first = {"t": self.dest_type, "p": dest,
+                 "deep": bool(getattr(self, "main_deep", False))
+                 and self.dest_type != "Local"}
+        return [first] + [dict(d) for d in self.extra_dests]
+
+    # Destination presets: paths and kinds only — never a credential (those
+    # stay in the vault, referred to by a saved connection's NAME:path).
+    def _presets(self):
+        return dict((self._load_gui_settings() or {}).get("dest_presets")
+                    or {})
+
+    def _refresh_presets(self):
+        if not hasattr(self, "preset_sel"):
+            return
+        self.preset_sel.blockSignals(True)
+        self.preset_sel.clear()
+        self.preset_sel.addItem(_tr("Destination presets"), None)
+        for name in sorted(self._presets()):
+            self.preset_sel.addItem(name, name)
+        self.preset_sel.setCurrentIndex(0)
+        self.preset_sel.blockSignals(False)
+
+    def _preset_picked(self, idx):
+        name = self.preset_sel.itemData(idx)
+        if name:
+            self.load_dest_preset(name)
+        self.preset_sel.setCurrentIndex(0)
+
+    def save_dest_preset(self, name=None):
+        if name is None:
+            dlg = TextPromptDialog(self, _tr("Save these destinations as"))
+            if not dlg.exec():
+                return
+            name = dlg.input.text().strip()
+        if not name:
+            return
+        dests = [{"t": d["t"], "p": d["p"], "deep": bool(d.get("deep"))}
+                 for d in self._all_dests() if d["p"]]
+        data = self._load_gui_settings() or {}
+        presets = dict(data.get("dest_presets") or {})
+        presets[name] = dests
+        data["dest_presets"] = presets
+        self._save_gui_settings(data)
+        self._refresh_presets()
+        self.show_toast(_tr("Destinations saved as {name}").format(name=name))
+
+    def load_dest_preset(self, name):
+        dests = self._presets().get(name)
+        if not dests:
+            return
+        first, rest = dests[0], dests[1:]
+        self.dest_type = first.get("t", "Local")
+        self.dst_input.setText(first.get("p", ""))
+        # Its --deep-verify, kept until the destination row is edited.
+        self.main_deep = bool(first.get("deep"))
+        self.extra_dests = [{"t": d.get("t", "Local"), "p": d.get("p", ""),
+                             "deep": bool(d.get("deep"))} for d in rest]
+        self.render_dest()
+        self.render_extra_dests()
 
     def toggle_advanced(self):
         self.adv.setVisible(not self.adv.isVisible())
@@ -3509,10 +4099,9 @@ class BlitcpGUI(QWidget):
         return self.flag_opts["--use-sudo"].property("active")
 
     def _fc_script_path(self):
-        for name in ("blitcp.py", "fast_copy.py"):
-            cand = os.path.join(HERE, name)
-            if os.path.isfile(cand):
-                return cand
+        cand = os.path.join(HERE, "blitcp.py")
+        if os.path.isfile(cand):
+            return cand
         return getattr(fc, "__file__", None) if FC_OK else None
 
     def _build_argv(self, dry, sources, dest):
@@ -3561,7 +4150,109 @@ class BlitcpGUI(QWidget):
             argv.append("--dedup-existing")
         if self.flag_opts["include node_modules"].property("active"):
             argv.append("--include-node-modules")
+        if self._manifest_on():
+            argv.append("--manifest")
         return argv
+
+    def _build_fanout_argv(self, sources, dests):
+        """sources --dest D1 --dest D2 … for a run to several destinations.
+        Only what --dest takes: verification, hash, excludes, metadata,
+        overwrite / force, node_modules (--deep-verify went with the fan-out
+        engine)."""
+        argv = list(sources)
+        for d in dests:
+            argv += ["--dest", d["p"]]
+        argv.append("--progress-json")
+        if not self.transfer_opts["verify"].property("active"):
+            argv.append("--no-verify")
+        h = self.hash_sel.currentText().strip()
+        if h:
+            argv += ["--hash", h]
+        for p in self.exclude_patterns:
+            argv += ["--exclude", p]
+        preserve = [k for k, o in self.meta_opts.items() if o.property("active")]
+        argv += ["--preserve", ",".join(preserve) if preserve else "none"]
+        if self.flag_opts["overwrite all"].property("active"):
+            argv.append("--overwrite")
+        if self.flag_opts["force"].property("active"):
+            argv.append("--force")
+        if self.flag_opts["include node_modules"].property("active"):
+            argv.append("--include-node-modules")
+        if self._manifest_on():
+            argv.append("--manifest")
+        st = self.stall_spin.value()
+        if len(dests) >= 2 and st != self._stall_default():
+            argv += ["--stall-timeout", str(st)]
+        return argv
+
+    def _run_fanout(self, dry, sources):
+        """One source (or several local ones) read once, written to every
+        destination. What --dest does not take is said here, before any
+        process starts. A preview (dry) runs the engine's --dry-run: its
+        plan is in the log; no destination rows, nothing is written."""
+        refused = [label for label, on in (
+            ("--use-sudo", self.flag_opts["--use-sudo"].property("active")),
+            ("dedup existing",
+             self.flag_opts["dedup existing"].property("active")),
+            ("index existing", bool(self.index_existing_paths))) if on]
+        if refused:
+            return self._refuse_start(_tr("Not available with several destinations: "
+                                "{opts}").format(opts=", ".join(refused)))
+        live = [sc for sc in self.sources if sc["p"].strip()]
+        # Several destinations read a local source (owner's decision (b),
+        # 2026-11-23): a web, SSH, SMB or cloud one is the engine's refusal
+        # too — said here, in its words, before any process starts.
+        # A web source (one URL) goes to several destinations too (4.4.0):
+        # one download, written to each local / SSH / SMB destination.
+        web = len(live) == 1 and live[0]["t"] == "Web"
+        remote = [sc for sc in live if sc["t"] != "Local"] if not web else []
+        if remote:
+            return self._refuse_start(_tr("{src}: several destinations take a local "
+                                "source").format(src=remote[0]["p"]))
+        dests = self._all_dests()
+        for d in dests:
+            if not d["p"]:
+                return self._refuse_start(_tr("Set a destination"))
+            if d["p"].lower().startswith(("http://", "https://")):
+                return self._refuse_start(_tr("An http(s):// URL can only be the "
+                                    "source — there is no generic HTTP "
+                                    "upload"))
+            if web and d["p"].lower().startswith(("s3://", "az://", "gs://")):
+                return self._refuse_start(_tr("Web → cloud is not supported yet — "
+                                    "relay via SSH or SMB"))
+        http_extra, http_env = [], {}
+        if web:
+            url = sources[0]
+            if not url.lower().startswith(("http://", "https://")):
+                return self._refuse_start(_tr("A web source must be an http:// or "
+                                    "https:// URL"))
+            tail = url.split("?")[0].split("#")[0].rstrip()
+            if not tail.rsplit("/", 1)[-1]:
+                return self._refuse_start(_tr("The URL names no file "
+                                    "(https://host/dir/file expected)"))
+            http_extra, http_env = self._http_auth_flags(url)
+        # SSH sign-in: with one SSH destination its flags (key / password
+        # variable); with several, each one's saved connection supplies its
+        # own — one --ssh-key would apply to every one of them.
+        ssh_extra, ssh_env = [], {}
+        ssh_dests = [d for d in dests if d["t"] == "SSH"]
+        if len(ssh_dests) == 1:
+            r = self._ssh_auth_flags(ssh_dests[0]["p"], "dst")
+            if r is None:
+                return
+            ssh_extra += r[0]
+            ssh_env.update(r[1])
+        if len(live) == 1 and live[0]["t"] == "SSH":
+            r = self._ssh_auth_flags(sources[0], "src")
+            if r is None:
+                return
+            ssh_extra += r[0]
+            ssh_env.update(r[1])
+        argv = self._build_fanout_argv(sources, dests) + ssh_extra + http_extra
+        if dry:
+            argv.append("--dry-run")
+        self._start_engine(argv, dict(ssh_env, **http_env), dry=dry,
+                           fanout=not dry)
 
     def _ssh_protocol(self, path):
         """Effective transport for a remote endpoint: 'ssh' | 'sftp' | 'both'.
@@ -3618,6 +4309,68 @@ class BlitcpGUI(QWidget):
             self._askpass_dir = None
             shutil.rmtree(d, ignore_errors=True)
 
+    def _vault_for_run(self, kinds):
+        """The engine reads credentials.json for every endpoint that is not
+        local — a saved name, or a raw host a saved connection may match —
+        in its probe and in its copy. A locked vault is opened here, with
+        the Connections dialog, as for a named connection; the engine gets
+        the passphrase from _start_engine. None when the run may start, else
+        its one line: the unlock's own ("wrong passphrase"), or, cancelled,
+        that the run needs the saved connections."""
+        if not (self.creds_encrypted and not self.creds_loaded):
+            return None
+        if all(k == "Local" for k in kinds):
+            return None
+        why = self.unlock_credentials(toast=False)
+        if self.creds_loaded:
+            return None
+        return why or _tr(
+            "The saved connections are locked — the run needs them")
+
+    def _saved_ssh_flags(self, path, which="dst"):
+        """A raw user@host:path matched to its saved SSH connection: the
+        flags the engine needs for it — key, password (by variable), port,
+        the saved Protocol — and that variable, as (argv, env); ([], {})
+        when no saved connection matches. The engine consults the vault for
+        a NAME: endpoint only, so a raw host's saved connection reaches it
+        only from here — for the copy and for a later --verify-manifest
+        alike. Never a dialog."""
+        matched = self._match_conn("ssh", path)
+        if not matched:
+            return [], {}
+        prefix = "--ssh-" + which
+        var = "FC_SSH_" + which.upper() + "_PW"
+        c = self.conns[matched]
+        extra, env = [], {}
+        if c.get("key"):
+            extra += [prefix + "-key", os.path.expanduser(c["key"])]
+        if c.get("password"):
+            env[var] = str(c["password"])
+            extra += [prefix + "-password-env", var]
+        try:
+            # Default ONLY when the saved value is missing/empty — a stored
+            # port (even 0) must pass through, not be rewritten by `or 22`.
+            _pt = c.get("port", 22)
+            port = int(_pt) if _pt not in (None, "") else 22
+        except (ValueError, TypeError):
+            port = 22
+        if port != 22:
+            extra += [prefix + "-port", str(port)]
+        return extra, env
+
+    def _verify_flags(self, dest):
+        """(argv, env) a --verify-manifest of dest needs beyond the vault's
+        passphrase: what its copy got for a raw SSH host saved in the
+        vault, the saved Protocol included."""
+        extra, env = self._saved_ssh_flags(dest)
+        if extra or env:
+            proto = self._ssh_protocol(dest)
+            if proto == "sftp":
+                extra.append("--sftp-only")
+            elif proto == "ssh":
+                extra.append("--ssh-no-sftp")
+        return extra, env
+
     def _ssh_auth_flags(self, path, which):
         """SSH auth for one endpoint. which='dst'|'src'.
         Returns (extra_argv, env_dict), or None if the user cancelled.
@@ -3625,25 +4378,9 @@ class BlitcpGUI(QWidget):
         ad-hoc host gets a password prompt (leave blank to use key/agent)."""
         prefix = "--ssh-" + which
         var = "FC_SSH_" + which.upper() + "_PW"
+        if self._match_conn("ssh", path):
+            return self._saved_ssh_flags(path, which)
         extra, env = [], {}
-        matched = self._match_conn("ssh", path)
-        if matched:
-            c = self.conns[matched]
-            if c.get("key"):
-                extra += [prefix + "-key", os.path.expanduser(c["key"])]
-            if c.get("password"):
-                env[var] = str(c["password"])
-                extra += [prefix + "-password-env", var]
-            try:
-                # Default ONLY when the saved value is missing/empty — a stored
-                # port (even 0) must pass through, not be rewritten by `or 22`.
-                _pt = c.get("port", 22)
-                port = int(_pt) if _pt not in (None, "") else 22
-            except (ValueError, TypeError):
-                port = 22
-            if port != 22:
-                extra += [prefix + "-port", str(port)]
-            return extra, env
         # ad-hoc host (not saved) — offer a password, blank = use key/agent
         m = re.match(r"(?:([^@]+)@)?([^:/]+):", path or "")
         who = ((m.group(1) + "@") if m and m.group(1) else "") + \
@@ -3664,20 +4401,32 @@ class BlitcpGUI(QWidget):
     def run_transfer(self, dry):
         if self.running:
             return
+        # Every Start clears the panel: a run refused below must not leave
+        # the previous run's "Done · ✓ verified · 1,226 files" standing
+        # (George's run on 91a6aec: a refusal showed only as a toast).
+        self._clear_panel(_tr("Dry run…") if dry else _tr("Starting…"))
         if not FC_OK or not self._fc_script_path():
-            self.show_toast(_tr("blitcp.py not found next to the GUI"))
-            return
+            return self._refuse_start(_tr("blitcp.py not found next to the GUI"))
         self._normalize_dest()                # E:/test3 → E:\test3 before we run
         sources = [s["p"].strip() for s in self.sources if s["p"].strip()]
         dest = self.dst_input.text().strip()
         if self.dest_type == "Local":
             dest = self._normalize_local(dest)
         if not sources:
-            self.show_toast(_tr("Add at least one source"))
-            return
+            return self._refuse_start(_tr("Add at least one source"))
         if not dest:
-            self.show_toast(_tr("Set a destination"))
-            return
+            return self._refuse_start(_tr("Set a destination"))
+        # Before any SSH prompt: a raw user@host is matched to its saved
+        # connection only once the vault is open.
+        why = self._vault_for_run(
+            [s["t"] for s in self.sources if s["p"].strip()]
+            + [self.dest_type]
+            + [d.get("t", "Local") for d in self.extra_dests
+               if (d.get("p") or "").strip()])
+        if why is not None:
+            return self._refuse_start(why)
+        if self.extra_dests:
+            return self._run_fanout(dry, sources)
 
         # --use-sudo re-execs the engine under sudo, and sudo with no terminal
         # cannot prompt at all — it either fails with "a terminal is required"
@@ -3696,9 +4445,8 @@ class BlitcpGUI(QWidget):
         # text, so a pasted URL has to be caught here too — the engine refuses
         # it as well, just one process launch later.
         if dest.lower().startswith(("http://", "https://")):
-            self.show_toast(_tr("An http(s):// URL can only be the source — "
+            return self._refuse_start(_tr("An http(s):// URL can only be the source — "
                                 "there is no generic HTTP upload"))
-            return
 
         # ── http(s):// source rules, checked here so a mistake is a toast
         # rather than a launched process that fails a second later. These
@@ -3707,29 +4455,24 @@ class BlitcpGUI(QWidget):
                if sc["t"] == "Web" and sc["p"].strip()]
         if web:
             if len(sources) > 1:
-                self.show_toast(_tr("A web source takes a single URL"))
-                return
+                return self._refuse_start(_tr("A web source takes a single URL"))
             url = sources[0]
             if not url.lower().startswith(("http://", "https://")):
-                self.show_toast(_tr("A web source must be an http:// or "
+                return self._refuse_start(_tr("A web source must be an http:// or "
                                     "https:// URL"))
-                return
             # The name comes from the URL path, never from the server, so a
             # URL that ends at a directory names nothing to save.
             tail = url.split("?")[0].split("#")[0].rstrip()
             if not tail.rsplit("/", 1)[-1]:
-                self.show_toast(_tr("The URL names no file "
+                return self._refuse_start(_tr("The URL names no file "
                                     "(https://host/dir/file expected)"))
-                return
             if self.dest_type == "Local":
-                self.show_toast(_tr("A web source needs an SSH or SMB "
+                return self._refuse_start(_tr("A web source needs an SSH or SMB "
                                     "destination — it streams, it does not "
                                     "download locally"))
-                return
             if dest.lower().startswith(("s3://", "az://", "gs://")):
-                self.show_toast(_tr("Web → cloud is not supported yet — "
+                return self._refuse_start(_tr("Web → cloud is not supported yet — "
                                     "relay via SSH or SMB"))
-                return
 
         # Sign-in for the Web source: the one-off sheet if it was filled in,
         # otherwise nothing — a saved HTTP connection is matched by the engine
@@ -3761,15 +4504,97 @@ class BlitcpGUI(QWidget):
             # Ad-hoc (unsaved) hosts keep today's default: plain SSH.
             protos = {self._ssh_protocol(p) for p in ssh_endpoints}
             if "ssh" in protos and "sftp" in protos:
-                self.show_toast(_tr("Source and destination connections need "
+                return self._refuse_start(_tr("Source and destination connections need "
                                     "compatible SSH protocols"))
-                return
             if "sftp" in protos:
                 ssh_extra.append("--sftp-only")
             elif "ssh" in protos:
                 ssh_extra.append("--ssh-no-sftp")
             # all "both": no flag — classic hybrid (SFTP large + tar small)
 
+        core_argv = self._build_argv(dry, sources, dest) + ssh_extra + http_extra
+        env_extra = {}
+        for e in (ssh_env, http_env, sudo_env):
+            env_extra.update(e)
+        # --manifest with one destination is the CLI's ×N route with that
+        # one (its events: a row, fanout_result with the manifest's name).
+        self._start_engine(core_argv, env_extra, dry,
+                           fanout=not dry and "--manifest" in core_argv)
+
+    def verify_against_manifest(self, dest=""):
+        """Pick a destination folder, then --verify-manifest on it — the
+        result in the panel, as a run's."""
+        if self.running:
+            return
+        dlg = VerifyManifestDialog(self, dest)
+        if not dlg.exec():
+            return
+        self.run_verify_manifest(dlg.input.text().strip(),
+                                 dlg.deep.isChecked())
+
+    def run_verify_manifest(self, dest, deep=False):
+        if self.running or not dest:
+            return
+        if not FC_OK or not self._fc_script_path():
+            return self._refuse_start(_tr("blitcp.py not found next to the "
+                                          "GUI"))
+        why = self._vault_for_run(
+            ["Local" if os.path.isabs(dest) else "remote"])
+        if why is not None:
+            return self._refuse_start(why)
+        extra, env = self._verify_flags(dest)
+        argv = ["--verify-manifest", dest, "--progress-json"] + extra
+        if deep:
+            argv.append("--deep")
+        self._start_engine(argv, env, dry=False)
+        self._run_meta["verify_manifest"] = dest
+        self.pstate.setText(_tr("Checking against the manifest…"))
+        self.vm_cancel.show()
+        self.navigate("transfer")
+
+    def _cancel_verify(self):
+        """Cancel: the check's process is stopped; the panel says so."""
+        rm = getattr(self, "_run_meta", None) or {}
+        if self.running and rm.get("verify_manifest") and self._proc:
+            rm["cancelled"] = True
+            self._proc.kill()
+
+    def _verify_manifest_panel(self, ev):
+        """verify_manifest_result in the panel: the CLI's own line, and the
+        files that do not match listed under it."""
+        self._run_meta["vm_result"] = ev
+        n, ok = int(ev.get("files") or 0), int(ev.get("ok") or 0)
+        differ, missing = ev.get("differ") or [], ev.get("missing") or []
+        if not differ and not missing and ev.get("exit") == 0:
+            if ev.get("content"):
+                msg = "✓ " + _tr("All {n} files match the manifest").format(
+                    n=ok)
+            else:
+                msg = "✓ " + _tr(
+                    "All {n} files are present with the sizes the manifest "
+                    "records — content not compared; --deep reads them back "
+                    "and hashes them").format(n=ok)
+            self.barf.setFixedWidth(self.bar.width())
+            self.stat_vals["Progress"].setText("100%")
+        else:
+            msg = "✗ " + _tr(
+                "{bad} of {n} files do not match the manifest ({differ} "
+                "differ, {missing} missing)").format(
+                bad=len(differ) + len(missing), n=n, differ=len(differ),
+                missing=len(missing))
+        self.pstate.setText(msg)
+        self.pfiles.setText(_tr("{done} / {total} files").format(
+            done=f"{ok:,}", total=f"{n:,}"))
+        bad = list(differ) + [_tr("{rel}: missing").format(rel=r)
+                              for r in missing]
+        self.pcur.setText("\n".join(bad[:20])
+                          + ("\n…" if len(bad) > 20 else ""))
+        return msg
+
+    def _start_engine(self, core_argv, env_extra, dry, fanout=False):
+        """Start the engine with core_argv: the one launch for every run —
+        the credentials passphrase and extra variables (SSH / HTTP / sudo
+        secrets) in its environment, never on its command line."""
         proc = QProcess(self)
         env = QProcessEnvironment.systemEnvironment()
         # Pass the unlocked credentials passphrase so the child can decrypt
@@ -3777,19 +4602,11 @@ class BlitcpGUI(QWidget):
         if self.creds_pw:
             pw = bytes(self.creds_pw).decode("utf-8", "replace")
             env.insert("BLITCP_CREDS_PASSPHRASE", pw)
-            # A pre-rename engine (fallback in _fc_script_path) only knows the
-            # old name; the engine scrubs both from child environments.
-            env.insert("FAST_COPY_CREDS_PASSPHRASE", pw)
-        for k, v in ssh_env.items():
-            env.insert(k, v)
-        for k, v in http_env.items():
-            env.insert(k, v)
-        for k, v in sudo_env.items():
+        for k, v in env_extra.items():
             env.insert(k, v)
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("NO_COLOR", "1")
         proc.setProcessEnvironment(env)
-        core_argv = self._build_argv(dry, sources, dest) + ssh_extra + http_extra
         if getattr(sys, "frozen", False):
             # bundled single-file build: re-invoke ourselves as the engine
             proc.setProgram(sys.executable)
@@ -3808,13 +4625,29 @@ class BlitcpGUI(QWidget):
             "t0": time.monotonic(), "verified": None,
             "fulllog": _BoundedLog(),
             "skipped_unreadable": 0,
+            "fanout": fanout, "fanout_result": None,
         }
         self.running = True
         self.start_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
-        self.pstate.setText("Dry run…" if dry else "Copying…")
         self._clear_log()
+        self._clear_panel("Dry run…" if dry else "Copying…", fanout=fanout)
+
+        proc.readyReadStandardOutput.connect(self._on_proc_stdout)
+        proc.readyReadStandardError.connect(self._on_proc_stderr)
+        proc.finished.connect(self._on_proc_finished)
+        proc.errorOccurred.connect(self._on_proc_error)
+        self._proc = proc
+        # Nothing is ever typed into the engine: a read gets end-of-file at
+        # once, never a wait for input nobody can give.
+        proc.setStandardInputFile(QProcess.nullDevice())
+        proc.start()
+
+    def _clear_panel(self, state="", fanout=False):
+        """The progress panel as no run has drawn it: no bar, no numbers,
+        no rows — then `state` as its line."""
         self._stop_indeterminate()
+        self.pstate.setText(state)
         self.barf.setFixedWidth(0)
         self.stat_vals["Progress"].setText("0%")
         self.stat_vals["Speed"].setText("—")
@@ -3822,12 +4655,361 @@ class BlitcpGUI(QWidget):
         self.stat_vals["Dedup saved"].setText("—")
         self.pcur.setText("")
         self.pfiles.setText(_tr("0 / 0 files"))
+        self._fanout_reset_rows(show=fanout)
 
-        proc.readyReadStandardOutput.connect(self._on_proc_stdout)
-        proc.readyReadStandardError.connect(self._on_proc_stderr)
-        proc.finished.connect(self._on_proc_finished)
-        proc.errorOccurred.connect(self._on_proc_error)
-        self._proc = proc
+    def _refuse_start(self, msg):
+        """A run refused before it starts: the panel says so, as the run's
+        result (✗ and its line) — not only a toast over the last run's."""
+        self._clear_panel("✗ " + msg)
+        self.show_toast(msg)
+
+    # ── one row per destination (fan-out) ────────────────────────────────
+    @staticmethod
+    def _level_text(code):
+        """A verification level's code (the engine's VL_* identifier, the
+        same in every language) as words."""
+        return {
+            "direct": _tr("read back from the disk"),
+            "cached": _tr("read back through the OS cache"),
+            "readback-net": _tr("read back over the network"),
+            "remote-hash": _tr("hashed on the remote host"),
+            "remote-sample": _tr("hashed on the remote host (sample)"),
+            "server-sha256": _tr("the store's own SHA-256"),
+            "server-md5": _tr("the store's own MD5"),
+            "server-crc": _tr("the store's own full-object CRC"),
+            "recorded-hash": _tr("the hash recorded at upload"),
+            "size": _tr("size only"),
+            "size-nosum": _tr("size only (no store checksum)"),
+            "links": _tr("links and clones"),
+            "nosource": _tr("source unreadable"),
+        }.get(code or "", code or "—")
+
+    @staticmethod
+    def _phase_text(phase):
+        return {
+            "waiting": _tr("waiting"), "copying": _tr("copying"),
+            "copied": _tr("copied"), "verifying": _tr("verifying"),
+            "waiting_others": _tr("copied — waiting for the others"),
+            "manifest": _tr("manifest"), "done": _tr("done"),
+            "failed": _tr("FAILED"),
+        }.get(phase or "", phase or "")
+
+    def _fanout_reset_rows(self, show=False):
+        while self.sink_box.count():
+            it = self.sink_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.sink_rows = {}
+        self.sink_wrap.setVisible(bool(show))
+
+    def _fanout_start(self, ev):
+        self._fanout_reset_rows(show=True)
+        self._run_meta["fanout_dests"] = {}
+        for sk in ev.get("sinks") or []:
+            idx = int(sk.get("sink", 0))
+            self._run_meta["fanout_dests"][idx] = sk.get("dest", "")
+            box = QFrame()
+            box.setObjectName("row")
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(12, 8, 12, 8)
+            bl.setSpacing(4)
+            head = QHBoxLayout()
+            name = QLabel("[%d] %s" % (idx, sk.get("dest", "")))
+            name.setObjectName("pstate")
+            head.addWidget(name, 1)
+            phase = QLabel(self._phase_text("waiting"))
+            phase.setObjectName("statk")
+            head.addWidget(phase)
+            bl.addLayout(head)
+            bar = QFrame()
+            bar.setObjectName("bar")
+            bar.setFixedHeight(7)
+            barl = QHBoxLayout(bar)
+            barl.setContentsMargins(0, 0, 0, 0)
+            barf = QFrame()
+            barf.setObjectName("barf")
+            barf.setFixedWidth(0)
+            barl.addWidget(barf)
+            barl.addStretch(1)
+            bl.addWidget(bar)
+            stats = QLabel("0%")
+            stats.setObjectName("statk")
+            bl.addWidget(stats)
+            lvl = sk.get("level")
+            level = QLabel(_tr("verification: {level}").format(
+                level=self._level_text(lvl)) if lvl else "")
+            level.setObjectName("sub")
+            bl.addWidget(level)
+            verdict = QLabel("")
+            verdict.setWordWrap(True)
+            bl.addWidget(verdict)
+            acts = QHBoxLayout()
+            manifest_btn = textbtn(_tr("Open manifest"), oid="btn")
+            manifest_btn.clicked.connect(
+                lambda _=False, i=idx: self._open_manifest(i))
+            verify_later = textbtn(_tr("Verify again later"), oid="btn")
+            verify_later.setToolTip(_tr("Check this destination against its "
+                                        "manifest, without the source "
+                                        "(--verify-manifest)"))
+            verify_later.clicked.connect(
+                lambda _=False, i=idx: self._verify_again(i))
+            manifest_btn.hide()
+            verify_later.hide()
+            acts.addWidget(manifest_btn)
+            acts.addWidget(verify_later)
+            acts.addStretch(1)
+            bl.addLayout(acts)
+            self.sink_box.addWidget(box)
+            self.sink_rows[idx] = {
+                "box": box, "name": name, "phase": phase, "bar": bar,
+                "barf": barf, "stats": stats, "level": level,
+                "verdict": verdict, "manifest_btn": manifest_btn,
+                "verify_later": verify_later, "manifest": None,
+                "dest": sk.get("dest", ""),
+                "deep": bool(sk.get("deep_verify"))
+                and sk.get("kind") != "local"}
+            if sk.get("stalled"):
+                self.sink_rows[idx]["failed"] = True
+                phase.setText(self._phase_text("failed"))
+                verdict.setText("✗ " + str(sk["stalled"]))
+
+    def _fanout_progress(self, ev):
+        row = self.sink_rows.get(int(ev.get("sink", 0)))
+        if row is None:
+            return
+        done, total = ev.get("bytes_done") or 0, ev.get("bytes_total") or 0
+        pct = min(100.0, done * 100.0 / total) if total else 100.0
+        row["pct"] = pct
+        if ev.get("phase") == "failed":
+            row["failed"] = True
+        row["barf"].setFixedWidth(int(row["bar"].width() * pct / 100))
+        row["phase"].setText(self._phase_text(ev.get("phase")))
+        parts = ["%d%%" % round(pct)]
+        rate = ev.get("rate") or 0
+        if rate:
+            parts.append(fmt_size(rate) + "/s")
+        eta = ev.get("eta")
+        parts.append(_tr("ETA {t}").format(t=fmt_time(eta)) if eta is not None
+                     else _tr("ETA —"))
+        parts.append(_tr("{done} / {total} files").format(
+            done=ev.get("files_done", 0), total=ev.get("files_total", 0)))
+        if ev.get("reason"):
+            parts.append(str(ev["reason"]))
+        row["stats"].setText("  ·  ".join(parts))
+        row["ev"] = ev
+        self._fanout_top()
+
+    def _fanout_top(self):
+        """The top of a several-destination run, from its rows alone — the
+        engine's read-side "progress" lines are not drawn there (they and
+        the rows disagreed: 0 % above 100 % rows, "441/441 files · 0 % ·
+        1.7 GB/s" at the start). The bar and its files: the slowest
+        destination — the run is done when the last one is; the speed: what
+        every destination takes together; the ETA: the last to finish."""
+        live = [r for r in self.sink_rows.values()
+                if not r.get("failed") and r.get("ev")]
+        if not live:
+            return
+        slow = min(live, key=lambda r: r.get("pct", 0.0))
+        lo = slow.get("pct", 0.0)
+        self.barf.setFixedWidth(int(self.bar.width() * lo / 100))
+        self.stat_vals["Progress"].setText(f"{round(lo)}%")
+        ev = slow["ev"]
+        self.pfiles.setText(_tr("{done} / {total} files").format(
+            done=f"{int(ev.get('files_done') or 0):,}",
+            total=f"{int(ev.get('files_total') or 0):,}"))
+        rate = sum(float(r["ev"].get("rate") or 0) for r in live)
+        self.stat_vals["Speed"].setText(fmt_size(rate) + "/s" if rate
+                                        else "—")
+        etas = [r["ev"].get("eta") for r in live]
+        if any(e is None for e in etas):
+            self.stat_vals["ETA"].setText("—")
+        else:
+            self.stat_vals["ETA"].setText(fmt_time(max(etas)))
+
+    def _fanout_result(self, ev):
+        self._run_meta["fanout_result"] = ev
+        sinks = ev.get("sinks") or []
+        # "verified" for the run only when every destination compared
+        # content; "verify failed" only when one failed its verification or
+        # the source changed under it — up to date, not verified or size-only
+        # is neither (the one-destination run says nothing then either).
+        if any(sk.get("verdict") in ("verify_failed", "source_changed")
+               for sk in sinks):
+            self._run_meta["verified"] = False
+        elif sinks and all(sk.get("verdict") == "verified" and sk.get("content")
+                           for sk in sinks):
+            self._run_meta["verified"] = True
+        else:
+            self._run_meta["verified"] = None
+        # The run's numbers come from the event (4.4.0): the engine's
+        # terminal layout has no "Files: N total" / "Data: … written" /
+        # "Speed:" / "saved:" lines to read them from.
+        rm = self._run_meta
+        n = int(ev.get("files") or 0)
+        rm["files_total"] = n
+        rm["skipped_unreadable"] = int(ev.get("unreadable") or 0)
+        rm["bytes_written"] = sum(int(sk.get("bytes_written") or 0)
+                                  for sk in sinks)
+        saved = sum(int(sk.get("bytes_linked") or 0) for sk in sinks)
+        if saved:
+            rm["dedup_bytes"] = saved
+            self.stat_vals["Dedup saved"].setText(fmt_size(saved))
+        copy_secs = float((ev.get("timings") or {}).get("copy") or 0)
+        if rm["bytes_written"] and copy_secs > 0:
+            rm["speed_bps"] = rm["bytes_written"] / copy_secs
+            self.stat_vals["Speed"].setText(
+                fmt_size(rm["speed_bps"]) + "/s")
+        if n:
+            self.pfiles.setText(f"{n:,} / {n:,} files")
+        for sk in sinks:
+            row = self.sink_rows.get(int(sk.get("sink", 0)))
+            content = bool(sk.get("content"))
+            verdict = sk.get("verdict")
+            if row is None:
+                continue
+            row["manifest"] = sk.get("manifest")
+            levels = sk.get("levels") or {}
+            breakdown = " · ".join(
+                "%d %s" % (n, self._level_text(code))
+                for code, n in sorted(levels.items(), key=lambda kv: -kv[1]))
+            if verdict == "verified" and content:
+                # The word only with the levels it was checked at, in one
+                # sentence; gated on the engine's own `content` flag.
+                text = "✓ " + _tr("Verified: {n} files — {levels}").format(  # nosemgrep: blitcp-verified-outside-reporting — carries the levels; content-gated by the engine
+                    n=sk.get("written", 0), levels=breakdown)
+                breakdown = ""
+            elif verdict == "verified":
+                text = "✓ " + _tr("{n} files present, sizes match — content "
+                                  "not compared").format(n=sk.get("written", 0))
+            elif verdict == "up_to_date":
+                text = "✓ " + _tr("Up to date")
+            else:
+                text = "✗ " + {
+                    "failed": _tr("Failed: {why}").format(
+                        why=sk.get("reason") or ""),
+                    "conflict": _tr("Kept files that differ from the source"),
+                    "not_verified": _tr("Copied, not verified"),
+                    # The count where the engine knows it; several
+                    # destinations on the 4.2.15 engine say only the verdict.
+                    "verify_failed": (
+                        _tr("{n} files failed verification").format(
+                            n=sk["verify_failed"])
+                        if sk.get("verify_failed") is not None
+                        else _tr("Verification failed")),
+                    "source_changed": _tr("Not verified: the source changed "
+                                          "during the copy"),
+                    "incomplete": _tr("Incomplete: {f} failed, {r} refused")
+                    .format(f=sk.get("failed", 0), r=sk.get("refused", 0)),
+                }.get(verdict, str(verdict))
+            if breakdown:
+                text += "  —  " + breakdown
+            row["verdict"].setText(text)
+            row["phase"].setText(self._phase_text(
+                "failed" if sk.get("state") == "failed" else "done"))
+            has_manifest = bool(sk.get("manifest"))
+            row["manifest_btn"].setVisible(has_manifest)
+            row["verify_later"].setVisible(has_manifest)
+
+    def _open_manifest(self, idx):
+        row = self.sink_rows.get(idx)
+        if not row:
+            return
+        dest = row["dest"]
+        if os.path.isdir(dest):
+            # The manifest folder of a local destination, in the file manager.
+            self._reveal(os.path.join(dest, "ascmhl"))
+        else:
+            self.show_toast(_tr("Manifest: {where}").format(
+                where=dest.rstrip("/") + "/ascmhl/" + (row["manifest"] or "")))
+
+    def _verify_again_args(self, idx):
+        """--verify-manifest for one destination; --deep for one marked
+        "download to verify" — its copy was checked that way, and a re-check
+        that asked the store instead would claim less than it seems to."""
+        row = self.sink_rows.get(idx) or {}
+        args = ["--verify-manifest", row.get("dest", ""), "--progress-json"]
+        if row.get("deep"):
+            args.append("--deep")
+        return args
+
+    @staticmethod
+    def _verify_again_message(res, code):
+        """The line for a re-check's result. A match only where the engine
+        compared content; an exit 0 over sizes alone says so."""
+        if res and res.get("exit") == 0 and res.get("content"):
+            return "✓ " + _tr("Checked again: all {n} files match the "
+                              "manifest").format(n=res.get("ok", 0))
+        if res and res.get("exit") == 0:
+            return "✓ " + _tr("Checked again: all {n} files present with the "
+                              "recorded sizes — content not compared").format(
+                n=res.get("ok", 0))
+        if res:
+            return "✗ " + _tr("Checked again: {bad} of {n} files do not "
+                              "match").format(
+                bad=len(res.get("differ") or []) + len(
+                    res.get("missing") or []), n=res.get("files", 0))
+        return "✗ " + _tr("The check could not run (exit {c})").format(c=code)
+
+    def _verify_again_done(self, idx, row, res, code):
+        """Show a re-check's result: on its row while that row is still the
+        one on screen (a new run replaces the rows), and always as a toast."""
+        msg = self._verify_again_message(res, code)
+        if self.sink_rows.get(idx) is row:
+            try:
+                base = row["verdict"].text().rsplit("\n", 1)[0]
+                row["verdict"].setText(base + "\n" + msg)
+            except RuntimeError:            # the label is already gone
+                pass
+        self.show_toast(msg)
+
+    def _verify_again(self, idx):
+        """--verify-manifest for one destination, in the background: the
+        destination checked against its own manifest, without the source."""
+        row = self.sink_rows.get(idx)
+        if not row or getattr(self, "_vm_proc", None) is not None:
+            return
+        dest = row.get("dest", "")
+        why = self._vault_for_run(
+            ["Local" if os.path.isabs(dest) else "remote"])
+        if why is not None:
+            self.show_toast(why)
+            return
+        extra, extra_env = self._verify_flags(dest)
+        proc = QProcess(self)
+        env = QProcessEnvironment.systemEnvironment()
+        if self.creds_pw:
+            env.insert("BLITCP_CREDS_PASSPHRASE",
+                       bytes(self.creds_pw).decode("utf-8", "replace"))
+        for k, v in extra_env.items():
+            env.insert(k, v)
+        env.insert("NO_COLOR", "1")
+        proc.setProcessEnvironment(env)
+        proc.setProgram(sys.executable)
+        proc.setArguments((["--fc-core"] if getattr(sys, "frozen", False)
+                           else [self._fc_script_path()])
+                          + self._verify_again_args(idx) + extra)
+        row["verdict"].setText(row["verdict"].text() + "\n" +
+                               _tr("Checking against the manifest…"))
+        out = []
+        proc.readyReadStandardOutput.connect(
+            lambda: out.append(bytes(proc.readAllStandardOutput())))
+
+        def done(code, _status, idx=idx, row=row):
+            import json as _json
+            out.append(bytes(proc.readAllStandardOutput()))
+            self._vm_proc = None
+            res = None
+            for line in b"".join(out).decode("utf-8", "replace").splitlines():
+                if line.startswith('{"t": "verify_manifest_result"'):
+                    try:
+                        res = _json.loads(line)
+                    except ValueError:
+                        pass
+            self._verify_again_done(idx, row, res, code)
+        proc.finished.connect(done)
+        self._vm_proc = proc
+        proc.setStandardInputFile(QProcess.nullDevice())
         proc.start()
 
     @staticmethod
@@ -3846,7 +5028,18 @@ class BlitcpGUI(QWidget):
         return partial[cut:] if cut > 0 else partial
 
     def _on_proc_stdout(self):
-        data = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
+        self._ingest_out(bytes(self._proc.readAllStandardOutput()))
+
+    def _on_proc_stderr(self):
+        self._ingest_err(bytes(self._proc.readAllStandardError()))
+
+    # The two channels each have ONE ingest path, used by the readyRead
+    # handlers and by the drain at the end of the run alike, so a line counts
+    # the same (log, transcript, last error) whichever of them read it.
+    def _ingest_out(self, raw):
+        data = raw.decode("utf-8", "replace")
+        if not data:
+            return
         buf = self._run_meta["outbuf"] + data
         parts = buf.split("\n")
         self._run_meta["outbuf"] = self._last_cr_segment(parts.pop())
@@ -3854,14 +5047,24 @@ class BlitcpGUI(QWidget):
         for line in parts:
             self._handle_out_line(line)
 
-    def _on_proc_stderr(self):
-        data = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
-        for line in data.splitlines():
-            self._run_meta["fulllog"].append("[stderr] " + line)  # raw, for the log file
+    def _ingest_err(self, raw, final=False):
+        """stderr arrives in arbitrary chunks too: a line split across two
+        reads is held until its newline (or, final=True, the end of the run)
+        instead of being logged as two lines."""
+        rm = self._run_meta
+        buf = rm.get("errbuf", "") + raw.decode("utf-8", "replace")
+        parts = buf.split("\n")
+        rm["errbuf"] = "" if final else parts.pop()
+        for line in parts:
+            line = line.rstrip("\r")
+            if not line and final:
+                continue
+            rm["fulllog"].append("[stderr] " + line)  # raw, for the log file
             line = self._strip_ansi(line).rstrip()
             if line.strip():
-                self._add_log(line)
-                self._run_meta["errtail"] = line
+                shown = self._emit_log(line)     # a traceback folds to its message
+                if shown:
+                    rm["errtail"] = shown
 
     # Every "Phase N — <name>" the engine can print has to match one of these,
     # or the header keeps whatever it said last. It used to end at "block
@@ -3957,6 +5160,27 @@ class BlitcpGUI(QWidget):
                     self.stat_vals["Speed"].setText("—")
                 self.stat_vals["ETA"].setText("—")
                 return
+            if ev.get("t") == "fanout_start":
+                self._fanout_start(ev)
+                return
+            if ev.get("t") == "sink_progress":
+                self._fanout_progress(ev)
+                return
+            if ev.get("t") == "fanout_result":
+                self._fanout_result(ev)
+                return
+            if ev.get("t") == "verify_manifest_result":
+                if self._run_meta.get("verify_manifest"):
+                    self._verify_manifest_panel(ev)
+                return
+            if ev.get("t") == "verify_result":
+                if self._run_meta.get("fanout"):
+                    return      # per destination: fanout_result says it all
+                # The engine's own verdict, independent of the UI language.
+                # A presence-only check (content False) is not "verified".
+                if ev.get("ok") and ev.get("content"):
+                    self._run_meta["verified"] = True
+                return
             if ev.get("t") == "verify":
                 # verify phase: bar now shows how many files are verified
                 self._stop_indeterminate()
@@ -3968,6 +5192,9 @@ class BlitcpGUI(QWidget):
                     f"{int(ev.get('files_done', 0)):,} / {int(ev.get('files_total', 0)):,} verified")
                 self.stat_vals["ETA"].setText("—")
                 return
+            if (ev.get("t") in ("progress", "done")
+                    and self._run_meta.get("fanout")):
+                return          # several destinations: the rows draw the top
             if ev.get("t") in ("progress", "done"):
                 self._stop_indeterminate()
                 pct = ev.get("pct", 0) or 0
@@ -4012,6 +5239,8 @@ class BlitcpGUI(QWidget):
         if m:
             self._run_meta["dedup_bytes"] = parse_size(m.group(1))
             self.stat_vals["Dedup saved"].setText(m.group(1).strip())
+        if self._run_meta.get("fanout"):
+            return      # several destinations: fanout_result has the numbers
         mf = re.search(r"Files:\s*([\d,]+)\s*total", line)
         if mf:
             n = int(mf.group(1).replace(",", ""))
@@ -4056,12 +5285,21 @@ class BlitcpGUI(QWidget):
             msg = self._friendly(stripped)
             self._add_log(msg)
             rm["errtail"] = msg
-            return
+            return msg
         self._add_log(line)
-        if re.match(r"\s*(Error|Fatal|Authentication failed)", stripped):
+        if re.match(r"\s*(Error|Fatal|Authentication failed|blitcp:)",
+                    stripped):
             rm["errtail"] = self._friendly(stripped)
+            return rm["errtail"]
+        return line
 
     def _on_proc_error(self, err):
+        """Only a failure to START ends the run here — finished never comes
+        then. Every other error (a crash, a read or write error, a timeout)
+        is followed by finished, or the engine is still running: the run ends
+        in _on_proc_finished, after the pipes are drained."""
+        if err != QProcess.ProcessError.FailedToStart:
+            return
         if not self.running:
             return
         self.running = False
@@ -4072,30 +5310,44 @@ class BlitcpGUI(QWidget):
 
     def _on_proc_finished(self, code, status):
         self._clear_askpass()   # the password helper outlives nothing
-        # Drain anything still buffered in the pipe (finished can fire before the
-        # last readyRead), then flush the trailing partial line.
-        tail = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
-        if tail:
-            buf = self._run_meta["outbuf"] + tail
-            parts = buf.split("\n")
-            self._run_meta["outbuf"] = self._last_cr_segment(parts.pop())
-            for line in parts:
-                self._handle_out_line(line)
-        err = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
-        for line in err.splitlines():
-            line = self._strip_ansi(line).rstrip()
-            if line.strip():
-                self._emit_log(line)
+        # Qt reads the pipes as the process dies and delivers finished last;
+        # whatever it has not yet handed to readyRead is in its buffers. Drain
+        # both channels through the same ingest paths as readyRead, flush the
+        # partial lines, THEN end the run. [measured: 2026-11-05, Linux, Qt 6:
+        # readyRead had delivered everything before finished, GUI busy or idle.
+        # Not observed elsewhere; the drain is here so that, where Qt delivers
+        # later, a line still counts the same.]
+        self._ingest_out(bytes(self._proc.readAllStandardOutput()))
+        self._ingest_err(bytes(self._proc.readAllStandardError()), final=True)
         if self._run_meta["outbuf"].strip():
             self._handle_out_line(self._run_meta["outbuf"])
+            self._run_meta["fulllog"].append(self._run_meta["outbuf"])
             self._run_meta["outbuf"] = ""
+        crashed = status != QProcess.ExitStatus.NormalExit
         self.running = False
         self.start_btn.setEnabled(True)
         self.preview_btn.setEnabled(True)
         rm = self._run_meta
+        if rm.get("verify_manifest"):
+            self._stop_indeterminate()
+            self.vm_cancel.hide()
+            res = rm.get("vm_result")
+            if rm.get("cancelled"):
+                msg = "✗ " + _tr("Check cancelled")
+                self.pstate.setText(msg)
+            elif res is not None and not crashed:
+                msg = self._verify_manifest_panel(res)
+            else:
+                why = (rm.get("errtail") or "").strip()
+                msg = "✗ " + (why or _tr("The check could not run (exit "
+                                         "{c})").format(c=code))
+                self.pstate.setText(msg)
+            self.show_toast(msg)
+            return
         dry = rm["dry"]
-        ok = (code == 0)
-        skipped = (code == 3)   # engine EXIT_SOURCE_UNREADABLE: only unreadable
+        # A crash's exit code means nothing (Qt: valid for a normal exit only).
+        ok = not crashed and code == 0
+        skipped = not crashed and code == 3   # EXIT_SOURCE_UNREADABLE: only unreadable
         n_skip = rm.get("skipped_unreadable", 0)   # source files skipped, rest OK
         last = rm["last"] or {}
         elapsed = time.monotonic() - rm.get("t0", time.monotonic())
@@ -4171,27 +5423,28 @@ class BlitcpGUI(QWidget):
     def _clear_log(self):
         self.log_view.clear()
 
-    def _add_log(self, text, link=False):
+    def _add_log(self, text):
         v = DARK if self.dark else LIGHT
         fmt = QTextCharFormat()     # no foreground → the stylesheet's colour
-        if link:
-            text = "linked 312 duplicates (8.3 GB saved)"
-            fmt.setForeground(QColor(v["ok"]))
-        else:
-            # Colour like the terminal: dim rules, cyan phase banners, green ✓,
-            # red errors — so the GUI log reads like the CLI output, not flat grey.
-            s = text.strip()
-            color = None
-            if s and set(s) <= set("─—-=_ "):
-                color = v["faint"]
-            elif re.match(r"\s*Phase\b", text):
-                color = v["accent"]
-            elif "✓" in text:
-                color = v["ok"]
-            elif re.search(r"✗|\bError\b|\bFailed\b|FAILED|mismatch", text):
-                color = v["danger"]
-            if color:
-                fmt.setForeground(QColor(color))
+        # Colour like the terminal: dim rules, cyan phase banners, green ✓,
+        # red errors — so the GUI log reads like the CLI output, not flat grey.
+        s = text.strip()
+        color = None
+        if s and set(s) <= set("─—-=_ "):
+            color = v["faint"]
+        elif re.match(r"\s*Phase\b", text):
+            color = v["accent"]
+        elif "✓" in text:
+            color = v["ok"]
+        elif s.startswith(("Warning:", _tr("Warning:"))):
+            # The engine's warning, yellow as in the terminal — not red for
+            # a "Failed" in its reason ("Failed to find cookies for Brave
+            # browser", George's run on 84bb2c9).
+            color = v["warn"]
+        elif re.search(r"✗|\bError\b|\bFailed\b|FAILED|mismatch", text):
+            color = v["danger"]
+        if color:
+            fmt.setForeground(QColor(color))
         # Plain text with its own format per block: leading spaces keep the
         # column alignment of progress and summary lines, and nothing is parsed
         # as markup. setMaximumBlockCount drops the oldest blocks.
@@ -4263,6 +5516,10 @@ class BlitcpGUI(QWidget):
         elif st == "test":
             badge = QLabel(_tr("testing…"))
             badge.setObjectName("badgetest")
+        elif st == "fail":
+            badge = QLabel(_tr("test failed"))
+            badge.setObjectName("badgetest")
+            badge.setToolTip(getattr(self, "conn_line", {}).get(name, ""))
         else:
             badge = QLabel(_tr("untested"))
             badge.setObjectName("badgeidle")
@@ -4386,14 +5643,46 @@ class BlitcpGUI(QWidget):
         box.addWidget(l)
 
     def test_conn(self, name):
+        """The connection's Test: the run's destination probe, on a worker
+        (it gives up after 15 s). It used to wait one second and say OK."""
+        conn = self.conns.get(name)
+        if not FC_OK or not isinstance(conn, dict) \
+                or not hasattr(fc, "probe_connection"):
+            self.show_toast(name + ": " + _tr("cannot be tested without the "
+                                              "engine"))
+            return
+        if name in getattr(self, "_probe_workers", {}):
+            return                              # already being tested
         self.conn_state[name] = "test"
         self.render_conns()
-        QTimer.singleShot(1000, lambda: self._test_done(name))
+        w = _ProbeWorker(name, conn, self.creds_path, self._probe_trust)
+        self._probe_workers = getattr(self, "_probe_workers", {})
+        self._probe_workers[name] = w
+        w.done.connect(self._test_done)
+        w.start()
 
-    def _test_done(self, name):
-        self.conn_state[name] = "ok"
+    def _probe_trust(self, host, key):
+        """An unknown SSH host key met by a Test: the same question the
+        browser asks (_ConfirmHostKeyPolicy, on the UI thread)."""
+        import paramiko
+        pol = _ConfirmHostKeyPolicy(self, os.path.expanduser(
+            "~/.ssh/known_hosts"))
+        try:
+            pol.missing_host_key(paramiko.SSHClient(), host, key)
+            return True
+        except paramiko.SSHException:
+            return False
+
+    def _test_done(self, name, ok, line):
+        w = getattr(self, "_probe_workers", {}).pop(name, None)
+        if w is not None:
+            w.wait(1000)
+            w.deleteLater()
+        self.conn_state[name] = "ok" if ok else "fail"
+        self.conn_line = getattr(self, "conn_line", {})
+        self.conn_line[name] = line
         self.render_conns()
-        self.show_toast(name + ": connection OK")
+        self.show_toast(name + ": " + line)
 
     def open_conn_modal(self, name):
         dlg = ConnectionDialog(self, name, self.conns.get(name) if name else None)
@@ -4844,6 +6133,8 @@ class BlitcpGUI(QWidget):
             return hit[1]
         if hit:
             self._browse_close(name)
+        if fc is None:                    # demo mode: no engine to list with
+            raise ValueError("the blitcp engine is not loaded")
         backend_cls = {"s3": fc.S3Backend, "az": fc.AzureBackend,
                        "gs": fc.GCSBackend, "smb": fc.SMBBackend}.get(ctype)
         if not backend_cls:
@@ -4860,7 +6151,7 @@ class BlitcpGUI(QWidget):
             spec = fc.CloudSpec(scheme=ctype, container=bucket, prefix="",
                                 connection=name)
         args = types.SimpleNamespace(smb_connect_timeout=SMB_BROWSE_TIMEOUT)
-        backend = backend_cls(spec, args, creds=creds)
+        backend = backend_cls(spec, args, creds=creds, host=fc.HOST)
         self._browse_backends[name] = (fp, backend, self._browse_lock(conn))
         return backend
 
@@ -4981,9 +6272,11 @@ class BlitcpGUI(QWidget):
         for name in list(self._browse_backends):
             self._browse_close(name)
         deadline = time.monotonic() + wait_s
-        for w in list(self._browse_workers):
+        probes = list(getattr(self, "_probe_workers", {}).values())
+        for w in list(self._browse_workers) + probes:
             w.wait(max(0, int((deadline - time.monotonic()) * 1000)))
-        return not any(w.isRunning() for w in list(self._browse_workers))
+        return not any(w.isRunning()
+                       for w in list(self._browse_workers) + probes)
 
     def _src_type(self):
         t = self.browse_conn["type"]
@@ -5234,21 +6527,16 @@ class BlitcpGUI(QWidget):
 
     def _config_dir(self):
         """Per-user config dir, matching where credentials.json is stored.
-        An existing pre-rename blitcp dir (gui_settings.json, history/) is
-        renamed in place on first touch — same migration as the engine's."""
+        An existing pre-rename fast_copy dir (gui_settings.json, history/)
+        moves to blitcp once — the engine's own migration (LEGACY NAMES)."""
         if sys.platform.startswith("win"):
             base = os.environ.get("APPDATA") or os.path.expanduser("~")
         else:
             base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
                 os.path.expanduser("~"), ".config")
-        old = os.path.join(base, "fast_copy")
-        new = os.path.join(base, "blitcp")
-        if os.path.isdir(old) and not os.path.isdir(new):
-            try:
-                os.replace(old, new)
-            except OSError:
-                return old
-        return new
+        if FC_OK and fc is not None and hasattr(fc, "_migrate_legacy_dir"):
+            return fc._migrate_legacy_dir(base, "blitcp")
+        return os.path.join(base, "blitcp")
 
     def history_dir(self):
         return os.path.join(self._config_dir(), "history")
@@ -5272,6 +6560,7 @@ class BlitcpGUI(QWidget):
             "flags": [k for k, o in self.flag_opts.items() if o.property("active")],
             "exclude": list(self.exclude_patterns),
             "index_existing": list(self.index_existing_paths),
+            "extra_dests": [dict(d) for d in self.extra_dests],
         }
 
     def _write_history(self, record):
@@ -5380,9 +6669,14 @@ class BlitcpGUI(QWidget):
             badge.setObjectName("badgetest")
         again = textbtn(_tr("Run again"), "refresh", oid="btnsm")
         again.clicked.connect(lambda _=False, c=cfg: self._run_again(c))
+        vm = textbtn(_tr("Verify against manifest"), "check",
+                     oid="btnsm")
+        vm.clicked.connect(lambda _=False, d=cfg.get("dest", ""):
+                           self.verify_against_manifest(d))
         top.addWidget(hp, 1)
         if failed:
             top.addWidget(badge)
+        top.addWidget(vm)
         top.addWidget(again)
         lay.addLayout(top)
         if failed:
@@ -5434,6 +6728,8 @@ class BlitcpGUI(QWidget):
         if "index_existing" in cfg:
             self.index_existing_paths = list(cfg["index_existing"])
             self.render_idx_chips()
+        self.extra_dests = [dict(d) for d in cfg.get("extra_dests") or []]
+        self.render_extra_dests()
         self.render_sources()
         self.render_dest()
         self.navigate("transfer")

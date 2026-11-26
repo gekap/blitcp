@@ -31,6 +31,8 @@ Usage:
   python uat_blitcp.py --target ./blitcp.py --keep
 """
 import os
+import testtmp  # test data under ~/.cache/blitcp-tests, never /tmp (RAM)
+testtmp.use_test_tmp()
 import sys
 import json
 import stat
@@ -139,6 +141,12 @@ def run_fc(target, args, timeout=240, env_extra=None):
     env = dict(os.environ)
     env["NO_COLOR"] = "1"
     env["BLITCP_CREDENTIALS"] = _NULL_CREDS
+    # The checks read the layout's UTF-8 form ("·"); a caller with no
+    # locale in its environment would get the ASCII one ("-").
+    loc = next((env[k] for k in ("LC_ALL", "LC_CTYPE", "LANG")
+                if env.get(k)), "")
+    if "utf-8" not in loc.lower() and "utf8" not in loc.lower():
+        env["LC_ALL"] = "C.UTF-8"       # none set, or a C locale
     # Scenario-supplied variables (SSL_CERT_FILE for the throwaway origin cert,
     # PYTHONPATH for the sitecustomize that refuses SFTP, a password env var).
     env.update(env_extra or {})
@@ -560,8 +568,11 @@ def c_incremental(ws, rc, out, info):
     ok, det = _verify(os.path.join(ws, "dst"), info["spec"])
     if not ok:
         return False, det
+    # The single-destination copy's words, or the one layout's (4.4.0):
+    # phase 5 "nothing to copy · N skipped", phase 3 "N known · N to link".
     if not any(m in out for m in ("skip identical", "already on drive",
-                                  "link instead of copy", "Space saved")):
+                                  "link instead of copy", "Space saved",
+                                  "nothing to copy", " known · ")):
         return False, "second run did not report skipping/linking identical files"
     return True, "re-run skipped/linked already-present files"
 
@@ -607,7 +618,11 @@ def _reported_dedup(out):
     if m and int(m.group(1)) > 0:
         return True
     m = _re.search(r"(?:Space saved|Dedup saved):\s+([\d.]+)\s*(B|KB|MB|GB)", out)
-    return bool(m and float(m.group(1)) > 0)
+    if m and float(m.group(1)) > 0:
+        return True
+    # The one layout (4.4.0): Done's "N linked".
+    m = _re.search(r"^[Dd]one\s.* ([\d,]+) linked · ", out, _re.M)
+    return bool(m and int(m.group(1).replace(",", "")) > 0)
 
 
 def _phys_offset(path):
@@ -891,7 +906,11 @@ def b_probe_binary(ws):
     nasty = b"ab\r\ncd\x1aef\n\rgh\x00\xff"
     data = (nasty + _rand(240, b"probe")) * (3_000_000 // (len(nasty) + 240) + 1)
     _write(os.path.join(ws, "src/probe.bin"), data[:3_000_000])
-    return [os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/"], {}
+    # The probe is the legacy route's (the --use-sudo run): the one engine
+    # reads each source file once, in the copy, and takes a file it cannot
+    # read as unreadable there (E1) — no sampled reads before.
+    return ([os.path.join(ws, "src") + "/", os.path.join(ws, "dst") + "/"],
+            {"_env": {"BLITCP_ENGINE": "legacy"}})
 
 
 def c_probe_binary(ws, rc, out, info):
@@ -920,7 +939,7 @@ def c_idx_link(ws, rc, out, info):
     linked = os.path.join(ws, "dst/new_copy.bin")
     if _h(linked) != _h(info["existing"]):
         return False, "linked file content mismatch"
-    if "link instead of copy" not in out:
+    if "link instead of copy" not in out and not _reported_dedup(out):
         return False, "no cross-run/existing link reported"
     if not os.path.exists(os.path.join(ws, "dst/really_new.bin")):
         return False, "genuinely-new file not copied"
@@ -1544,9 +1563,11 @@ def c_conn_path_join(ws, rc, out, info):
 
 
 def _one_clean_error(rc, out, *must):
-    """exit 1, no traceback, and an Error line naming every string in must."""
-    if rc != 1:
-        return False, f"exit {rc} (want 1): {out.strip()[-200:]}"
+    """exit 2 — nothing was done (the exit rule, 2026-11-13: a usage error,
+    a connection that cannot be made) — no traceback, and an Error line
+    naming every string in must."""
+    if rc != 2:
+        return False, f"exit {rc} (want 2): {out.strip()[-200:]}"
     if "Traceback" in out or "PYI-" in out:
         return False, "a Python traceback reached the output: " + out.strip()[-200:]
     errs = [ln.strip() for ln in out.splitlines() if "Error" in ln]
@@ -1627,6 +1648,9 @@ class Stub:                  # an SMB backend that got as far as the banner
     def __getattr__(self, name):
         raise SystemExit("stub: " + name)
 blitcp.make_backend = lambda spec, args: Stub(spec)
+# nas.example does not exist: the destination probe (pre-flight, 4.4.0) would
+# stop the run before its banner — the banner is what this checks.
+blitcp.probe_destination = lambda *a, **k: blitcp.ProbeResult(True, "stub")
 sys.argv = ["blitcp"] + sys.argv[2:]
 try:
     blitcp.main()
@@ -1654,25 +1678,31 @@ def c_smb_banner_host(ws, rc, out, info):
             ("Source:", ["smb://nas.example/refs/Win_Backup/Vault",
                          os.path.join(ws, "dst")],
              "smb://nas.example/refs/Win_Backup/Vault"),
-            ("Dest:", [src, "smb://nas.example:4455/refs/up"],
+            ("Dest", [src, "smb://nas.example:4455/refs/up"],
              "smb://nas.example:4455/refs/up")):
+        # "Dest:" (the single-destination banner) or "Destination:" (the
+        # one engine's headline, E1): the line must name the host either way.
         r = subprocess.run([sys.executable, "-c", _SMB_BANNER_CHILD, here] + argv,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=120, env=env,
                            stdin=subprocess.DEVNULL)
-        line = next((ln.strip() for ln in (r.stdout + r.stderr).splitlines()
-                     if ln.strip().startswith(label)), "")
+        # 4.4.0: the one layout's header — "blitcp V  SRC -> DST  …" when
+        # the output is not a terminal — names both ends on one line.
+        lines = [ln.strip() for ln in (r.stdout + r.stderr).splitlines()]
+        line = next((ln for ln in lines if ln.startswith(label)), "") or next(
+            (ln for ln in lines if ln.startswith("blitcp ") and " -> " in ln),
+            "")
         got[label] = line
         if want not in line:
             return False, f"{label} line {line!r}, want {want}"
-    return True, f"{got['Source:']} | {got['Dest:']}"
+    return True, f"{got['Source:']} | {got['Dest']}"
 
 
 def b_name_as_ssh_host(ws):
     # The field report: the saved connection's name used as an SSH host.
     creds = _write_smb_conn(ws)
     return ["--credentials-file", creds,
-            "gkapellakis@Virtual_Sever_SMB:Win_Backup/Vault",
+            "jdoe@Virtual_Sever_SMB:Win_Backup/Vault",
             os.path.join(ws, "dst")], {}
 
 
@@ -1684,7 +1714,7 @@ def b_name_typo_ssh_host(ws):
     # ...with a typo on top: 'Server' for the saved 'Sever'.
     creds = _write_smb_conn(ws)
     return ["--credentials-file", creds,
-            "gkapellakis@Virtual_Server_SMB:Win_Backup/Vault",
+            "jdoe@Virtual_Server_SMB:Win_Backup/Vault",
             os.path.join(ws, "dst")], {}
 
 
@@ -2383,8 +2413,8 @@ SCENARIOS = [
     S("UAT-SSH-8", "ssh", "saved connection: a suffix refines its path, does not replace it", b_conn_path_join, c_conn_path_join, needs="ssh"),
     S("UAT-SSH-9", "ssh", "remote-to-remote via saved connection with a bare filename", b_conn_r2r_bare_name, c_conn_r2r_bare_name, needs="ssh"),
     S("UAT-SSH-10", "ssh", "incremental check asks per path, never lists the whole destination", b_remote_scan_targeted, c_remote_scan_targeted, needs="ssh"),
-    S("UAT-SSH-11", "ssh", "unresolvable host → one clean error line, exit 1", b_ssh_dns_failure, c_ssh_dns_failure, needs="paramiko"),
-    S("UAT-SSH-12", "ssh", "refused port → one clean error line, exit 1", b_ssh_refused, c_ssh_refused, needs="paramiko"),
+    S("UAT-SSH-11", "ssh", "unresolvable host → one clean error line, exit 2", b_ssh_dns_failure, c_ssh_dns_failure, needs="paramiko"),
+    S("UAT-SSH-12", "ssh", "refused port → one clean error line, exit 2", b_ssh_refused, c_ssh_refused, needs="paramiko"),
     S("UAT-NAME-1", "ssh", "saved SMB share 'refs/' joins without a double slash", b_smb_share_slash, c_smb_share_slash),
     S("UAT-NAME-2", "ssh", "user@<saved name>:path → 'Did you mean <name>:path?'", b_name_as_ssh_host, c_name_as_ssh_host, needs="paramiko"),
     S("UAT-NAME-3", "ssh", "user@<near-miss of a saved name> → did-you-mean", b_name_typo_ssh_host, c_name_typo_hint, needs="paramiko"),

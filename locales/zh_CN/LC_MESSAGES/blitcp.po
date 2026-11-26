@@ -143,9 +143,6 @@ msgstr "禁用 SMB3 传输加密（默认开启）"
 msgid "Disable deduplication"
 msgstr "禁用去重"
 
-msgid "Disable persistent hash cache (cross-run dedup database)"
-msgstr "禁用持久哈希缓存（跨运行去重数据库）"
-
 msgid "Disk layout resolved: {n}/{total} files mapped"
 msgstr "磁盘布局已解析：{n}/{total} 个文件已映射"
 
@@ -437,14 +434,14 @@ msgstr "设为源"
 msgid "Show available updates and release notes"
 msgstr "显示可用更新与发行说明"
 
-msgid "Show copy plan without copying"
-msgstr "仅显示复制计划而不复制"
+msgid "Show the copy plan without copying. Reads every source file, and each file of the same size already at a destination; writes nothing there"
+msgstr "显示复制计划但不复制。会读取每个源文件，以及目标中已有的每个大小相同的文件；不会在那里写入任何内容"
 
 msgid "Show version and exit"
 msgstr "显示版本并退出"
 
-msgid "Skip post-copy verification"
-msgstr "跳过复制后校验"
+msgid "Skip post-copy verification. A file cloned from the source (reflink) is still read back once: that read gives it the hash its records keep"
+msgstr "跳过复制后的校验。从源克隆（reflink）的文件仍会被读回一次：这次读取为它提供记录所保存的哈希"
 
 msgid "Skip space check, copy even if not enough space"
 msgstr "跳过空间检查，即使空间不足也复制"
@@ -655,7 +652,6 @@ msgstr "subcommands:\n  creds <sub>      管理 credentials 文件中保存的�
 
 msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
 msgstr "消息语言：{langs}。覆盖 BLITCP_LANG 与系统 locale。机器输出（--log-file）保持英文。"
-
 
 # GUI deep-path strings + Settings/language section (2026-08-06)
 msgid "Access denied — run as Administrator to browse this folder"
@@ -949,7 +945,6 @@ msgstr "时间戳"
 msgid "xattr"
 msgstr "xattr"
 
-
 msgid "Small files"
 msgstr "小文件"
 
@@ -964,9 +959,6 @@ msgstr "本地传输中小于 1MB 文件的复制方式：并行工作线程池�
 
 msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
 msgstr "本地复制的小文件引擎：'parallel' = 工作线程池（线程 x4，默认），'stream' = 单线程 tar 块流"
-
-msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
-msgstr "子命令:\n  creds <sub>      管理凭据文件中保存的 cloud/SSH 连接配置:\n                   add, list, edit, remove, test, encrypt/decrypt, lock。\n                   运行 'blitcp creds' 查看帮助。\n  ls <target>      列出云端位置（已保存的连接名称或 s3:// / az:// / gs://\n                   URL）或远程 SSH 目录（已保存的 ssh 连接或\n                   user@host:/path，经 SFTP）。\n                   别名: list-objects。运行 'blitcp ls -h' 查看帮助。\n\n示例:\n  blitcp /data /media/usb/data           本地  → 本地\n  blitcp /data user@host:/backup         本地  → 远程 (SSH)\n  blitcp user@host:/data /local/backup   远程 → 本地\n  blitcp /data s3://bucket/backup        本地  → 云端\n  blitcp creds add aws-dev               保存连接配置\n  blitcp ls aws-dev                      列出已保存的云连接\n  blitcp ls user@host:/var/log           列出远程 SSH 目录\n"
 
 msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
 msgstr "通过纯 SFTP 传输 — 从不在服务器上执行命令。适用于会关闭 exec 通道的仅 SFTP 端点（托管网关、受限账户）。增量传输和校验可用；跳过去重链接和远程空间检查。"
@@ -1024,8 +1016,6 @@ msgstr "{n} 个仅按存在性和大小检查：链接和克隆"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} 个未校验内容：源文件不可读"
-
-
 
 msgid "Checked {n} remote path(s)"
 msgstr "已检查远程的 {n} 个路径"
@@ -1221,3 +1211,2488 @@ msgstr "正在连接 {0}…"
 
 msgid "Showing the first {0} of {1} entries"
 msgstr "显示 {1} 项中的前 {0} 项"
+
+msgid "Not verified: the destination has no hash tool (xxh128sum / sha256sum / md5sum)."
+msgstr "未校验：目标没有哈希工具（xxh128sum / sha256sum / md5sum）。"
+
+msgid "Verification failed: {n} of {t} objects"
+msgstr "校验失败：{t} 个对象中有 {n} 个"
+
+msgid "Verifying {n} objects against the store's checksums..."
+msgstr "正在用存储服务的校验和校验 {n} 个对象..."
+
+msgid "content differs from the source (store MD5)"
+msgstr "内容与源不同（存储服务的 MD5）"
+
+msgid "content differs from the source (store SHA-256)"
+msgstr "内容与源不同（存储服务的 SHA-256）"
+
+msgid "could not be checked ({err})"
+msgstr "无法检查（{err}）"
+
+msgid "no hash returned by the destination: {name}"
+msgstr "目标未返回哈希：{name}"
+
+msgid "not found on the destination"
+msgstr "目标上未找到"
+
+msgid "on remote"
+msgstr "（远程）"
+
+msgid "size differs on the destination"
+msgstr "目标上的大小不同"
+
+msgid "{n} by existence + size only"
+msgstr "{n} 个仅按存在性和大小检查"
+
+msgid "{n} by existence + size only (the store keeps no checksum for it)"
+msgstr "{n} 个仅按存在性和大小检查（存储服务不为其保存校验和）"
+
+msgid "{n} hashed on the remote host"
+msgstr "{n} 个在远程主机上计算哈希校验"
+
+msgid "{n} hashed on the remote host (random sample)"
+msgstr "{n} 个在远程主机上计算哈希校验（随机抽样）"
+
+msgid "{n} matched the hash recorded at upload"
+msgstr "{n} 个与上传时记录的哈希一致"
+
+msgid "{n} matched the store's own MD5"
+msgstr "{n} 个与存储服务的 MD5 一致"
+
+msgid "{n} matched the store's own SHA-256"
+msgstr "{n} 个与存储服务的 SHA-256 一致"
+
+msgid "{n} read back from the disk (O_DIRECT)"
+msgstr "{n} 个从磁盘重新读取（O_DIRECT）"
+
+msgid "{n} read back over the network"
+msgstr "{n} 个通过网络重新读取"
+
+msgid "{n} read back through the OS cache (may not reflect the disk)"
+msgstr "{n} 个经由操作系统缓存重新读取（可能不反映磁盘内容）"
+
+msgid "✓ All {n} files present{where}, sizes match — content not compared"
+msgstr "✓ 全部 {n} 个文件均存在{where}，大小一致 — 未比较内容"
+
+msgid "✓ All {n} objects present{where}, sizes match — content not compared"
+msgstr "✓ 全部 {n} 个对象均存在{where}，大小一致 — 未比较内容"
+
+msgid "✓ Verified: all {n} files OK{where}"
+msgstr "✓ 校验通过：全部 {n} 个文件 OK{where}"
+
+msgid "✓ Verified: all {n} objects OK{where}"
+msgstr "✓ 校验通过：全部 {n} 个对象 OK{where}"
+
+msgid "cannot create the destination: {err}"
+msgstr "无法创建目标：{err}"
+
+msgid "content differs from the source"
+msgstr "内容与源不同"
+
+msgid "could not be read back from the destination"
+msgstr "无法从目标重新读取"
+
+msgid "destination is not writable: {err}"
+msgstr "目标不可写：{err}"
+
+msgid "not enough free space: {need} needed, {free} free"
+msgstr "可用空间不足：需要 {need}，可用 {free}"
+
+msgid "--dest needs at least one source."
+msgstr "--dest 至少需要一个源。"
+
+msgid "--dest {dest} is given twice."
+msgstr "--dest {dest} 重复指定。"
+
+msgid "--dest {dest} is inside the source {src}."
+msgstr "--dest {dest} 位于源 {src} 之内。"
+
+msgid "--dest {dest}: only local destinations are supported with --dest in this version."
+msgstr "--dest {dest}：此版本的 --dest 仅支持本地目标。"
+
+msgid "--fanout-buffer must be at least 1 MB."
+msgstr "--fanout-buffer 至少为 1 MB。"
+
+msgid "--stall-timeout must be at least 1 second."
+msgstr "--stall-timeout 至少为 1 秒。"
+
+msgid "A destination that makes no progress for this long is marked FAILED and the others carry on (default: {n})"
+msgstr "在此时间内没有进展的目标会被标记为失败，其余目标继续（默认：{n}）"
+
+msgid "A destination; repeat for several. The source is read once and written to every destination at the same time. With --dest, every positional argument is a source. A destination is a local folder, an SSH folder (user@host:/path, or a saved connection NAME:path), an SMB share (smb://server/share/path) or an object store (s3://, az://, gs://)."
+msgstr "一个目标；多个目标请重复使用。源只读取一次，同时写入每个目标。使用 --dest 时，每个位置参数都是源。目标可以是本地文件夹、SSH 文件夹（user@host:/path，或已保存的连接 NAME:path）、SMB 共享（smb://server/share/path）或对象存储（s3://、az://、gs://）。"
+
+msgid "An unfinished file was left behind: {path}"
+msgstr "留下了一个未完成的文件：{path}"
+
+msgid "Destinations"
+msgstr "目标"
+
+msgid "FAILED: {reason}"
+msgstr "失败：{reason}"
+
+msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
+msgstr "用于已读取但尚未写入所有目标的数据的内存；占满时由最慢的目标决定速度（默认：{n}）"
+
+msgid "Pre-flight failed; no file was written."
+msgstr "预检失败；未写入任何文件。"
+
+msgid "These counts do not add up to {n} files; treat this destination as unverified."
+msgstr "这些计数加起来不等于 {n} 个文件；请将此目标视为未验证。"
+
+msgid "Two sources are both named {name}; they would land on top of each other."
+msgstr "两个源都名为 {name}；它们会相互覆盖。"
+
+msgid "copied"
+msgstr "已复制"
+
+msgid "copying"
+msgstr "正在复制"
+
+msgid "done"
+msgstr "完成"
+
+msgid "one read, {n} destinations"
+msgstr "一次读取，{n} 个目标"
+
+msgid "refused: {why}"
+msgstr "已拒绝：{why}"
+
+msgid "several destinations"
+msgstr "多个目标"
+
+msgid "source: {rel}: {why}"
+msgstr "源：{rel}：{why}"
+
+msgid "stalled: no progress for {n} s"
+msgstr "停滞：{n} 秒无进展"
+
+msgid "verifying"
+msgstr "正在验证"
+
+msgid "waiting"
+msgstr "等待中"
+
+msgid "{bad} of {n} files failed verification"
+msgstr "{n} 个文件中有 {bad} 个验证失败"
+
+msgid "{copied} written · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "已写入 {copied} · 已拒绝 {refused} · 失败 {failed} · 源端无法读取 {src}"
+
+msgid "{dests} are on the same device — this reduces redundancy and throughput."
+msgstr "{dests} 位于同一设备上——这会降低冗余和吞吐量。"
+
+msgid "{n} files written, not verified (--no-verify)"
+msgstr "已写入 {n} 个文件，未验证（--no-verify）"
+
+msgid "{n} files, {size}"
+msgstr "{n} 个文件，{size}"
+
+msgid "{n} not written (the destination failed)"
+msgstr "{n} 个未写入（目标失败）"
+
+msgid "{opt} is not supported with --dest yet."
+msgstr "{opt} 暂不支持与 --dest 一起使用。"
+
+msgid "{path}: no such source. With --dest, every positional argument is a source; give each destination with --dest."
+msgstr "{path}：没有这个源。使用 --dest 时，每个位置参数都是源；请用 --dest 指定每个目标。"
+
+msgid "{src}: only local sources are supported with --dest in this version."
+msgstr "{src}：此版本的 --dest 仅支持本地源。"
+
+msgid "--dest is empty. Give a path (an empty one would mean the current directory)."
+msgstr "--dest 为空。请指定路径（空路径会被当作当前目录）。"
+
+msgid "--dest {dest} contains the source {src}."
+msgstr "--dest {dest} 包含源 {src}。"
+
+msgid "--dest {inner} is inside --dest {outer}; the two copies would write the same files."
+msgstr "--dest {inner} 位于 --dest {outer} 之内；两份副本会写入相同的文件。"
+
+msgid "{rel}: would be written into the source {src}"
+msgstr "{rel}：会被写入源 {src} 之内"
+
+msgid "Incomplete: {n} of {total} files are not at this destination"
+msgstr "不完整：此目标缺少 {total} 个文件中的 {n} 个"
+
+msgid "this destination path is a source file (the same file on disk); it was not replaced"
+msgstr "此目标路径就是一个源文件（磁盘上的同一文件）；未替换"
+
+msgid "this destination path already holds another file from this run (on a case-insensitive destination two names can be one); it was not replaced"
+msgstr "此目标路径已存放本次运行写入的另一个文件（在不区分大小写的目标上，两个名称可能指向同一文件）；未替换"
+
+msgid "Not verified: the source changed during the run"
+msgstr "未验证：运行期间源已更改"
+
+msgid "{n} source files changed during the run (another identity, size or modification time, or gone); no copy of this run is called verified."
+msgstr "运行期间有 {n} 个源文件发生变化（标识、大小或修改时间不同，或已消失）；本次运行的副本均不视为已验证。"
+
+msgid "{src} has no name of its own (a drive or filesystem root); with several sources, each one needs a name to land under."
+msgstr "{src} 没有自己的名称（驱动器或文件系统根目录）；有多个源时，每个源都需要一个名称作为存放位置。"
+
+msgid "this destination folder is inside a source folder (the same folder on disk); nothing was written there"
+msgstr "此目标文件夹位于源文件夹之内（磁盘上的同一文件夹）；未在其中写入任何内容"
+
+msgid "--dest {a} and --dest {b} are the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} 和 --dest {b} 是磁盘上的同一个文件夹；那是一份副本，而不是两份。"
+
+msgid "--dest {a} and --dest {b} would write into the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} 和 --dest {b} 会写入磁盘上的同一个文件夹；那是一份副本，而不是两份。"
+
+msgid "An unfinished file may have been left behind: {path}"
+msgstr "可能留下了一个未完成的文件：{path}"
+
+msgid "--dest does not run elevated (sudo or root) yet."
+msgstr "--dest 暂不支持以提升的权限（sudo 或 root）运行。"
+
+msgid "stalled during pre-flight: no answer for {n} s"
+msgstr "预检时停滞：{n} 秒无响应"
+
+msgid "The source is on {fs}, whose timestamps are too coarse to notice a file rewritten in place at the same size while it was being read; for such a rewrite, 'changed during the run' cannot be ruled out."
+msgstr "源位于 {fs} 上，其时间戳精度太低，无法发现读取期间被原地以相同大小重写的文件；对于这种重写，无法排除“运行期间已更改”。"
+
+msgid "{size} written · {time} for this destination"
+msgstr "已写入 {size} · 此目标用时 {time}"
+
+msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
+msgstr "从 FILE 读取目标，每行一个，等同于逐个用 --dest 指定。跳过空行以及第一个非空白字符为 # 的行；行内其他内容不做裁剪。可重复。"
+
+msgid "A name for this copy, shown in the summary and recorded with the result."
+msgstr "此次复制的名称，显示在摘要中并随结果记录。"
+
+msgid "--dests-file {path}: cannot read it ({why})"
+msgstr "--dests-file {path}：无法读取（{why}）"
+
+msgid "--dests-file {path} names no destination."
+msgstr "--dests-file {path} 未列出任何目标。"
+
+msgid "--job-name goes with --dest or --dests-file."
+msgstr "--job-name 需与 --dest 或 --dests-file 一起使用。"
+
+msgid "--job-name must be 1 to 200 printable characters on one line."
+msgstr "--job-name 必须是一行内 1 到 200 个可打印字符。"
+
+msgid "Job: {name}"
+msgstr "任务：{name}"
+
+msgid "Metadata not applied: {n} item(s) — elevated run with no safe handle on the file (never set through a path when elevated)"
+msgstr "未应用元数据：{n} 项 — 以提升权限运行且没有该文件的安全句柄（提升权限时从不通过路径设置）"
+
+msgid "'{name}' is both a folder here and a saved connection. Write ./{name} for the folder, or {name}: for the connection."
+msgstr "'{name}' 在这里既是文件夹又是已保存的连接。文件夹请写 ./{name}，连接请写 {name}:。"
+
+msgid "'{name}' is both a file here and a saved connection. Write ./{name} for the file, or {name}: for the connection."
+msgstr "'{name}' 在这里既是文件又是已保存的连接。文件请写 ./{name}，连接请写 {name}:。"
+
+msgid "{rel}: the destination folder was replaced during the run (not followed when elevated)"
+msgstr "{rel}：运行期间目标文件夹被替换（提升权限时不跟随）"
+
+msgid "{rel}: a symlinked folder on the way (not followed when elevated)"
+msgstr "{rel}：路径上的某个文件夹是符号链接（提升权限时不跟随）"
+
+msgid "replaced since the scan; not copied when elevated"
+msgstr "扫描后已被替换；提升权限时不复制"
+
+msgid "--dest {name} is a saved connection; only local folders are destinations with --dest in this version. For a local folder of that name, write ./{name}."
+msgstr "--dest {name} 是已保存的连接；此版本中 --dest 只能指定本地文件夹。如需同名本地文件夹，请写 ./{name}。"
+
+msgid "its ASC MHL history cannot be read ({why})"
+msgstr "无法读取其 ASC MHL 历史（{why}）"
+
+msgid "its ASC MHL history does not match its chain file ({path})"
+msgstr "其 ASC MHL 历史与链文件不符（{path}）"
+
+msgid "no manifest written, the history was left as it is"
+msgstr "未写入清单，历史保持原样"
+
+msgid "{n} names cannot be written into the ASC MHL file (control characters); they are in {list} only"
+msgstr "{n} 个名称无法写入 ASC MHL 文件（控制字符）；它们只在 {list} 中"
+
+msgid "no manifest: the xxhash package is not installed"
+msgstr "无清单：未安装 xxhash 包"
+
+msgid "the manifest could not be written: {why}"
+msgstr "无法写入清单：{why}"
+
+msgid "Manifest: {mhl} and {lst}"
+msgstr "清单：{mhl} 和 {lst}"
+
+msgid "manifest"
+msgstr "清单"
+
+msgid "{rel}: not a regular file"
+msgstr "{rel}：不是普通文件"
+
+msgid "{rel}: too large for a manifest"
+msgstr "{rel}：作为清单过大"
+
+msgid "Check a destination against its own manifest (ascmhl/ or blitcp.xxh128), without the source: every file it lists is read back and hashed. Writes nothing."
+msgstr "根据目标自身的清单（ascmhl/ 或 blitcp.xxh128）检查目标，无需源：读回并计算其中列出的每个文件的哈希。不写入任何内容。"
+
+msgid "--verify-manifest takes only the destination to check."
+msgstr "--verify-manifest 只接受要检查的目标。"
+
+msgid "--verify-manifest needs the xxhash package."
+msgstr "--verify-manifest 需要 xxhash 包。"
+
+msgid "{dest}: no answer for {n} s"
+msgstr "{dest}：{n} 秒无响应"
+
+msgid "{dest}: no such folder"
+msgstr "{dest}：没有该文件夹"
+
+msgid "{dest} has no manifest ({mhl}/ or {lst})."
+msgstr "{dest} 没有清单（{mhl}/ 或 {lst}）。"
+
+msgid "checking {dest} against its manifest ({n} files)"
+msgstr "正在根据清单检查 {dest}（{n} 个文件）"
+
+msgid "{k} of {n} checked"
+msgstr "已检查 {k}/{n}"
+
+msgid "All {n} files match the manifest"
+msgstr "全部 {n} 个文件与清单一致"
+
+msgid "{bad} of {n} files do not match the manifest ({differ} differ, {missing} missing)"
+msgstr "{n} 个文件中有 {bad} 个与清单不符（{differ} 个不同，{missing} 个缺失）"
+
+msgid "{rel}: missing"
+msgstr "{rel}：缺失"
+
+msgid "Up to date: the source matches the xxh128 its manifest records for all {n} files, and each is there at the recorded size; not read back this run — blitcp --verify-manifest checks them"
+msgstr "已是最新：全部 {n} 个文件的源与其清单记录的 xxh128 一致，且每个文件都以记录的大小存在；本次未读回 — 可用 blitcp --verify-manifest 检查"
+
+msgid "{n} unchanged — the source matches the xxh128 its manifest records, and each is there at the recorded size; not written or read back again"
+msgstr "{n} 个未变 — 源与其清单记录的 xxh128 一致，且每个文件都以记录的大小存在；未再次写入或读回"
+
+msgid "{n} files were read a second time: read to compare with what the destination recorded for them, found changed, and read again to be written"
+msgstr "{n} 个文件被读取了第二次：先读取以与目标为其记录的内容比较，发现已更改，再读取一次以写入"
+
+msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
+msgstr "此处有 {n} 个文件是其 ASC MHL 历史中已有文件的新版本；ascmhl 会按较早的记录报告它们（ASC MHL 假定介质不变）。blitcp --verify-manifest 和 {lst} 检查当前版本。"
+
+msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
+msgstr "继续一次被中断的 --dest 运行：已写入且大小、时间和 xxh128 仍与源一致的文件不再复制（尚未校验的现在读回并校验）。"
+
+msgid "--resume goes with --dest or --dests-file."
+msgstr "--resume 需与 --dest 或 --dests-file 一起使用。"
+
+msgid "the resume journal could not be written: {why}"
+msgstr "无法写入续传日志：{why}"
+
+msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
+msgstr "替换目标清单中记录为不同内容的文件（默认保留并报告：相机在每张卡上都会重新开始片段编号）。"
+
+msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
+msgstr "此处有 {n} 个文件内容不同 — 已原样保留，未覆盖（--overwrite-changed 会替换它们；每张卡使用单独的文件夹可避免冲突）"
+
+msgid "… and {n} more"
+msgstr "… 另外 {n} 个"
+
+msgid "not written: running as {user} needs Python 3.9 or later"
+msgstr "未写入：以 {user} 身份运行需要 Python 3.9 或更高版本"
+
+msgid "not written: cannot act as {user}"
+msgstr "未写入：无法以 {user} 身份操作"
+
+msgid "no host name to record"
+msgstr "没有可记录的主机名"
+
+msgid "Warning: {old} is deprecated and stops working in 5.0 — use {new}."
+msgstr "警告：{old} 已弃用，将在 5.0 停止生效——请改用 {new}。"
+
+msgid "blitcp-gui cannot start: PySide6 {qt} crashes on Python older than {good}. Install another version (pip install \"PySide6!={qt}\") or use Python {good} or later."
+msgstr "blitcp-gui 无法启动：PySide6 {qt} 在早于 {good} 的 Python 上会崩溃。请安装其他版本（pip install \"PySide6!={qt}\"），或使用 Python {good} 或更高版本。"
+
+msgid "Note: the SSH dedup cache is not kept between runs under sudo — it lives in your home folder, which this run does not write as root."
+msgstr "注意：在 sudo 下不会在多次运行之间保留 SSH 去重缓存——它位于你的主文件夹中，本次运行不会以 root 身份写入该位置。"
+
+msgid "not written: a frozen build cannot act as {user}"
+msgstr "未写入：打包版本无法以 {user} 身份执行"
+
+msgid "{dir} is not writable by {user} (an earlier blitcp run under sudo may have created it as root). Fix: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+msgstr "{user} 无法写入 {dir}（之前在 sudo 下运行的 blitcp 可能以 root 身份创建了它）。修复：sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+
+msgid "Note: {path} not saved: {why}"
+msgstr "注意：未保存 {path}：{why}"
+
+msgid "cannot connect: {err}"
+msgstr "无法连接：{err}"
+
+msgid "content differs on the remote host"
+msgstr "远端主机上的内容不一致"
+
+msgid "no hash came back from the remote host"
+msgstr "远端主机未返回哈希值"
+
+msgid "not written by this run"
+msgstr "不是本次运行写入的"
+
+msgid "the bytes sent differ from the bytes read"
+msgstr "发送的字节与读取的字节不一致"
+
+msgid "{path} is a symlink to {where}: the files would land somewhere else than the folder named; nothing was written"
+msgstr "{path} 是指向 {where} 的符号链接：文件会落到所指定文件夹以外的地方；未写入任何内容"
+
+msgid "{src}: an SSH source must be the only source of a --dest run."
+msgstr "{src}：SSH 源必须是 --dest 运行中唯一的源。"
+
+msgid "--ssh-no-sftp is not supported with --dest: the fan-out reads and writes SSH over SFTP."
+msgstr "--ssh-no-sftp 不能与 --dest 一起使用：分发复制通过 SFTP 读写 SSH。"
+
+msgid "no such folder or file on the remote ({err})"
+msgstr "远端没有该文件夹或文件（{err}）"
+
+msgid "not listed on the remote"
+msgstr "未能在远端列出"
+
+msgid "the remote listing ended with exit code {rc}"
+msgstr "远端列表以退出码 {rc} 结束"
+
+msgid "the remote listing is larger than {n} MB; copy a smaller folder"
+msgstr "远端列表超过 {n} MB；请复制更小的文件夹"
+
+msgid "{rel}: the name is not UTF-8, and SFTP cannot carry it"
+msgstr "{rel}：名称不是 UTF-8，SFTP 无法传输"
+
+msgid "--dest {a} and --dest {b} are the same place, reached two ways; that is one copy, not two."
+msgstr "--dest {a} 和 --dest {b} 是通过两种方式到达的同一位置；这是一份副本，而不是两份。"
+
+msgid "--dest {dest}: not a destination blitcp can write. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--dest {dest}：不是 blitcp 能写入的目标。请给出本地文件夹、user@host:/路径、s3:// az:// gs://、smb://host/share，或以 NAME: 或 NAME:路径 形式给出的已保存连接。"
+
+msgid "--dest {name} is a saved connection: write {name}: to copy to it, or ./{name} for a local folder of that name."
+msgstr "--dest {name} 是一个已保存的连接：要复制到它，请写 {name}:；若指同名本地文件夹，请写 ./{name}。"
+
+msgid "SMB password: "
+msgstr "SMB 密码: "
+
+msgid "a Windows device name (CON, NUL, COM1…) is not a file on a share"
+msgstr "Windows 设备名（CON、NUL、COM1…）在共享上不是文件"
+
+msgid "a share cannot hold \\ : * ? \" < > | or control characters in a name"
+msgstr "共享无法在名称中保存 \\ : * ? \" < > | 或控制字符"
+
+msgid "a share may drop a trailing dot or space, making this name another file's"
+msgstr "共享可能会去掉末尾的点或空格，使这个名称变成另一个文件的名称"
+
+msgid "content differs on the destination"
+msgstr "目标上的内容不同"
+
+msgid "the probe object {key} could not be removed: {err}"
+msgstr "无法删除探测对象 {key}：{err}"
+
+msgid "{rel}: the name is not UTF-8, and an object store cannot hold it"
+msgstr "{rel}：名称不是 UTF-8，对象存储无法保存它"
+
+msgid "{rel}: the share cannot store this name"
+msgstr "{rel}：共享无法保存这个名称"
+
+msgid "Spool folder {path} cannot be used ({err}); spilling to {tmp}, which may be memory. Set BLITCP_SPOOL_DIR to a folder on disk."
+msgstr "无法使用缓冲文件夹 {path}（{err}）；溢出部分写入 {tmp}，它可能是内存。请将 BLITCP_SPOOL_DIR 设为磁盘上的文件夹。"
+
+msgid "--deep goes with --verify-manifest."
+msgstr "--deep 需与 --verify-manifest 一起使用。"
+
+msgid "--verify-manifest {dest}: not a destination blitcp can check. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--verify-manifest {dest}：不是 blitcp 能检查的目标。请给出本地文件夹、user@host:/路径、s3:// az:// gs://、smb://host/share，或以 NAME: 或 NAME:路径 形式给出的已保存连接。"
+
+msgid "All {n} files are present with the sizes the manifest records — content not compared; --deep reads them back and hashes them"
+msgstr "全部 {n} 个文件都在，大小与清单记录一致 — 未比较内容；--deep 会读回并计算哈希"
+
+msgid "With --verify-manifest on an SSH, SMB or object-store destination: download every file and hash it here, instead of asking the remote host or the store."
+msgstr "对 SSH、SMB 或对象存储目标使用 --verify-manifest 时：下载每个文件并在本地计算哈希，而不是询问远程主机或存储。"
+
+msgid "cannot check whether --dest {a} and --dest {b} are one place ({why}); no file was written. Fix that destination, or copy to them in separate runs."
+msgstr "无法检查 --dest {a} 和 --dest {b} 是否为同一位置（{why}）；未写入任何文件。请修复该目标，或分开运行复制。"
+
+msgid "its own probe, just written, is not in the remote listing"
+msgstr "刚写入的自身探测文件不在远程列表中"
+
+msgid "its own probe, just written, is not in the store's listing"
+msgstr "刚写入的自身探测对象不在存储的列表中"
+
+msgid "its own probe, just written, is not visible"
+msgstr "刚写入的自身探测文件不可见"
+
+msgid "no answer for {n} s"
+msgstr "{n} 秒无响应"
+
+msgid "no probe could be written to {d}: {why}"
+msgstr "无法向 {d} 写入探测文件：{why}"
+
+msgid "not a regular file"
+msgstr "不是普通文件"
+
+msgid "size differs from the manifest"
+msgstr "大小与清单不符"
+
+msgid "the object carries none of blitcp's hashes (replaced, or written by another tool); --deep compares its bytes"
+msgstr "该对象不带 blitcp 的任何哈希（已被替换，或由其他工具写入）；--deep 会比较其字节"
+
+msgid "the object is not the one the manifest records (its hash differs); --deep compares its bytes"
+msgstr "该对象不是清单记录的那个（其哈希不同）；--deep 会比较其字节"
+
+msgid "{n} of them by size only; --deep reads every file back and hashes it"
+msgstr "其中 {n} 个仅按大小检查；--deep 会读回每个文件并计算哈希"
+
+msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
+msgstr "在没有源的情况下，按目标（本地文件夹、SSH 文件夹、SMB 共享或存储桶）自身的清单（ascmhl/ 或 blitcp.xxh128）检查它，级别取决于目标：读回、由远程主机计算哈希，或使用存储自己的校验和（--deep 会读回每个文件）。不写入任何内容。"
+
+msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
+msgstr "--deep-verify 需与 --dest 一起使用（配合 --verify-manifest 时请用 --deep）。"
+
+msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
+msgstr "--deep-verify {dest} 不是任何一个 --dest 目标（请按 --dest 的写法给出，或用 'all'）。"
+
+msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
+msgstr "通过下载发送到指定 --dest 的每个文件并在本地计算哈希来校验它（可重复；'all' 表示全部），而不是使用存储的校验和或远程主机的哈希。对于 8 MiB 及以上的 Azure blob（视频卸载），这是唯一的内容校验：Azure 不为它们保存校验和。"
+
+msgid "content differs from the source (store CRC)"
+msgstr "内容与源不同（存储的 CRC）"
+
+msgid "nothing under {src}"
+msgstr "{src} 下没有任何内容"
+
+msgid "the store's checksum differs from the one the manifest records; --deep compares its bytes"
+msgstr "存储的校验和与清单记录的不同；--deep 会比较其字节"
+
+msgid "{n} matched the store's own full-object CRC"
+msgstr "{n} 个与存储自身的整对象 CRC 一致"
+
+msgid "{n} object(s) were rewritten in place (a server-side copy) to carry their metadata: this endpoint took no full-object checksum at upload. Each copy rewrites the whole object; on stores with a minimum storage duration (Wasabi, Backblaze B2) the replaced copy may be billed."
+msgstr "{n} 个对象被就地重写（服务器端复制）以携带其元数据：该端点在上传时不接受整对象校验和。每次复制都会重写整个对象；在有最短存储期限的存储（Wasabi、Backblaze B2）上，被替换的副本可能被计费。"
+
+msgid "{src}: a remote source must be the only source of a --dest run."
+msgstr "{src}：远程源必须是 --dest 运行的唯一源。"
+
+msgid "{src}: not a source blitcp can read with --dest. Give a local folder or file, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME:path."
+msgstr "{src}：不是 blitcp 能在 --dest 中读取的源。请给出本地文件夹或文件、user@host:/路径、s3:// az:// gs://、smb://host/share，或以 NAME:路径 形式给出的已保存连接。"
+
+msgid "a reparse point on the share (link, junction, tiered or deduplicated file); not copied"
+msgstr "共享上的重分析点（链接、联接点、分层或去重文件）；未复制"
+
+msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
+msgstr "源自身的清单（{mhl}/、{lst}：{n} 个文件）不会被复制：每个目标都写入自己的清单。"
+
+msgid "--deep-verify: every file read back from this destination and hashed"
+msgstr "--deep-verify：从该目标读回每个文件并计算哈希"
+
+msgid "A folder on this computer or a mounted drive."
+msgstr "本机或已挂载驱动器上的文件夹。"
+
+msgid "A web source cannot be copied to several destinations"
+msgstr "网络源无法复制到多个目标"
+
+msgid "Add destination"
+msgstr "添加目标"
+
+msgid "Browse SMB"
+msgstr "浏览 SMB"
+
+msgid "Browse SMB share"
+msgstr "浏览 SMB 共享"
+
+msgid "Check this destination against its manifest, without the source (--verify-manifest)"
+msgstr "在没有源的情况下，按清单检查该目标（--verify-manifest）"
+
+msgid "Checked again: all {n} files match the manifest"
+msgstr "已重新检查：全部 {n} 个文件与清单一致"
+
+msgid "Checked again: {bad} of {n} files do not match"
+msgstr "已重新检查：{n} 个文件中有 {bad} 个不一致"
+
+msgid "Checking against the manifest…"
+msgstr "正在按清单检查…"
+
+msgid "Choose destination folder"
+msgstr "选择目标文件夹"
+
+msgid "Copied, not verified"
+msgstr "已复制，未校验"
+
+msgid "Destination presets"
+msgstr "目标预设"
+
+msgid "Destinations saved as {name}"
+msgstr "目标已保存为 {name}"
+
+msgid "ETA {t}"
+msgstr "剩余 {t}"
+
+msgid "ETA —"
+msgstr "剩余 —"
+
+msgid "Failed: {why}"
+msgstr "失败：{why}"
+
+msgid "Incomplete: {f} failed, {r} refused"
+msgstr "不完整：{f} 个失败，{r} 个被拒绝"
+
+msgid "Kept files that differ from the source"
+msgstr "保留了与源不同的文件"
+
+msgid "Manifest: {where}"
+msgstr "清单：{where}"
+
+msgid "New connection…"
+msgstr "新建连接…"
+
+msgid "Not available with several destinations: {opts}"
+msgstr "多个目标时不可用：{opts}"
+
+msgid "Not verified: the source changed during the copy"
+msgstr "未校验：复制期间源发生了变化"
+
+msgid "Open manifest"
+msgstr "打开清单"
+
+msgid "Recommended for Azure video offloads: Azure keeps no checksum for blobs of 8 MiB and over, so only a download proves them."
+msgstr "推荐用于 Azure 视频卸载：Azure 不为 8 MiB 及以上的 blob 保存校验和，只有下载才能证明其内容。"
+
+msgid "Remove"
+msgstr "移除"
+
+msgid "Save destinations…"
+msgstr "保存目标…"
+
+msgid "Save these destinations as"
+msgstr "将这些目标保存为"
+
+msgid "Sources → one or more destinations: the source is read once and written to every destination."
+msgstr "源 → 一个或多个目标：源只读取一次，并写入每个目标。"
+
+msgid "The check could not run (exit {c})"
+msgstr "检查无法运行（退出码 {c}）"
+
+msgid "Verified: {n} files"
+msgstr "已校验：{n} 个文件"
+
+msgid "Verify again later"
+msgstr "稍后再次校验"
+
+msgid "Verify by downloading every file (--deep-verify)"
+msgstr "下载每个文件进行校验（--deep-verify）"
+
+msgid "With several destinations, a remote source must be the only source"
+msgstr "多个目标时，远程源必须是唯一的源"
+
+msgid "download to verify"
+msgstr "下载以校验"
+
+msgid "hashed on the remote host"
+msgstr "在远程主机上计算哈希"
+
+msgid "hashed on the remote host (sample)"
+msgstr "在远程主机上计算哈希（抽样）"
+
+msgid "links and clones"
+msgstr "链接和克隆"
+
+msgid "read back from the disk"
+msgstr "从磁盘读回"
+
+msgid "read back over the network"
+msgstr "通过网络读回"
+
+msgid "read back through the OS cache"
+msgstr "通过系统缓存读回"
+
+msgid "s3://bucket/prefix, az://container/prefix, gs://bucket/prefix, or a saved connection as NAME:path."
+msgstr "s3://bucket/前缀、az://container/前缀、gs://bucket/前缀，或以 NAME:路径 形式给出的已保存连接。"
+
+msgid "size only"
+msgstr "仅大小"
+
+msgid "size only (no store checksum)"
+msgstr "仅大小（存储无校验和）"
+
+msgid "smb://host/share/path, a UNC path, or a saved SMB connection as NAME:path."
+msgstr "smb://host/share/路径、UNC 路径，或以 NAME:路径 形式给出的已保存 SMB 连接。"
+
+msgid "source unreadable"
+msgstr "源不可读"
+
+msgid "the hash recorded at upload"
+msgstr "上传时记录的哈希"
+
+msgid "the store's own MD5"
+msgstr "存储自身的 MD5"
+
+msgid "the store's own SHA-256"
+msgstr "存储自身的 SHA-256"
+
+msgid "the store's own full-object CRC"
+msgstr "存储自身的整对象 CRC"
+
+msgid "user@host:/path, or a saved SSH connection as NAME:path."
+msgstr "user@host:/路径，或以 NAME:路径 形式给出的已保存 SSH 连接。"
+
+msgid "verification: {level}"
+msgstr "校验：{level}"
+
+msgid "{done} / {total} files"
+msgstr "{done} / {total} 个文件"
+
+msgid "{n} files failed verification"
+msgstr "{n} 个文件校验失败"
+
+msgid "{n} files present, sizes match — content not compared"
+msgstr "{n} 个文件存在，大小一致 — 未比较内容"
+
+msgid "Verified: {n} files — {levels}"
+msgstr "已校验：{n} 个文件 — {levels}"
+
+msgid "Checked again: all {n} files present with the recorded sizes — content not compared"
+msgstr "已重新检查：全部 {n} 个文件按记录的大小存在 — 未比较内容"
+
+msgid "data after the end of the archive"
+msgstr "归档结束之后的数据"
+
+msgid "a tar header with a wrong checksum"
+msgstr "校验和错误的 tar 头"
+
+msgid "an oversized tar header"
+msgstr "过大的 tar 头"
+
+msgid "a hard link"
+msgstr "硬链接"
+
+msgid "a symbolic link"
+msgstr "符号链接"
+
+msgid "a folder"
+msgstr "文件夹"
+
+msgid "a special file"
+msgstr "特殊文件"
+
+msgid "{name}: {what}, not a file that was asked for"
+msgstr "{name}：{what}，不是所请求的文件"
+
+msgid "{name}: not a file that was asked for"
+msgstr "{name}：不是所请求的文件"
+
+msgid "a malformed pax header"
+msgstr "格式错误的 pax 头"
+
+msgid "Refused: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "已拒绝：源主机的归档包含 {what} — 在到达目标之前已停止"
+
+msgid "refused: {what}"
+msgstr "已拒绝：{what}"
+
+msgid "not requested: the source host sent {what} in an earlier batch"
+msgstr "未请求：源主机在之前的批次中发送了 {what}"
+
+msgid "Error: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "错误：源主机的归档包含 {what} — 在到达目标之前已停止"
+
+msgid "a negative number in a tar header"
+msgstr "tar 头中的负数"
+
+msgid "a tar header that is not a number"
+msgstr "不是数字的 tar 头"
+
+msgid "{path}: the folder changed after it was checked (it now leads outside the destination); nothing was written there"
+msgstr "{path}：检查后该文件夹已被更改（现在指向目标之外）；未在那里写入任何内容"
+
+msgid "{rel}: {folder} is a symlink to {where}, outside the destination; nothing was written there"
+msgstr "{rel}：{folder} 是指向目标之外 {where} 的符号链接；未在那里写入任何内容"
+
+msgid "a member named twice"
+msgstr "被命名两次的成员"
+
+msgid "a pax header that changes what tar makes ({key})"
+msgstr "会改变 tar 所创建内容的 pax 头（{key}）"
+
+msgid "an unknown place"
+msgstr "未知位置"
+
+msgid "Error: {opt} does not apply {where}."
+msgstr "错误：{opt} 不适用于{where}。"
+
+msgid "to a copy to one destination"
+msgstr "复制到单个目标"
+
+msgid "with --dest"
+msgstr "--dest"
+
+msgid "with --verify-manifest"
+msgstr "--verify-manifest"
+
+msgid "--ssh-no-sftp and --sftp-only exclude each other."
+msgstr "--ssh-no-sftp 与 --sftp-only 互相排斥。"
+
+msgid "the server offers no SFTP, and --sftp-only (or the saved connection's protocol \"sftp\") allows nothing else"
+msgstr "服务器不提供 SFTP，而 --sftp-only（或已保存连接的协议 \"sftp\"）不允许使用其他方式"
+
+msgid "could not be moved into place: {err}"
+msgstr "无法移动到位：{err}"
+
+msgid "the remote tar batch failed: {err}"
+msgstr "远程 tar 批次失败：{err}"
+
+msgid "not written: {twin}, the file with the same content, did not land"
+msgstr "未写入：内容相同的文件 {twin} 未能送达"
+
+msgid "could not be linked on the remote host: {err}"
+msgstr "无法在远程主机上创建链接：{err}"
+
+msgid "could not be linked or copied on the remote host"
+msgstr "无法在远程主机上创建链接或复制"
+
+msgid "{n} folder(s) did not take the source folder's mode and time"
+msgstr "{n} 个文件夹未能应用源文件夹的权限和时间"
+
+msgid "not synced to disk on the remote host (no shell there)"
+msgstr "未在远程主机上同步到磁盘（那里没有 shell）"
+
+msgid "could not sync the remote destination: the files may still be in its cache"
+msgstr "无法同步远程目标：文件可能仍在其缓存中"
+
+msgid "{n} of them hold the same content as another file of this run: hard links to it there"
+msgstr "其中 {n} 个与本次运行的另一个文件内容相同：在目标上是指向它的硬链接"
+
+msgid "{n} copied on the remote host (it took no hard link)"
+msgstr "{n} 个在远程主机上复制（不支持硬链接）"
+
+msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
+msgstr "本地目标：每个文件先以隐藏名称写入，刷写到磁盘后再重命名到位——不会看到写了一半的文件。不使用此选项时，新文件直接写入原位，已存在的文件通过隐藏名称替换。"
+
+msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
+msgstr "本地目标：新文件直接写入原位，已存在的文件通过隐藏名称替换；最后对目标磁盘统一刷写（默认方式，从对象存储下载时也是如此）。"
+
+msgid "{opt} goes with --dest."
+msgstr "{opt} 需与 --dest 一起使用。"
+
+msgid "Note: no deduplication for {dest}: {why}"
+msgstr "注意：{dest} 不进行去重：{why}"
+
+msgid "already in place"
+msgstr "已在原位"
+
+msgid "copies (no links here)"
+msgstr "副本（此处无法链接）"
+
+msgid "hard links"
+msgstr "硬链接"
+
+msgid "reflinks"
+msgstr "reflink"
+
+msgid "symlinks"
+msgstr "符号链接"
+
+msgid "the file with the same content changed while linking"
+msgstr "内容相同的文件在链接时发生了变化"
+
+msgid "the file with the same content is no longer a regular file"
+msgstr "内容相同的文件已不再是普通文件"
+
+msgid "{n} of them have the same content as a file already there or written in this run, and were not written again: {how}"
+msgstr "其中 {n} 个与目标上已有或本次运行写入的文件内容相同，未再次写入：{how}"
+
+msgid "the file with the same content is outside the destination (not linked when elevated)"
+msgstr "内容相同的文件位于目标之外（提升权限时不创建链接）"
+
+msgid "the destination folder was replaced during the run (not followed when elevated)"
+msgstr "运行期间目标文件夹被替换（提升权限时不跟随）"
+
+msgid "a symlinked folder on the way to the file with the same content (not followed when elevated)"
+msgstr "通往内容相同文件的路径上有符号链接文件夹（提升权限时不跟随）"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links; every other destination gets a full copy of each file."
+msgstr "使用 --dest 时的去重：在本地或 SSH 目标上，本次运行中的重复文件以及目标上已有的文件会成为链接；其他每个目标都会得到每个文件的完整副本。"
+
+msgid "cannot rename on the destination (each file lands by a rename): {err}"
+msgstr "无法在目标上重命名（每个文件通过重命名落地）: {err}"
+
+msgid "cannot read back what was written (each file is verified so): {err}"
+msgstr "无法读回已写入的内容（每个文件都以此方式校验）: {err}"
+
+msgid "cannot read back what was written (each file is verified so): the bytes differ"
+msgstr "无法读回已写入的内容（每个文件都以此方式校验）: 字节不一致"
+
+msgid "The share took {got} of {want} connections: files went {n} at a time."
+msgstr "共享接受了 {want} 个连接中的 {got} 个: 文件每次传输 {n} 个。"
+
+msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "已是最新：全部 {n} 个文件按大小和修改时间未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
+
+msgid "Up to date: nothing here needed writing"
+msgstr "已是最新：此处无需写入任何内容"
+
+msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} 个按大小和修改时间未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
+
+msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "已是最新：全部 {n} 个文件按大小和存储的版本标记未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
+
+msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} 个按大小和存储的版本标记未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
+
+msgid "the object changed after it was listed"
+msgstr "对象在列出后发生了变化"
+
+msgid "Removed {n} unfinished files an interrupted run had left here:"
+msgstr "已删除中断的运行在此处留下的 {n} 个未完成文件："
+
+msgid "Could not look for unfinished files an interrupted run may have left: {why}"
+msgstr "无法查找中断的运行可能留下的未完成文件：{why}"
+
+msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
+msgstr "在单一目标的复制中保存 ASC MHL 清单和 blitcp.xxh128（--dest、--resume、--overwrite-changed 和 --job-name 始终保存）。加上它，未变化的文件不读取即跳过（快，信任记录）。不加它，本地目标由 blitcp 的记录决定（记录显示两端均未变化的文件不读取；其他大小相同的文件会比较）；在 SSH 和 SMB 上，只要文件的大小和修改时间仍与记录一致，就由 blitcp 存放在那里的签名哈希缓存决定，因此在 blitcp 之外被改动、大小不变且恢复了时间的目标文件，重新运行时不会被发现，除非使用 --no-cache。"
+
+msgid "hash cache not updated: {why}"
+msgstr "哈希缓存未更新：{why}"
+
+msgid "manifest mode — its records ({mhl}) decide what is unchanged"
+msgstr "清单模式——其记录（{mhl}）决定哪些未变化"
+
+msgid "no manifest — a file whose size and modification time there are the ones blitcp's signed hash cache recorded is decided by that cache; one changed there with its time put back is not seen (--no-cache compares the files)"
+msgstr "无清单——在那里的大小和修改时间与 blitcp 签名哈希缓存记录一致的文件由该缓存决定；在那里被改动且恢复了时间的文件不会被发现（--no-cache 会比较文件本身）"
+
+msgid "no manifest — each file of the same size is compared with what is there"
+msgstr "无清单——每个大小相同的文件都与那里已有的文件比较"
+
+msgid "no manifest, --no-cache — every file is written again"
+msgstr "无清单，--no-cache——每个文件都重新写入"
+
+msgid "{n} files: the dedup database and this destination's manifest record different content at the same size and time — the manifest decided; the database was left as it is:"
+msgstr "{n} 个文件：去重数据库与此目标的清单在大小和时间相同的情况下记录了不同的内容——由清单决定；数据库保持原样："
+
+msgid "{rel}: the dedup database and the manifest record different hashes for this source file at the same size and time — the manifest decided; the database's record was left as it is (database {db}, manifest {got})"
+msgstr "{rel}：去重数据库与清单为此源文件在大小和时间相同的情况下记录了不同的哈希——由清单决定；数据库的记录保持原样（数据库 {db}，清单 {got}）"
+
+msgid "DRY RUN — nothing is written."
+msgstr "演练 — 不写入任何内容。"
+
+msgid "would write {n} files ({size})"
+msgstr "将写入 {n} 个文件（{size}）"
+
+msgid "{n} unchanged"
+msgstr "{n} 个未改变"
+
+msgid "{n} conflicts (there with other content, kept)"
+msgstr "{n} 个冲突（目标中已有内容不同的文件，保留不动）"
+
+msgid "{n} unreadable at the source"
+msgstr "{n} 个在源中无法读取"
+
+msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
+msgstr "演练中不查找：被中断的运行留下的未完成文件（--resume 会删除它们）。"
+
+msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
+msgstr "演练中不检查：两个目标是否为同一位置（该检查会写入一个探测文件）。"
+
+msgid "Not planned in a dry run: links to identical files already at a destination; such files are counted as written."
+msgstr "演练中不规划：指向目标中已有相同文件的链接；这类文件按写入计数。"
+
+msgid "Whether each destination takes a write is not tested in a dry run (that test writes a probe file)."
+msgstr "演练中不测试每个目标能否写入（该测试会写入一个探测文件）。"
+
+msgid "Fail the run when the dedup database at the destination could have been written by someone else (its owner, permissions, or a folder others can replace files in). Default: ignore that database, say so, and copy without the cache."
+msgstr "当目标处的去重数据库可能被他人写入过时（其所有者、权限，或位于他人可替换文件的文件夹中），使运行失败。默认：忽略该数据库，给出提示，并在不使用缓存的情况下复制。"
+
+msgid "{name} is not a regular file"
+msgstr "{name} 不是普通文件"
+
+msgid "{name} is owned by another user (uid {uid})"
+msgstr "{name} 属于另一个用户（uid {uid}）"
+
+msgid "{name} can be written by others (mode {mode})"
+msgstr "{name} 可被他人写入（权限 {mode}）"
+
+msgid "its folder {dir} is owned by another user (uid {uid})"
+msgstr "其所在文件夹 {dir} 属于另一个用户（uid {uid}）"
+
+msgid "its folder {dir} lets anyone replace files in it (mode {mode}, no sticky bit)"
+msgstr "其所在文件夹 {dir} 允许任何人替换其中的文件（权限 {mode}，无粘滞位）"
+
+msgid "its folder {dir} lets other members of its group replace files in it (mode {mode})"
+msgstr "其所在文件夹 {dir} 允许其所属组的其他成员替换其中的文件（权限 {mode}）"
+
+msgid "{name} is a symlink"
+msgstr "{name} 是符号链接"
+
+msgid "{name} was replaced after it was checked"
+msgstr "{name} 在检查之后被替换了"
+
+msgid "dedup DB ignored: {why} — copying without the cache. Fix:\n      chown {user} {path} && chmod 600 {path}"
+msgstr "已忽略去重数据库：{why} — 将不使用缓存进行复制。修复方法：\n      chown {user} {path} && chmod 600 {path}"
+
+msgid "Up to date: all {n} files are as blitcp recorded them when it last wrote or compared them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "已是最新：全部 {n} 个文件都与 blitcp 上次写入或比较它们时的记录一致（两端的大小和时间）；未读取 — --no-cache 会比较它们"
+
+msgid "{n} unchanged as blitcp recorded them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "{n} 个与 blitcp 的记录一致、未改变（两端的大小和时间）；未读取 — --no-cache 会比较它们"
+
+msgid "no manifest — blitcp's records decide: a file they show unchanged on both sides is not read; any other file of the same size is compared with what is there (--no-cache compares every file)"
+msgstr "无清单 — 由 blitcp 的记录决定：记录显示两端都未改变的文件不读取；其他大小相同的文件与目标中已有的文件比较（--no-cache 会比较每个文件）"
+
+msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
+msgstr "禁用持久化哈希缓存：带有 blitcp 记录的去重数据库，以及不加 --manifest 时 SSH 或 SMB 目标上 blitcp 的签名哈希缓存（.blitcp_manifest.json）。此时重新运行会读取并比较本地目标上每个大小相同的文件，在 SSH 主机上计算其哈希，并重新写入 SMB 共享上的每个文件。在 FAT、exFAT、NFS、SMB 和 FUSE 上，记录依据大小和修改时间判断：在那里大小不变且恢复了修改时间的改动，只有使用 --no-cache 才能发现。"
+
+msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
+msgstr "读取每个源文件并计算哈希，即使各目标的清单记录了相同的大小、修改时间和变更时间（不加此选项时这些文件不会读取）。源在 FAT、exFAT、NFS、SMB 或 FUSE 上时，由大小和修改时间决定：在那里大小不变且恢复了修改时间的改动，只有使用 --verify-source 才能发现。"
+
+msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
+msgstr "注意：--relay-spool-mb 对此次复制不起作用：它让每个文件流经其缓冲区，不会向磁盘暂存任何内容。"
+
+msgid "enabled"
+msgstr "已启用"
+
+msgid "disabled (--no-dedup)"
+msgstr "已禁用 (--no-dedup)"
+
+msgid "{n} files matched"
+msgstr "{n} 个文件匹配"
+
+msgid "Source '{src}' — no matching files or directory found"
+msgstr "源 '{src}' — 未找到匹配的文件或目录"
+
+msgid "no remote files matched {pattern!r} in {folder}"
+msgstr "{folder} 中没有与 {pattern!r} 匹配的远程文件"
+
+msgid "glob characters are only supported in the final path component for remote sources."
+msgstr "远程源只能在路径的最后一部分使用通配符。"
+
+msgid "changed after it was found to be a duplicate of {twin}; not linked, and not written — copy it again"
+msgstr "在被判定为 {twin} 的重复文件之后发生了变化；未链接，也未写入——请重新复制"
+
+msgid "Note: {note}"
+msgstr "注意：{note}"
+
+msgid ""
+"exit codes:\n"
+"  0  everything done\n"
+"  1  the run ran and some files failed (a write to a destination,\n"
+"     a destination that failed mid-run, a file refused or failing\n"
+"     verification)\n"
+"  2  nothing was done: a usage error, a pre-flight failure, a\n"
+"     connection that cannot be made, a host key that cannot be\n"
+"     confirmed\n"
+"  3  only source files could not be read\n"
+msgstr ""
+"退出码：\n"
+"  0  全部完成\n"
+"  1  运行已进行，但有文件失败（写入目标失败、目标在中途失败、文件被拒绝\n"
+"     或校验失败）\n"
+"  2  什么都没有做：用法错误、预检失败、无法建立连接、无法确认主机密钥\n"
+"  3  只是有源文件无法读取\n"
+
+msgid "{n} file(s) could NOT be read from the source (permission denied / locked); everything else copied OK — exclude or unlock them and re-run."
+msgstr "{n} 个文件无法从源读取（权限被拒绝 / 被锁定）；其余全部复制成功——请排除或解锁它们后重新运行。"
+
+msgid "{n} duplicate(s) named by the source host are downloaded too: the host's word is not proof that they match"
+msgstr "源主机指出的 {n} 个重复文件也会下载：主机的说法并不能证明它们相同"
+
+msgid "{n} file(s) the source host called duplicates differ here: kept as separate copies"
+msgstr "源主机称为重复的 {n} 个文件在此处内容不同：已保留为独立副本"
+
+msgid "could not compare what is there ({why}): every file is written again, except one dedup finds already in place"
+msgstr "无法与已有内容比较（{why}）：每个文件都会重新写入，去重已确认在位的文件除外"
+
+msgid "{dir} is in a cloud-synced folder: the sync client would upload the dedup database (--dedup-in-sync-folder keeps it there)"
+msgstr "{dir} 位于云同步文件夹中：同步客户端会上传去重数据库（--dedup-in-sync-folder 会把它保留在那里）"
+
+msgid "It also keeps blitcp's dedup database in such a folder, which is otherwise not made there."
+msgstr "它还会在此类文件夹中保留 blitcp 的去重数据库，否则不会在那里创建。"
+
+msgid "changed after it was read; not written — copy it again"
+msgstr "读取后已更改；未写入——请重新复制"
+
+msgid "Stages (wall clock): pre-flight {pre} · copy {copy} · verify {verify} · records and close {close}"
+msgstr "各阶段（实际耗时）：预检 {pre} · 复制 {copy} · 校验 {verify} · 记录与收尾 {close}"
+
+msgid "no manifest: the xxhash package is not installed (pip install xxhash)"
+msgstr "无清单：未安装 xxhash 包（pip install xxhash）"
+
+msgid "Up to date: all {n} files have the same content here as at the source (read on both sides and compared); not written again"
+msgstr "已是最新：全部 {n} 个文件在此处与源的内容相同（两侧均已读取并比较）；未再次写入"
+
+msgid "{n} unchanged — the same content here as at the source (read on both sides and compared); not written again"
+msgstr "{n} 个未变化——此处与源的内容相同（两侧均已读取并比较）；未再次写入"
+
+msgid "interrupted"
+msgstr "已中断"
+
+msgid "To retry once there is room: {cmd}"
+msgstr "有空间后重试：{cmd}"
+
+msgid "out of file descriptors even for one file at a time ({err})"
+msgstr "即使一次只处理一个文件，文件描述符也已用尽（{err}）"
+
+msgid "the process ran out of file descriptors ({err})"
+msgstr "进程的文件描述符已用尽（{err}）"
+
+msgid "{written} written · {skipped} skipped · {cloned} cloned · {linked} linked within run · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{written} 个已写入 · {skipped} 个已跳过 · {cloned} 个已克隆 · {linked} 个在本次运行内链接 · {refused} 个被拒绝 · {failed} 个失败 · {src} 个在源处不可读"
+
+msgid "links only within this destination folder; a new folder is a full copy"
+msgstr "仅在此目标文件夹内建立链接；新文件夹是完整副本"
+
+msgid "links anywhere on the drive (--index-existing)"
+msgstr "可在整个驱动器上建立链接（--index-existing）"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links — {scope}; every other destination gets a full copy of each file."
+msgstr "使用 --dest 去重：在本地或 SSH 目标上，本次运行内的重复文件和已在那里的文件会变成链接——{scope}；其他目标都获得每个文件的完整副本。"
+
+msgid "Stages (wall clock): scan source {scan} · scan destination {dest} · compare {compare} · dedup lookup {lookup} · plan {plan} · copy {copy} · verify {verify} · records {close}"
+msgstr "各阶段（实际耗时）：扫描源 {scan} · 扫描目标 {dest} · 比较 {compare} · 去重查找 {lookup} · 计划 {plan} · 复制 {copy} · 校验 {verify} · 记录 {close}"
+
+msgid "Linked to a copy already here: {n} — the list: {path}"
+msgstr "链接到此处已有的副本：{n} — 列表：{path}"
+
+msgid "input {input}"
+msgstr "输入 {input}"
+
+msgid "other destinations {others}"
+msgstr "其他目标 {others}"
+
+msgid "Up to date: all {n} files have the same content here as at the source — the source read for each; here {rec} as this destination's records hold them (not read), {read} read and compared; not written again"
+msgstr "已是最新：全部 {n} 个文件在此处与源内容相同 — 源已逐个读取；此处 {rec} 个按本目标的记录判定（未读取），{read} 个已读取并比较；不再重新写入"
+
+msgid "could not look at what is there: {why} — nothing written to it"
+msgstr "无法查看那里已有的内容：{why} — 未向其写入任何内容"
+
+msgid "the host could not look at a file there: {why}"
+msgstr "主机无法查看那里的某个文件：{why}"
+
+msgid "Source"
+msgstr "源"
+
+msgid "Destination"
+msgstr "目标"
+
+msgid "Dedup DB"
+msgstr "去重库"
+
+msgid "Hash"
+msgstr "哈希"
+
+msgid "Manifest"
+msgstr "清单"
+
+msgid "Write"
+msgstr "写入"
+
+msgid "Journal"
+msgstr "日志"
+
+msgid "Verify"
+msgstr "校验"
+
+msgid "{n} (tables below)"
+msgstr "{n}（见下表）"
+
+msgid "manifest {state}"
+msgstr "清单 {state}"
+
+msgid "verify {how}"
+msgstr "校验 {how}"
+
+msgid "Phase"
+msgstr "阶段"
+
+msgid "progress"
+msgstr "进度"
+
+msgid "verified"
+msgstr "已校验"
+
+msgid "mismatch"
+msgstr "不匹配"
+
+msgid "Link"
+msgstr "链路"
+
+msgid "Files/s"
+msgstr "文件/秒"
+
+msgid "Rate"
+msgstr "速率"
+
+msgid "State"
+msgstr "状态"
+
+msgid "{n} files/s"
+msgstr "{n} 文件/秒"
+
+msgid "buffer {pct} % full"
+msgstr "缓冲区已用 {pct} %"
+
+msgid "waiting on #{n}"
+msgstr "等待 #{n}"
+
+msgid "Reader"
+msgstr "读取"
+
+msgid "Method"
+msgstr "方法"
+
+msgid "Copied"
+msgstr "已复制"
+
+msgid "Skipped"
+msgstr "已跳过"
+
+msgid "Cloned"
+msgstr "已克隆"
+
+msgid "Linked"
+msgstr "已链接"
+
+msgid "Time"
+msgstr "时间"
+
+msgid "Result"
+msgstr "结果"
+
+msgid "{n} FAILED"
+msgstr "{n} 个失败"
+
+msgid "Done"
+msgstr "完成"
+
+msgid "{n} written"
+msgstr "{n} 个已写入"
+
+msgid "{n} destinations"
+msgstr "{n} 个目标"
+
+msgid "source read once"
+msgstr "源只读取一次"
+
+msgid "none left"
+msgstr "无残留"
+
+msgid "{n} left {dash} see list"
+msgstr "残留 {n} 个 {dash} 见列表"
+
+msgid "+{n} records"
+msgstr "+{n} 条记录"
+
+msgid "Timings"
+msgstr "耗时"
+
+msgid "{why} while writing"
+msgstr "写入时 {why}"
+
+msgid "{why} while reading the source"
+msgstr "读取源时 {why}"
+
+msgid "(and {n} other errors {dash} see list)"
+msgstr "（另有 {n} 种错误 {dash} 见列表）"
+
+msgid "{n} files on {dest}"
+msgstr "{dest} 上 {n} 个文件"
+
+msgid "1 file on {dest}"
+msgstr "{dest} 上 1 个文件"
+
+msgid "first"
+msgstr "首个"
+
+msgid "list"
+msgstr "列表"
+
+msgid "retry"
+msgstr "重试"
+
+msgid "partitions of the same {bus} disk ({disk})"
+msgstr "同一 {bus} 磁盘 ({disk}) 的分区"
+
+msgid "partitions of the same disk ({disk})"
+msgstr "同一磁盘 ({disk}) 的分区"
+
+msgid "#{a} and #{b} are {what}. They share one spindle, so each"
+msgstr "#{a} 和 #{b} 是{what}。它们共用一块磁盘，因此各自"
+
+msgid "Note"
+msgstr "注意"
+
+msgid "gets about half the speed. To copy them one after the other instead:"
+msgstr "只能得到约一半的速度。若要依次复制："
+
+msgid "Verified"
+msgstr "已校验"
+
+msgid "read back device"
+msgstr "设备回读"
+
+msgid "read back from device (O_DIRECT)"
+msgstr "从设备回读 (O_DIRECT)"
+
+msgid "device"
+msgstr "设备"
+
+msgid "{n} read back from device"
+msgstr "{n} 个从设备回读"
+
+msgid "verified from device"
+msgstr "已从设备校验"
+
+msgid "read back (cache)"
+msgstr "回读（缓存）"
+
+msgid "OS cache"
+msgstr "系统缓存"
+
+msgid "{n} read back through the OS cache"
+msgstr "{n} 个经系统缓存回读"
+
+msgid "verified through the OS cache"
+msgstr "已经系统缓存校验"
+
+msgid "read back network"
+msgstr "网络回读"
+
+msgid "network"
+msgstr "网络"
+
+msgid "verified over the network"
+msgstr "已经网络校验"
+
+msgid "remote hash check"
+msgstr "远端哈希校验"
+
+msgid "remote hash"
+msgstr "远端哈希"
+
+msgid "{n} hash-checked on the remote"
+msgstr "{n} 个在远端做了哈希校验"
+
+msgid "verified by remote hash"
+msgstr "已由远端哈希校验"
+
+msgid "remote hash sample"
+msgstr "远端哈希抽样"
+
+msgid "remote hash check (random sample)"
+msgstr "远端哈希校验（随机抽样）"
+
+msgid "remote sample"
+msgstr "远端抽样"
+
+msgid "{n} hash-checked on the remote (sample)"
+msgstr "{n} 个在远端做了哈希校验（抽样）"
+
+msgid "a sample verified by remote hash"
+msgstr "抽样已由远端哈希校验"
+
+msgid "store checksum"
+msgstr "存储校验和"
+
+msgid "the store's own checksum"
+msgstr "存储自身的校验和"
+
+msgid "{n} matched the store's checksum"
+msgstr "{n} 个与存储校验和一致"
+
+msgid "verified by the store's checksum"
+msgstr "已由存储校验和校验"
+
+msgid "existence and size only"
+msgstr "仅存在与大小"
+
+msgid "{n} present at the right size"
+msgstr "{n} 个存在且大小正确"
+
+msgid "sizes match, content not compared"
+msgstr "大小一致，内容未比较"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "{n} sources"
+msgstr "{n} 个源"
+
+msgid "off"
+msgstr "关"
+
+msgid "on"
+msgstr "开"
+
+msgid "(xxhash is not installed)"
+msgstr "（未安装 xxhash）"
+
+msgid "(the destination has one)"
+msgstr "（目标已有）"
+
+msgid "(the store's sidecar)"
+msgstr "（存储的附属文件）"
+
+msgid "(on with --manifest/--resume)"
+msgstr "（--manifest/--resume 时开启）"
+
+msgid "partial"
+msgstr "临时文件"
+
+msgid "partial (--partial)"
+msgstr "临时文件 (--partial)"
+
+msgid "partial, renamed into place"
+msgstr "临时文件，完成后改名"
+
+msgid "objects"
+msgstr "对象"
+
+msgid "whole objects"
+msgstr "整个对象"
+
+msgid "partial, renamed when complete"
+msgstr "临时文件，完成时改名"
+
+msgid "in-place"
+msgstr "原位写入"
+
+msgid "partial only on replace"
+msgstr "仅替换时用临时文件"
+
+msgid "resume"
+msgstr "续传"
+
+msgid "remote hash, or read back by SFTP"
+msgstr "远端哈希，或经 SFTP 回读"
+
+msgid "remote"
+msgstr "远端"
+
+msgid "this machine's hash cache"
+msgstr "本机哈希缓存"
+
+msgid "(with the manifest)"
+msgstr "（随清单）"
+
+msgid "hashed once, at source"
+msgstr "仅在源端哈希一次"
+
+msgid "stalled"
+msgstr "停滞"
+
+msgid "empty"
+msgstr "空"
+
+msgid "not there yet"
+msgstr "尚不存在"
+
+msgid "{n} existing"
+msgstr "已有 {n} 个"
+
+msgid "{n} known"
+msgstr "{n} 个已知"
+
+msgid "{n} to link"
+msgstr "{n} 个待链接"
+
+msgid "{n} to copy"
+msgstr "{n} 个待复制"
+
+msgid "dedup off (--no-dedup)"
+msgstr "去重已关 (--no-dedup)"
+
+msgid "1 lane"
+msgstr "1 条通道"
+
+msgid "{size} batches"
+msgstr "{size} 批次"
+
+msgid "each file through a partial"
+msgstr "每个文件经临时文件"
+
+msgid "1 reader"
+msgstr "1 个读取器"
+
+msgid "fan-out"
+msgstr "扇出"
+
+msgid "{n} lanes"
+msgstr "{n} 条通道"
+
+msgid "pace = slowest lane"
+msgstr "速度 = 最慢通道"
+
+msgid "physical order: {n} files mapped"
+msgstr "物理顺序：已映射 {n} 个文件"
+
+msgid "physical order: skipped (SSD)"
+msgstr "物理顺序：跳过 (SSD)"
+
+msgid "physical order: unavailable (the source filesystem gives no offsets)"
+msgstr "物理顺序：不可用（源文件系统不提供偏移）"
+
+msgid "tar push"
+msgstr "tar 推送"
+
+msgid "Copy"
+msgstr "复制"
+
+msgid "copied {done} / {total}"
+msgstr "已复制 {done} / {total}"
+
+msgid "ETA {eta}"
+msgstr "剩余 {eta}"
+
+msgid "checked {done} / {total}"
+msgstr "已检查 {done} / {total}"
+
+msgid "nothing to copy"
+msgstr "无需复制"
+
+msgid "1 file"
+msgstr "1 个文件"
+
+msgid "{n} files"
+msgstr "{n} 个文件"
+
+msgid "{n} cloned"
+msgstr "{n} 个已克隆"
+
+msgid "all done"
+msgstr "全部完成"
+
+msgid "{n} failed on #{idx}"
+msgstr "#{idx} 上 {n} 个失败"
+
+msgid "{n} MISMATCH"
+msgstr "{n} 个不匹配"
+
+msgid "nothing written"
+msgstr "未写入"
+
+msgid "sizes only"
+msgstr "仅大小"
+
+msgid "all match"
+msgstr "全部匹配"
+
+msgid "nothing to verify (nothing was written)"
+msgstr "无需校验（未写入任何内容）"
+
+msgid "the destination failed"
+msgstr "目标失败"
+
+msgid "not verified (--no-verify)"
+msgstr "未校验 (--no-verify)"
+
+msgid "not verified: the source changed"
+msgstr "未校验：源已变化"
+
+msgid "incomplete"
+msgstr "不完整"
+
+msgid "nothing written, nothing to verify"
+msgstr "未写入，无需校验"
+
+msgid "the source"
+msgstr "源"
+
+msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
+msgstr "目标处内容不同，保持原样（--overwrite-changed 可替换）"
+
+msgid "hash mismatch after write"
+msgstr "写入后哈希不匹配"
+
+msgid "scan"
+msgstr "扫描"
+
+msgid "plan"
+msgstr "计划"
+
+msgid "copy"
+msgstr "复制"
+
+msgid "sync"
+msgstr "同步"
+
+msgid "records"
+msgstr "记录"
+
+msgid "input"
+msgstr "输入"
+
+msgid "scan source"
+msgstr "扫描源"
+
+msgid "scan destination"
+msgstr "扫描目标"
+
+msgid "compare"
+msgstr "比较"
+
+msgid "dedup lookup"
+msgstr "去重查找"
+
+msgid "other destinations"
+msgstr "其他目标"
+
+msgid "Stages"
+msgstr "阶段明细"
+
+msgid "one destination"
+msgstr "一个目标"
+
+msgid "several"
+msgstr "多个"
+
+msgid "no destination given."
+msgstr "未指定目标。"
+
+msgid "no source and no destination given."
+msgstr "未指定源和目标。"
+
+msgid "A copy needs a source and at least one destination:"
+msgstr "复制需要一个源和至少一个目标："
+
+msgid "--dest and a positional destination cannot be mixed."
+msgstr "--dest 不能与位置参数形式的目标混用。"
+
+msgid "You gave --dest {dest} and also {extra}: a second source, or a mistyped destination? Say which:"
+msgstr "您给出了 --dest {dest}，还有 {extra}：是第二个源，还是写错了的目标？请明确："
+
+msgid "a destination too"
+msgstr "也是目标"
+
+msgid "a second source"
+msgstr "第二个源"
+
+msgid "source not found: {src}"
+msgstr "未找到源：{src}"
+
+msgid "No matching files or directory found. With your destination, the command is:"
+msgstr "未找到匹配的文件或目录。使用您的目标，命令为："
+
+msgid "the destination {dest} is inside the source {src}."
+msgstr "目标 {dest} 位于源 {src} 之内。"
+
+msgid "the destination {dest} contains the source {src}."
+msgstr "目标 {dest} 包含源 {src}。"
+
+msgid "A copy must not land in what it is reading. Give a destination apart from the source:"
+msgstr "复制不能写入正在读取的位置。请给出源之外的目标："
+
+msgid "the destination {dest} is given twice."
+msgstr "目标 {dest} 给出了两次。"
+
+msgid "Each destination is one copy; give it once:"
+msgstr "每个目标是一份副本；只需给出一次："
+
+msgid "Scan source"
+msgstr "扫描源"
+
+msgid "listing"
+msgstr "正在列出"
+
+msgid "{n} dirs"
+msgstr "{n} 个目录"
+
+msgid "{n} unreadable"
+msgstr "{n} 个不可读"
+
+msgid "Scan destination"
+msgstr "扫描目标"
+
+msgid "Scan destinations"
+msgstr "扫描目标"
+
+msgid "looking"
+msgstr "正在查看"
+
+msgid "Dedup lookup"
+msgstr "去重查找"
+
+msgid "looking up"
+msgstr "正在查找"
+
+msgid "Dedup DB: {path}"
+msgstr "去重库：{path}"
+
+msgid "Plan"
+msgstr "计划"
+
+msgid "syncing the destination and writing the records"
+msgstr "正在同步目标并写入记录"
+
+msgid "No bars and no redrawing: each phase as one line when it has finished, as when the output is not a terminal."
+msgstr "无进度条、不重绘：每个阶段完成后输出一行，与输出不是终端时相同。"
+
+msgid "1 destination FAILED"
+msgstr "1 个目标失败"
+
+msgid "{n} destinations FAILED"
+msgstr "{n} 个目标失败"
+
+msgid "{dest} failed: {why}"
+msgstr "{dest} 失败：{why}"
+
+msgid "{n} files not written"
+msgstr "{n} 个文件未写入"
+
+msgid "nothing to verify"
+msgstr "无需校验"
+
+msgid "read back"
+msgstr "回读"
+
+msgid "links anywhere on the drive"
+msgstr "可链接到整个驱动器"
+
+msgid "links within this folder only"
+msgstr "仅在此文件夹内链接"
+
+msgid "{n} files not written or not verified"
+msgstr "{n} 个文件未写入或未校验"
+
+msgid "Dedup"
+msgstr "去重"
+
+msgid "no DB {dash} {why}"
+msgstr "无数据库 {dash} {why}"
+
+msgid "kept for local and SSH destinations only"
+msgstr "仅为本地和 SSH 目标保留"
+
+msgid "links anywhere on this drive"
+msgstr "可链接到此驱动器任意位置"
+
+msgid "Written"
+msgstr "已写入"
+
+msgid "written"
+msgstr "已写入"
+
+msgid "written {done} / {total}"
+msgstr "已写入 {done} / {total}"
+
+msgid "{n} of {total} files are not at this destination"
+msgstr "{total} 个文件中有 {n} 个不在此目标"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "All {n} files are already up to date."
+msgstr "全部 {n} 个文件均已是最新。"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out before the copy"
+msgstr "复制前已排除"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out — nothing is written there"
+msgstr "已排除 — 不会向其写入任何内容"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{a} and {b} are one folder, or one holds the other"
+msgstr "{a} 和 {b} 是同一个文件夹，或其中一个包含另一个"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{d} is the source, inside it, or holds it"
+msgstr "{d} 是源、位于源中，或包含源"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{opt} takes one destination for now"
+msgstr "{opt} 目前只支持一个目标"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "Warning:"
+msgstr "警告："
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{dests} are on one filesystem: together they need {need}, it has {free} free"
+msgstr "{dests} 位于同一文件系统：合计需要 {need}，可用空间为 {free}"
+
+msgid "stalled: no answer for {n} s — dropped"
+msgstr "停滞：{n} 秒无响应 — 已放弃"
+
+msgid "stalled after the copy: no answer for {n} s"
+msgstr "复制后停滞：{n} 秒无响应"
+
+msgid "stalled during verification: no answer for {n} s"
+msgstr "校验时停滞：{n} 秒无响应"
+
+msgid "dropped; what it holds is not verified"
+msgstr "已放弃；其内容未经校验"
+
+msgid "stalled: no answer for {n} s"
+msgstr "停滞：{n} 秒无响应"
+
+msgid "stalled during the copy: no answer for {n} s"
+msgstr "复制时停滞：{n} 秒无响应"
+
+msgid "half-written:"
+msgstr "写入未完成："
+
+msgid "not checked"
+msgstr "未校验"
+
+msgid "{opt} does not apply to several local or SSH destinations"
+msgstr "{opt} 不适用于多个本地或 SSH 目标"
+
+msgid "could not be checked against the sources ({err}); nothing was written there"
+msgstr "无法与源进行核对（{err}）；那里没有写入任何内容"
+
+msgid "the host offers none"
+msgstr "主机未提供"
+
+msgid "no SFTP ({how}) — with several destinations an SSH destination needs SFTP; copy to it on its own"
+msgstr "没有 SFTP（{how}）— 多个目标时 SSH 目标需要 SFTP；请单独复制到该目标"
+
+msgid "no SFTP and no tar there ({how}) — nothing can write to it"
+msgstr "那里既没有 SFTP 也没有 tar（{how}）— 无法写入"
+
+msgid "copied, not verified: {why}"
+msgstr "已复制，未验证：{why}"
+
+msgid "copied, not verified"
+msgstr "已复制，未验证"
+
+#: blitcp.py (×N --use-sudo)
+msgid "{src}: with several destinations, --use-sudo takes a local source"
+msgstr "{src}：多个目标时，--use-sudo 只支持本地源"
+
+msgid "{opt} does not take --use-sudo with several destinations"
+msgstr "多个目标时，{opt} 不能与 --use-sudo 一起使用"
+
+msgid "an SMB or cloud destination does not take --use-sudo"
+msgstr "SMB 或云目标不支持 --use-sudo"
+
+msgid "an SSH destination or a saved connection does not take --use-sudo yet — copy to it without --use-sudo"
+msgstr "SSH 目标或已保存的连接暂不支持 --use-sudo — 请不带 --use-sudo 复制到那里"
+
+msgid "{mnt} is not mounted — mount it, or name another destination"
+msgstr "{mnt} 未挂载 — 请挂载它，或指定其他目标"
+
+#: blitcp.py (the fan-out's options, gone)
+msgid "{opt} is not available in this version"
+msgstr "此版本不提供 {opt}"
+
+msgid "{opt} goes with several destinations"
+msgstr "{opt} 仅用于多个目标"
+
+#: blitcp.py (several destinations: the fan-out's shapes)
+msgid "{src}: several destinations take a local source"
+msgstr "{src}：多个目标需要本地源"
+
+msgid "a bare name — write it as NAME:folder/ for a saved connection, or ./{name} for a folder here"
+msgstr "只有名称 — 已保存的连接请写成 NAME:文件夹/，此处的文件夹请写成 ./{name}"
+
+#: blitcp_gui.py (several destinations: a verdict without a count)
+msgid "Verification failed"
+msgstr "校验失败"
+
+#: blitcp.py (--manifest on the 4.2.15 engine)
+msgid "--manifest takes a local source, xxh128 hashes and verification"
+msgstr "--manifest 需要本地源、xxh128 哈希和校验"
+
+msgid "manifest {name}"
+msgstr "清单 {name}"
+
+msgid "no manifest: its verification did not pass"
+msgstr "无清单：其校验未通过"
+
+msgid "no manifest: nothing new to record"
+msgstr "无清单：没有新内容可记录"
+
+msgid "{n} files are not in its manifest: this run has no xxh128 of them"
+msgstr "{n} 个文件不在其清单中：本次运行没有它们的 xxh128"
+
+#: blitcp.py (--manifest: files it does not hold)
+msgid "manifest incomplete: {n} files"
+msgstr "清单不完整：{n} 个文件"
+
+#: blitcp.py (several destinations: a kind they do not take)
+msgid "not a destination several destinations take — a local folder, user@host:/path, smb://, s3://, az:// or gs://"
+msgstr "不是多个目标可接受的目标——本地文件夹、user@host:/路径、smb://、s3://、az:// 或 gs://"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "{why} — not written"
+msgstr "{why} — 未写入"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "the destination folder is not the one this run started with"
+msgstr "目标文件夹已不是本次运行开始时的那个"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not a name under the destination"
+msgstr "不是目标下的名称"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "a folder on the way resolves outside the destination"
+msgstr "路径上的某个文件夹指向目标之外"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "this destination folder is inside a source folder (the same folder on disk)"
+msgstr "此目标文件夹位于某个源文件夹内（磁盘上的同一文件夹）"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "could not be reached from the destination root"
+msgstr "无法从目标根目录到达"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not the file the scan found (it, or a folder on the way, changed since) — not read"
+msgstr "不是扫描时找到的文件（该文件或路径上的文件夹此后已更改）— 未读取"
+msgid "1–{n} one destination"
+msgstr "1–{n} 单个目标"
+
+msgid "BLITCP_UI={val} is not lines, dashboard or quiet — ignored"
+msgstr "BLITCP_UI={val} 不是 lines、dashboard 或 quiet — 已忽略"
+
+msgid "DEDUP"
+msgstr "去重"
+
+msgid "DESTINATIONS"
+msgstr "目标"
+
+msgid "DETAILS"
+msgstr "详情"
+
+msgid "Deduplication"
+msgstr "去重"
+
+msgid "Disk layout"
+msgstr "磁盘布局"
+
+msgid "FROM"
+msgstr "从"
+
+msgid "HASH"
+msgstr "哈希"
+
+msgid "How a copy is shown: lines (the default) or dashboard (full screen, a terminal of at least 100 × 24). Also [ui] mode in ~/.config/blitcp/config.toml or BLITCP_UI; -q always wins."
+msgstr "复制的显示方式：lines（默认）或 dashboard（全屏，终端至少 100 × 24）。也可用 ~/.config/blitcp/config.toml 中的 [ui] mode 或 BLITCP_UI；-q 始终优先。"
+
+msgid "Incremental"
+msgstr "增量检查"
+
+msgid "Index existing"
+msgstr "索引现有"
+
+msgid "NOTES"
+msgstr "备注"
+
+msgid "Notes"
+msgstr "备注"
+
+msgid "PHASES"
+msgstr "阶段"
+
+msgid "READ RATE, last 5 min"
+msgstr "读取速率（最近 5 分钟）"
+
+msgid "Source and {tag}destination are on the same disk ({disk}): reads and writes take turns."
+msgstr "源和{tag}目标在同一磁盘（{disk}）上：读写交替进行。"
+
+msgid "Source and {tag}destinations are on the same disk ({disk}): reads and writes take turns."
+msgstr "源和{tag}目标在同一磁盘（{disk}）上：读写交替进行。"
+
+msgid "Source on a {dev}: files are read in their order on the disk."
+msgstr "源位于 {dev}：按文件在磁盘上的顺序读取。"
+
+msgid "Source on a {dev}: read order does not matter."
+msgstr "源位于 {dev}：读取顺序无关紧要。"
+
+msgid "Space check"
+msgstr "空间检查"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Stopping safely: the file in progress finishes, the destination is synced, then blitcp exits."
+msgstr "安全停止：完成当前文件，同步目标，然后 blitcp 退出。"
+
+msgid "Syncing the destination…"
+msgstr "正在同步目标…"
+
+msgid "TO"
+msgstr "到"
+
+msgid "The dashboard without colours (as NO_COLOR)."
+msgstr "无颜色的仪表板（同 NO_COLOR）。"
+
+msgid "all the time"
+msgstr "一直"
+
+msgid "{pct} % of the time"
+msgstr "{pct} % 的时间"
+
+msgid "(a rested HDD: 5–15 ms)"
+msgstr "（空闲的 HDD：5–15 ms）"
+
+msgid "(a rested SATA SSD: under 1 ms)"
+msgstr "（空闲的 SATA SSD：低于 1 ms）"
+
+msgid "(a rested NVMe drive: under 0.2 ms)"
+msgstr "（空闲的 NVMe 驱动器：低于 0.2 ms）"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "源磁盘{dev}是瓶颈：它{busy}处于忙碌状态，每次读取等待约 {ms} ms{ref}。"
+
+msgid "The source disk{dev} is the limit: it is busy {busy}."
+msgstr "源磁盘{dev}是瓶颈：它{busy}处于忙碌状态。"
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else reading from it would help."
+msgstr "blitcp 正在等待它；更快的磁盘、空闲的磁盘，或没有其他程序从它读取，都会有帮助。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "{tag}目标磁盘{dev}是瓶颈：它{busy}处于忙碌状态，每次写入等待约 {ms} ms{ref}。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy}."
+msgstr "{tag}目标磁盘{dev}是瓶颈：它{busy}处于忙碌状态。"
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else writing to it would help."
+msgstr "blitcp 正在等待它；更快的磁盘、空闲的磁盘，或没有其他程序向它写入，都会有帮助。"
+
+msgid "The network is the limit: it carries {pct} % of what its {mbps} Mb/s link can. blitcp is waiting for it; a faster link, or nothing else using it, would help."
+msgstr "网络是瓶颈：它传输了其 {mbps} Mb/s 链路容量的 {pct} %。blitcp 正在等待网络；更快的链路，或没有其他程序使用它，都会有帮助。"
+
+msgid "blitcp's CPU is the limit: it keeps one core busy all the time, while the disks and the network have room to spare. A faster CPU would help."
+msgstr "blitcp 的 CPU 是瓶颈：一个核心一直处于忙碌状态，而磁盘和网络仍有余量。更快的 CPU 会有帮助。"
+
+msgid "The network was the limit for {pct} % of the run."
+msgstr "本次运行 {pct} % 的时间网络是瓶颈。"
+
+msgid "The source disk was the limit for {pct} % of the run."
+msgstr "本次运行 {pct} % 的时间源磁盘是瓶颈。"
+
+msgid "The {tag}destination disk was the limit for {pct} % of the run."
+msgstr "本次运行 {pct} % 的时间{tag}目标磁盘是瓶颈。"
+
+msgid "Total"
+msgstr "合计"
+
+msgid "VERIFY"
+msgstr "校验"
+
+msgid "WHAT LIMITS THE SPEED"
+msgstr "限制速度的因素"
+
+msgid "WRITE"
+msgstr "写入"
+
+msgid "WRITE RATE, last 5 min"
+msgstr "写入速率（最近 5 分钟）"
+
+msgid "before the copy began; nothing was written"
+msgstr "复制开始之前；未写入任何内容"
+
+msgid "blitcp's CPU was the limit for {pct} % of the run."
+msgstr "本次运行 {pct} % 的时间 blitcp 的 CPU 是瓶颈。"
+
+msgid "blitcp: the terminal is {c} × {r}; the dashboard needs 100 × 24. The copy goes on."
+msgstr "blitcp：终端为 {c} × {r}；仪表板需要 100 × 24。复制继续进行。"
+
+msgid "busy %  wait ms  read/s     write/s    r/s     w/s"
+msgstr "繁忙%   等待ms   读取/s     写入/s     r/s     w/s"
+
+msgid "cpu"
+msgstr "cpu"
+
+msgid "dashboard: {err}"
+msgstr "仪表板：{err}"
+
+msgid "dest"
+msgstr "目标"
+
+msgid "engine"
+msgstr "引擎"
+
+msgid "error — see notes"
+msgstr "错误 — 见备注"
+
+msgid "g graph"
+msgstr "g 图表"
+
+msgid "half-written: {name} ({done} of {total})"
+msgstr "写了一半：{name}（{done} / {total}）"
+
+msgid "in place"
+msgstr "原位"
+
+msgid "index"
+msgstr "索引"
+
+msgid "layout"
+msgstr "布局"
+
+msgid "limit: "
+msgstr "瓶颈："
+
+msgid "limit: blitcp"
+msgstr "瓶颈：blitcp"
+
+msgid "n notes"
+msgstr "n 备注"
+
+msgid "net"
+msgstr "网络"
+
+msgid "no disk statistics"
+msgstr "无磁盘统计"
+
+msgid "not verified"
+msgstr "未校验"
+
+msgid "nothing half-written"
+msgstr "没有写了一半的文件"
+
+msgid "now"
+msgstr "当前"
+
+msgid "now {rate}"
+msgstr "当前 {rate}"
+
+msgid "of one core"
+msgstr "（单核）"
+
+msgid "one core busy ◀"
+msgstr "单核满载 ◀"
+
+msgid "over SSH"
+msgstr "经 SSH"
+
+msgid "q stop safely"
+msgstr "q 安全停止"
+
+msgid "rate"
+msgstr "速率"
+
+msgid "send {tx} · receive {rx} · link {mbps}"
+msgstr "发送 {tx} · 接收 {rx} · 链路 {mbps}"
+
+msgid "source"
+msgstr "源"
+
+msgid "source files skipped"
+msgstr "跳过了源文件"
+
+msgid "space"
+msgstr "空间"
+
+msgid "state"
+msgstr "状态"
+
+msgid "to continue: {cmd}"
+msgstr "继续：{cmd}"
+
+msgid "v back"
+msgstr "v 返回"
+
+msgid "v details"
+msgstr "v 详情"
+
+msgid "verification FAILED"
+msgstr "校验失败"
+
+msgid "verified from disk"
+msgstr "已从磁盘校验"
+
+msgid "waits for [{k}]"
+msgstr "等待 [{k}]"
+
+msgid "writing"
+msgstr "写入中"
+
+msgid "{c} copied · {s} skipped · {l} linked · {f} failed"
+msgstr "已复制 {c} · 跳过 {s} · 链接 {l} · 失败 {f}"
+
+msgid "{f} of {t} files copied · {b}"
+msgstr "已复制 {f} / {t} 个文件 · {b}"
+
+msgid "{ms} ms/read ◀"
+msgstr "{ms} ms/读 ◀"
+
+msgid "{ms} ms/write ◀"
+msgstr "{ms} ms/写 ◀"
+
+msgid "{n} destinations · {ok} done · {bad} failed"
+msgstr "{n} 个目标 · {ok} 完成 · {bad} 失败"
+
+msgid "{n} duplicates"
+msgstr "{n} 个重复"
+
+msgid "{path}: cannot be read ({why}) — ignored"
+msgstr "{path}：无法读取（{why}）— 已忽略"
+
+msgid "{path}: not valid TOML ({why}) — ignored"
+msgstr "{path}：TOML 无效（{why}）— 已忽略"
+
+msgid "{path}: this Python cannot read TOML — ignored"
+msgstr "{path}：此 Python 无法读取 TOML — 已忽略"
+
+msgid "{path}: ui.{key} = {val!r} is not allowed — ignored"
+msgstr "{path}：不允许 ui.{key} = {val!r} — 已忽略"
+
+msgid "{path}: unknown key '{key}' — ignored"
+msgstr "{path}：未知的键 '{key}' — 已忽略"
+
+msgid "left out"
+msgstr "已排除"
+
+msgid "dropped — see notes"
+msgstr "已放弃 — 见备注"
+
+msgid "stalled — see notes"
+msgstr "已停滞 — 见备注"
+
+msgid "{pct} % of {mbps} Mb/s"
+msgstr "{mbps} Mb/s 的 {pct} %"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "源磁盘{dev}是瓶颈：它{busy}处于忙碌状态，每次写入等待约 {ms} ms{ref}。"
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "{tag}目标磁盘{dev}是瓶颈：它{busy}处于忙碌状态，每次读取等待约 {ms} ms{ref}。"
+
+msgid "{rate} · {f} / {t} files"
+msgstr "{rate} · {f} / {t} 个文件"
+
+msgid "↑↓ notes"
+msgstr "↑↓ 备注"
+
+msgid "◀ limit: cpu"
+msgstr "◀ 瓶颈：cpu"
+
+msgid "◀ limit: disk {pct} %"
+msgstr "◀ 瓶颈：磁盘 {pct} %"
+
+msgid "◀ limit: network {mbps} Mb/s"
+msgstr "◀ 瓶颈：网络 {mbps} Mb/s"
+
+msgid "The small files finish first; no large file is started."
+msgstr "小文件先完成；不会开始任何大文件。"
+
+msgid "Stopped: the copied files get their links, folders, records and sync…"
+msgstr "已停止：为已复制的文件创建链接、设置文件夹、写入记录并同步…"
+
+msgid "Stopping safely: the files in progress finish, what was copied gets its links, folders, records and sync, then blitcp exits."
+msgstr "安全停止：完成正在处理的文件，为已复制的内容创建链接、设置文件夹、写入记录并同步，然后 blitcp 退出。"
+
+msgid "size checked"
+msgstr "已检查大小"
+
+
+msgid "owner {owner}, mode {mode}"
+msgstr "所有者 {owner}，权限 {mode}"
+
+msgid "local folder {path}"
+msgstr "本地文件夹 {path}"
+
+msgid "{where}, folder {path}"
+msgstr "{where}，文件夹 {path}"
+
+msgid "shares there: {names}"
+msgstr "该主机上的共享：{names}"
+
+msgid "SMB share {share} on {host}, folder {path}"
+msgstr "{host} 上的 SMB 共享 {share}，文件夹 {path}"
+
+msgid "{scheme} bucket {bucket}, prefix {prefix} (listed, nothing written)"
+msgstr "{scheme} 存储桶 {bucket}，前缀 {prefix}（已列出，未写入）"
+
+msgid "no answer from {host} in {n} s: is it on, reachable, firewalled?"
+msgstr "{n} 秒内 {host} 没有响应：它是否已开机、可访问、被防火墙拦截？"
+
+msgid "folder not writable: {folder} ({detail}) — give {user} write access, or choose another folder"
+msgstr "文件夹不可写：{folder}（{detail}）— 请授予 {user} 写入权限，或选择其他文件夹"
+
+msgid "cannot connect to {host}: {err}"
+msgstr "无法连接到 {host}：{err}"
+
+msgid "the host key could not be confirmed"
+msgstr "无法确认主机密钥"
+
+msgid "cannot list {where}: {err}"
+msgstr "无法列出 {where}：{err}"
+
+msgid "OK — connected, folder writable: {what}"
+msgstr "OK — 已连接，文件夹可写：{what}"
+
+msgid "OK — connected, bucket listed: {what}"
+msgstr "OK — 已连接，已列出存储桶：{what}"
+
+msgid "connection {name!r} has no valid type"
+msgstr "连接 {name!r} 没有有效的类型"
+
+msgid "{path} is not a folder"
+msgstr "{path} 不是文件夹"
+
+msgid "{host} does not accept {proto} on port {port} — check the port"
+msgstr "{host} 不接受端口 {port} 上的 {proto} — 请检查端口"
+
+msgid "cannot find host {host}: check its name"
+msgstr "找不到主机 {host}：请检查名称"
+
+msgid "its shares could not be listed: {err}"
+msgstr "无法列出其共享：{err}"
+
+msgid "the share {share} is a path — a share is a name, not a path: set the share to {head} and put {rest} in the path"
+msgstr "共享 {share} 是一个路径 — 共享是名称，不是路径：请将共享设为 {head}，并把 {rest} 放进路径"
+
+msgid "share {share} not found on {host}; {shares}. If it is a folder, put it in the path"
+msgstr "在 {host} 上找不到共享 {share}；{shares}。如果它是文件夹，请放进路径"
+
+msgid "{who} refused the login (user {user}). Set the user and password in this connection"
+msgstr "{who} 拒绝了登录（用户 {user}）。请在此连接中设置用户和密码"
+
+msgid "bucket {bucket} not found — check its name, and the region or account of this connection"
+msgstr "找不到存储桶 {bucket} — 请检查名称，以及此连接的区域或账户"
+
+msgid "access denied to bucket {bucket} — check the keys of this connection and what they may read"
+msgstr "拒绝访问存储桶 {bucket} — 请检查此连接的密钥及其读取权限"
+
+msgid "the endpoint {endpoint} does not answer as a storage service — check the endpoint URL"
+msgstr "端点 {endpoint} 未以存储服务响应 — 请检查端点 URL"
+
+msgid "this connection has no host"
+msgstr "此连接没有主机"
+
+msgid "access denied"
+msgstr "拒绝访问"
+
+msgid "cannot check {dest}: {err}"
+msgstr "无法检查 {dest}：{err}"
+
+msgid "this connection has no share; {shares}"
+msgstr "此连接没有共享；{shares}"
+
+msgid "this connection has no default bucket: test it as {name}:BUCKET in a run, or set one with: blitcp creds edit {name}"
+msgstr "此连接没有默认存储桶：请在运行中以 {name}:BUCKET 测试，或用以下命令设置：blitcp creds edit {name}"
+
+msgid "Password for {who}: "
+msgstr "{who} 的密码："
+
+msgid "the host key of {host} is not known yet (SHA256:{fp}) — connect once from a terminal to confirm it, or add it to {path}"
+msgstr "{host} 的主机密钥尚未知晓（SHA256:{fp}）— 请从终端连接一次以确认，或将其添加到 {path}"
+
+msgid "{host} has no SFTP, and this connection is SFTP only"
+msgstr "{host} 没有 SFTP，而此连接仅限 SFTP"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection"
+msgstr "{who} 拒绝了登录。已尝试：{tried}。请在此连接中设置密码或密钥"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection, or give --ssh-key / --ssh-password-env"
+msgstr "{who} 拒绝了登录。已尝试：{tried}。请在此连接中设置密码或密钥，或使用 --ssh-key / --ssh-password-env"
+
+msgid "cannot be tested without the engine"
+msgstr "没有引擎无法测试"
+
+msgid "test failed"
+msgstr "测试失败"
+
+msgid "SSH {who} port {port}"
+msgstr "SSH {who} 端口 {port}"
+
+msgid "dashboard closed ({err}); the copy goes on below"
+msgstr "仪表板已关闭（{err}）；复制在下方继续"
+
+msgid "dashboard: that view could not be drawn ({err}); back to the main view"
+msgstr "仪表板：无法绘制该视图（{err}）；返回主视图"
+
+msgid "the endpoint {endpoint} is not a valid URL — check the endpoint URL (for example https://host:port)"
+msgstr "端点 {endpoint} 不是有效的 URL — 请检查端点 URL（例如 https://host:port）"
+
+msgid "Warning: could not read the cookies in {src} for {host} ({why}) — downloading without them"
+msgstr "警告：无法读取 {src} 中 {host} 的 Cookie（{why}）— 将不带 Cookie 下载"
+
+msgid "no such file"
+msgstr "没有此文件"
+
+msgid "not a cookies.txt file: {err}"
+msgstr "不是 cookies.txt 文件：{err}"
+
+msgid "this build cannot read a browser's session; export the browser's cookies to a cookies.txt and use --cookies FILE"
+msgstr "此版本无法读取浏览器会话；请将浏览器的 Cookie 导出为 cookies.txt 并使用 --cookies FILE"
+
+msgid "browser_cookie3 is not installed: python -m pip install browser-cookie3"
+msgstr "未安装 browser_cookie3：python -m pip install browser-cookie3"
+
+msgid "this build cannot read {src}"
+msgstr "此版本无法读取 {src}"
+
+msgid "this site needs sign-in: open it in {browser} and sign in, or set cookies"
+msgstr "此网站需要登录：请在 {browser} 中打开并登录，或设置 Cookie"
+
+msgid "this site needs sign-in: open it in your browser and sign in, then choose it as the live session, or set cookies (--cookies FILE / --cookies-from-browser NAME)"
+msgstr "此网站需要登录：请在浏览器中打开并登录，然后将其选为实时会话，或设置 Cookie（--cookies FILE / --cookies-from-browser NAME）"
+
+msgid "Dry run…"
+msgstr "试运行…"
+
+msgid "Starting…"
+msgstr "正在开始…"
+
+msgid "copied — waiting for the others"
+msgstr "已复制 — 等待其他目标"
+
+msgid " and mtime"
+msgstr "和修改时间"
+
+msgid "HTTP → {n} destinations  [one download]"
+msgstr "HTTP → {n} 个目标  [一次下载]"
+
+msgid "SSH transfers require paramiko"
+msgstr "SSH 传输需要 paramiko"
+
+msgid "Up to date — skipped (same size{and_mtime})."
+msgstr "已是最新 — 已跳过（大小相同{and_mtime}）。"
+
+msgid "a web source does not go to a cloud store — relay via an SSH or SMB destination"
+msgstr "网页来源不能写入云存储 — 请经由 SSH 或 SMB 目标中转"
+
+msgid "no destination is left to write to"
+msgstr "已没有可写入的目标"
+
+msgid "transfer truncated"
+msgstr "传输被截断"
+
+msgid "{path}: {why}"
+msgstr "{path}：{why}"
+
+msgid "Write a manifest (MHL)"
+msgstr "写入清单 (MHL)"
+
+msgid "Drop a destination that stops answering after {n} s"
+msgstr "目标 {n} 秒无响应时将其放弃"
+
+msgid "Verify against manifest"
+msgstr "按清单校验"
+
+msgid "Check a destination against the manifest a copy wrote there, without the source (--verify-manifest)"
+msgstr "按复制时在目标写入的清单校验目标，无需源 (--verify-manifest)"
+
+msgid "Destination folder"
+msgstr "目标文件夹"
+
+msgid "Read every file back (--deep)"
+msgstr "回读每个文件 (--deep)"
+
+msgid "manifest (MHL)"
+msgstr "清单 (MHL)"
+
+msgid "no manifest: {why}"
+msgstr "无清单：{why}"
+
+msgid "The saved connections are locked — the run needs them"
+msgstr "已保存的连接已锁定 — 运行需要它们"
+
+msgid "{dest}: connecting…"
+msgstr "{dest}：正在连接…"
+
+msgid "Check cancelled"
+msgstr "检查已取消"
+
+msgid "up to date"
+msgstr "已是最新"
+
+msgid "sample-hashed"
+msgstr "抽样哈希校验"
+
+msgid "--ui dashboard needs blitcp_dashboard.py beside blitcp.py — get it with: blitcp --fetch-modules (lines for now)"
+msgstr "--ui dashboard 需要 blitcp.py 旁边的 blitcp_dashboard.py — 获取方法：blitcp --fetch-modules（暂以行输出）"
+
+msgid "Write an ASC MHL generation (ascmhl/ and blitcp.xxh128) at each destination whose check found no fault, from the hashes this run already has (a local source, xxh128). What is skipped is decided as without it. Check a destination later, without the source, with --verify-manifest DEST."
+msgstr "在每个校验通过的目标处，用本次运行已有的哈希（本地源，xxh128）写入一代 ASC MHL（ascmhl/ 和 blitcp.xxh128）。跳过哪些文件的判断与不使用此选项时相同。之后不需要源即可检查某个目标：--verify-manifest DEST。"

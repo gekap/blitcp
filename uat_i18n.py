@@ -3,13 +3,15 @@
 
 Per language: run a tiny real copy with --lang XX and assert
   1. exit code 0,
-  2. the translated Phase-1 sentinel appears (catalog loaded & applied),
+  2. a translated pre-copy sentinel appears (catalog loaded & applied),
   3. the --log-file JSON stays English (machine output is never translated),
   4. no traceback leaked.
 Plus a --help smoke test per language. English default asserts the absence
 of translation (guards against accidental auto-activation).
 """
 import os
+import testtmp  # test data under ~/.cache/blitcp-tests, never /tmp (RAM)
+testtmp.use_test_tmp()
 import sys
 import json
 import shutil
@@ -24,6 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FC = os.path.join(HERE, "blitcp.py")
 
 SENTINELS = {
+    # `blitcp SRC DST` takes the 4.2.15 route again (owner, 2026-11-20):
+    # its Phase-1 banner, as 4.2.15's sentinel was.
     "en": "Phase 1 — Scanning source",
     "el": "Φάση 1 — Σάρωση πηγής",
     "de": "Phase 1 — Quelle wird gescannt",
@@ -89,7 +93,7 @@ def main():
               "(reader thread failed — check the decoding)")
         check(f"[{lang}] exit 0", p.returncode == 0, f"rc={p.returncode}")
         if lang == "en":
-            ok = sentinel in out and "Φάση" not in out
+            ok = sentinel in out and SENTINELS["el"] not in out
             check("[en] output is English (no accidental translation)", ok)
         else:
             check(f"[{lang}] sentinel translated", sentinel in out,
@@ -116,6 +120,48 @@ def main():
         check(f"[{lang}] --help renders", h.returncode == 0 and "usage" in h.stdout)
 
     shutil.rmtree(work, ignore_errors=True)
+
+    # Every _tr("…") literal in the engine and the GUI has a non-empty
+    # translation in every catalog. Nothing else noticed a missing one: the
+    # string simply rendered in English. Fails closed on a stub target.
+    import ast
+    import glob
+    sys.path.insert(0, HERE)
+    import build
+    catalogs = sorted(glob.glob(os.path.join(HERE, "locales", "*",
+                                             "LC_MESSAGES", "blitcp.po")))
+    check("catalogs found", len(catalogs) >= 6, f"{len(catalogs)} catalogs")
+    # The engine's modules (blitcp_cloud.py, blitcp_iface.py) translate
+    # through the same _tr; each must hold at least the strings it has.
+    for target, least in (("blitcp.py", 50), ("blitcp_cloud.py", 10),
+                          ("blitcp_iface.py", 1), ("blitcp_gui.py", 50),
+                          ("blitcp_dashboard.py", 50)):
+        try:
+            tree = ast.parse(open(os.path.join(HERE, target),
+                                  encoding="utf-8").read())
+        except (OSError, SyntaxError) as e:
+            check(f"{target}: every _tr string translated", False, str(e))
+            continue
+        used = {n.args[0].value for n in ast.walk(tree)
+                if isinstance(n, ast.Call)
+                and (getattr(n.func, "id", None)
+                     or getattr(n.func, "attr", None)) == "_tr" and n.args
+                and isinstance(n.args[0], ast.Constant)
+                and isinstance(n.args[0].value, str)}
+        if len(used) < least:
+            check(f"{target}: every _tr string translated", False,
+                  f"only {len(used)} _tr strings — not the real {target}")
+            continue
+        for po in catalogs:
+            lang = po.split(os.sep)[-3]
+            try:
+                cat = build._po_parse(po)
+            except (ValueError, SystemExit) as e:   # build.py refuses a broken catalog
+                check(f"[{lang}] {target}: catalog readable", False, str(e)[:200])
+                continue
+            miss = sorted(m for m in used if not cat.get(m))
+            check(f"[{lang}] {target}: all {len(used)} _tr strings translated",
+                  not miss, "missing: " + "; ".join(repr(m[:60]) for m in miss[:5]))
 
     total = results["pass"] + results["fail"]
     print("\n" + "=" * 62)

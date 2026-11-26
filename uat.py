@@ -17,6 +17,8 @@ To exercise those, run the suites on a host that provides them (or set
 FC_UAT_SMB_URL / cloud creds in the environment).
 """
 import os
+import testtmp  # test data under ~/.cache/blitcp-tests, never /tmp (RAM)
+testtmp.use_test_tmp()
 import re
 import sys
 import shutil
@@ -110,22 +112,37 @@ def _detect_mounts(env):
 
 
 def _detect_smb(env):
-    """Set FC_UAT_SMB_* if a local Samba share answers, so the CLI suite runs the
-    SMB round-trip rather than skipping. Returns a label or None."""
+    """Set FC_UAT_SMB_* (in the environment of the suites it starts — never
+    written anywhere) if the test share of ~/.blitcp-uat.env answers, so the
+    CLI suite runs the SMB round-trip rather than skipping. Location and
+    credentials come only from that file (tests/uat_env.py: BLITCP_UAT_SMB_
+    HOST / _SHARE, BLITCP_UAT_SMB_USER / _PASS); a missing file, or one that
+    is not mode 600, stops the run with that reason. Returns a label or
+    None."""
     if env.get("FC_UAT_SMB_URL"):
         return env["FC_UAT_SMB_URL"] + " (from environment)"
-    if not shutil.which("smbclient"):
-        return None
-    url, user, pw = "smb://127.0.0.1/fcshare", "kai", "kapellakis"
+    sys.path.insert(0, os.path.join(HERE, "tests"))
+    import uat_env
     try:
+        vals = uat_env.load()
+    except uat_env.UatEnvError as e:
+        raise SystemExit("Error: test credentials: %s" % e) from None
+    host, share = vals.get("BLITCP_UAT_SMB_HOST"), vals.get("BLITCP_UAT_SMB_SHARE")
+    user, pw = vals.get("BLITCP_UAT_SMB_USER"), vals.get("BLITCP_UAT_SMB_PASS")
+    if not (host and share and user and pw) or not shutil.which("smbclient"):
+        return None
+    try:
+        # The password in smbclient's PASSWD variable: never on a command
+        # line (any process listing shows argv).
         r = subprocess.run(
-            ["smbclient", "//127.0.0.1/fcshare", "-U", f"{user}%{pw}", "-c", "ls"],
-            capture_output=True, timeout=15)
+            ["smbclient", "//%s/%s" % (host, share), "-U", user, "-c", "ls"],
+            capture_output=True, timeout=15,
+            env=dict(os.environ, PASSWD=pw))
         if r.returncode == 0:
-            env["FC_UAT_SMB_URL"] = url
+            env["FC_UAT_SMB_URL"] = "smb://%s/%s" % (host, share)
             env["FC_UAT_SMB_USER"] = user
             env["FC_UAT_SMB_PASS"] = pw
-            return url + " (local Samba)"
+            return "smb://%s/%s (test share)" % (host, share)
     except Exception:
         pass
     return None

@@ -16,6 +16,8 @@ Companion to uat_blitcp.py (CLI) and uat_gui.py (GUI). Add a scenario for
 every security/logic bug found (see the project's audit_uat convention).
 """
 import os
+import testtmp  # test data under ~/.cache/blitcp-tests, never /tmp (RAM)
+testtmp.use_test_tmp()
 import sys
 import stat
 import tarfile
@@ -360,10 +362,10 @@ def s_gui_password_not_on_argv(_tmp):
     try:
         app = QApplication.instance() or QApplication(sys.argv[:1])
         import blitcp_gui as gui
-        cls = getattr(gui, "BlitcpGUI", None) or getattr(gui, "FastCopyGUI", None)
+        cls = getattr(gui, "BlitcpGUI", None)
         if cls is None:
-            return False, ("neither BlitcpGUI nor FastCopyGUI exists in "
-                           "blitcp_gui — this check cannot verify anything")
+            return False, ("BlitcpGUI does not exist in blitcp_gui — this "
+                           "check cannot verify anything")
         w = cls()
     except Exception as e:                                  # noqa: BLE001
         return False, (f"the GUI would not construct: {type(e).__name__}: {e}"
@@ -383,6 +385,134 @@ def s_gui_password_not_on_argv(_tmp):
     return True, "SSH/SMB passwords passed via env var (--*-password-env), never on argv"
 
 
+# ---------------------------------------------------------------------------
+# sshd on 127.0.0.1, and why the SSH checks below are paced
+#
+# SEC-SSH-1/3/4/5 fail an SSH login on purpose. OpenSSH 9.8 and later answer
+# that with PerSourcePenalties, which is ON by default: every connection that
+# ends without logging in earns its source address a penalty, defaults
+# invaliduser:5s, authfail:5s, noauth:1s (connected and left without trying
+# to authenticate: a TCP port probe, a rejected host key, each of
+# ssh-keyscan's one-connection-per-key-type). Penalties from the same address
+# ADD UP while earlier ones are unexpired, and once 15s (min) has accrued
+# sshd drops every new connection from that address before it sends its
+# banner. paramiko reports that as "Error reading SSH protocol banner".
+#
+# That was the 1-in-3 failure of SEC-SSH-3/4/5. Seen in `journalctl -u ssh`
+# during those runs: "srclimit_penalise: 127.0.0.1/32: activating ipv4
+# penalty of 15.1 seconds for penalty: connections without attempting
+# authentication", then "drop connection ... penalty: ...". It is NOT
+# MaxStartups (10:30:100 by default): that throttles concurrent
+# unauthenticated connections, this runner opens one at a time, and sshd
+# logged no MaxStartups throttling.
+#
+# The fix lives here, so the suite passes against a default sshd:
+#   1. No penalty that is not the point of a check: one TCP probe for the
+#      whole suite instead of one per check; known_hosts written from the
+#      host's public key files instead of ssh-keyscan.
+#   2. Before a check that earns a penalty, wait until the previous one has
+#      expired, so what has accrued never comes near the 15s threshold.
+# Each check still runs exactly once. If sshd drops the connection anyway,
+# the check FAILS and says so (_sshd_dropped). It is not retried and not
+# skipped: a test that never reached authentication proved nothing.
+# ---------------------------------------------------------------------------
+_SSHD_PENALTY_NOAUTH = 1.0       # sshd_config(5) PerSourcePenalties defaults
+_SSHD_PENALTY_LOGIN = 5.0        # invaliduser / authfail
+_sshd_penalty_until = 0.0        # time.monotonic() when our last one expires
+_sshd_up = None                  # result of the one TCP probe
+
+
+def _sshd_booked(seconds):
+    """Record a penalty this process just caused (it expires `seconds` from
+    now, or extends one still pending, the way sshd accumulates it)."""
+    global _sshd_penalty_until
+    now = time.monotonic()
+    _sshd_penalty_until = max(_sshd_penalty_until, now) + seconds
+
+
+def _sshd_wait_clear():
+    """Block until every penalty this process caused has expired."""
+    wait = _sshd_penalty_until - time.monotonic()
+    if wait > 0:
+        time.sleep(wait + 0.25)
+
+
+def _sshd_listening():
+    """One TCP probe for the whole suite. A connect-and-close is a noauth
+    penalty, so it is booked like one."""
+    global _sshd_up
+    if _sshd_up is None:
+        import socket
+        s = socket.socket()
+        s.settimeout(2)
+        try:
+            s.connect(("127.0.0.1", 22))
+            _sshd_up = True
+        except OSError:
+            _sshd_up = False
+        finally:
+            s.close()
+        if _sshd_up:
+            _sshd_booked(_SSHD_PENALTY_NOAUTH)
+    return _sshd_up
+
+
+def _sshd_dropped(out):
+    """A failure message when sshd refused the connection before the SSH
+    banner, i.e. the check never reached the code it is meant to test."""
+    if "protocol banner" in out or "Connection reset" in out:
+        return ("sshd dropped the connection before its banner, so the check "
+                "never reached authentication. Look for 'penalty' in "
+                "`journalctl -u ssh` (PerSourcePenalties on 127.0.0.1) | "
+                f"output: {out.strip()[-160:]!r}")
+    return None
+
+
+def _known_hosts_line():
+    """known_hosts content for 127.0.0.1 from the host's own public keys,
+    which costs no connection. ssh-keyscan only when those are unreadable
+    (it opens one connection per key type, each a noauth penalty)."""
+    import glob
+    import subprocess
+    lines = []
+    # Linux: the files are the keys sshd serves, and reading them costs no
+    # connection (this box's sshd applies noauth penalties). Elsewhere they
+    # need not be: the macOS runner's /etc/ssh/*.pub did not match what its
+    # sshd presented (SEC-SSH-5, main runs 42100312320 and 42104418991) —
+    # there the server itself is asked.
+    pubs = (sorted(glob.glob("/etc/ssh/ssh_host_*_key.pub"))
+            if sys.platform.startswith("linux") else [])
+    for pub in pubs:
+        try:
+            with open(pub, encoding="ascii") as fh:
+                parts = fh.read().split()
+        except (OSError, UnicodeDecodeError):
+            continue
+        # Types paramiko can load; it ignores the rest, but a line it cannot
+        # parse is not worth the risk.
+        if len(parts) >= 2 and parts[0] in ("ssh-ed25519", "ssh-rsa",
+                                            "ecdsa-sha2-nistp256",
+                                            "ecdsa-sha2-nistp384",
+                                            "ecdsa-sha2-nistp521"):
+            lines.append(f"127.0.0.1 {parts[0]} {parts[1]}\n")
+    # Every type the server may offer must be there: paramiko compares an
+    # offered key whose type is not in known_hosts with the FIRST known key
+    # and reports a mismatch — the macOS runner (no readable ed25519 .pub
+    # beside an sshd that offers ed25519) failed SEC-SSH-5 that way. Ask the
+    # server for whatever the files did not give.
+    have = {ln.split()[1] for ln in lines}
+    want = {"ssh-ed25519": "ed25519", "ecdsa-sha2-nistp256": "ecdsa",
+            "ssh-rsa": "rsa"}
+    missing = [t for k, t in want.items() if k not in have]
+    if not missing:
+        return "".join(lines)
+    _sshd_wait_clear()
+    ks = subprocess.run(["ssh-keyscan", "-t", ",".join(missing), "127.0.0.1"],
+                        capture_output=True, text=True, timeout=30)
+    _sshd_booked(len(missing) * _SSHD_PENALTY_NOAUTH)
+    return "".join(lines) + ks.stdout
+
+
 def s_ssh_prompt_no_hang(tmp):
     """Regression (the GUI 'stuck at 0%' bug): an SSH auth prompt must NEVER block
     when there is no terminal to answer it — e.g. launched from the GUI via
@@ -392,15 +522,9 @@ def s_ssh_prompt_no_hang(tmp):
     The UAT used to only check that the GUI *builds* the right argv — never that the
     engine survives a no-TTY auth failure, which is why this slipped through."""
     import subprocess
-    import socket
-    s = socket.socket()
-    s.settimeout(2)
-    try:
-        s.connect(("127.0.0.1", 22))
-    except OSError:
+    if not _sshd_listening():
         return None, "no sshd on 127.0.0.1:22 — skipped"
-    finally:
-        s.close()
+    _sshd_wait_clear()
     p = subprocess.Popen(
         [sys.executable, os.path.abspath(fc.__file__),
          "fcuat_no_such_user_zzz@127.0.0.1:/etc/hostname",
@@ -409,11 +533,16 @@ def s_ssh_prompt_no_hang(tmp):
         stderr=subprocess.STDOUT, text=True, encoding="utf-8",
         errors="replace")
     try:
-        p.communicate(timeout=25)            # never feed stdin
+        out, _ = p.communicate(timeout=25)   # never feed stdin
     except subprocess.TimeoutExpired:
         p.kill()
         p.communicate()
         return False, "HUNG on an SSH prompt with no TTY — the GUI-freeze bug"
+    finally:
+        _sshd_booked(_SSHD_PENALTY_LOGIN)
+    dropped = _sshd_dropped(out)
+    if dropped:
+        return False, dropped
     if p.returncode == 0:
         return False, "auth unexpectedly succeeded (exit 0)"
     return True, f"bounded clean failure (exit {p.returncode}, no hang)"
@@ -441,15 +570,8 @@ def s_ssh_unknown_host_no_hang(tmp):
     Uses a destination that cannot be in known_hosts (an isolated HOME), so it
     exercises the prompt rather than the auth failure SEC-SSH-1 covers."""
     import subprocess
-    import socket
-    s = socket.socket()
-    s.settimeout(2)
-    try:
-        s.connect(("127.0.0.1", 22))
-    except OSError:
+    if not _sshd_listening():
         return None, "no sshd on 127.0.0.1:22 — skipped"
-    finally:
-        s.close()
     home = os.path.join(tmp, "home")
     os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
     src = os.path.join(tmp, "src")
@@ -464,6 +586,7 @@ def s_ssh_unknown_host_no_hang(tmp):
                 "BLITCP_CREDENTIALS": os.path.join(home, "credentials.json")})
     env.pop("BLITCP_CREDS_PASSPHRASE", None)
     env.pop("FAST_COPY_CREDS_PASSPHRASE", None)
+    _sshd_wait_clear()
     t0 = time.time()
     p = subprocess.Popen(
         [sys.executable, os.path.abspath(fc.__file__), src,
@@ -478,7 +601,12 @@ def s_ssh_unknown_host_no_hang(tmp):
         p.communicate()
         return False, ("HUNG for 10s with no TTY — an unattended backup would "
                        "sit at a host-key or passphrase prompt forever")
+    finally:
+        _sshd_booked(_SSHD_PENALTY_LOGIN)
     took = time.time() - t0
+    dropped = _sshd_dropped(out)
+    if dropped:
+        return False, dropped
     if p.returncode == 0:
         return False, f"exit 0 without any credentials (in {took:.1f}s)"
     named = any(k in out for k in ("Host key", "known_hosts", "authentication",
@@ -496,22 +624,13 @@ def _ssh_probe_run(tmp, seed_known_host=False, extra=()):
     neither read for keys nor written), stdin at /dev/null, and no credentials.
     Returns (returncode, output, seconds)."""
     import subprocess
-    import socket
-    s = socket.socket()
-    s.settimeout(2)
-    try:
-        s.connect(("127.0.0.1", 22))
-    except OSError:
+    if not _sshd_listening():
         return None, "no sshd on 127.0.0.1:22 — skipped", 0.0
-    finally:
-        s.close()
     home = os.path.join(tmp, "home")
     os.makedirs(os.path.join(home, ".ssh"), exist_ok=True)
     if seed_known_host:
-        ks = subprocess.run(["ssh-keyscan", "-H", "127.0.0.1"],
-                            capture_output=True, text=True, timeout=30)
         with open(os.path.join(home, ".ssh", "known_hosts"), "w") as fh:
-            fh.write(ks.stdout)
+            fh.write(_known_hosts_line())
     src = os.path.join(tmp, "src")
     os.makedirs(src, exist_ok=True)
     with open(os.path.join(src, "one.txt"), "w") as fh:
@@ -525,6 +644,7 @@ def _ssh_probe_run(tmp, seed_known_host=False, extra=()):
     for k in ("BLITCP_CREDS_PASSPHRASE", "FAST_COPY_CREDS_PASSPHRASE",
               "SSH_AUTH_SOCK"):
         env.pop(k, None)
+    _sshd_wait_clear()
     t0 = time.time()
     with open(os.devnull) as devnull:
         p = subprocess.Popen(
@@ -539,6 +659,8 @@ def _ssh_probe_run(tmp, seed_known_host=False, extra=()):
             p.kill()
             out, _ = p.communicate()
             return 124, out, time.time() - t0
+        finally:
+            _sshd_booked(_SSHD_PENALTY_LOGIN)
     return p.returncode, out, time.time() - t0
 
 
@@ -559,6 +681,9 @@ def s_ssh_unknown_host_no_fake_user(tmp):
     rc, out, took = _ssh_probe_run(tmp)
     if rc is None:
         return None, out
+    dropped = _sshd_dropped(out)
+    if dropped:
+        return False, dropped
     if rc == 124:
         return False, f"hung for {took:.0f}s with no TTY"
     if rc == 0:
@@ -592,20 +717,9 @@ def s_ssh_no_credentials_names_what_it_tried(tmp):
     rc, out, took = _ssh_probe_run(tmp, seed_known_host=True)
     if rc is None:
         return None, out
-    # sshd throttles a client that has just failed to authenticate several
-    # times (MaxStartups), and answers the next connection by dropping it
-    # before the banner. Auth never happened, so the auth message cannot be
-    # judged — one retry, then say so rather than blame the message.
-    for backoff in (5, 10, 20):
-        if "protocol banner" not in out and "Connection reset" not in out:
-            break
-        time.sleep(backoff)          # sshd's own rate limiter, not ours to rush
-        rc, out, took = _ssh_probe_run(tmp, seed_known_host=True)
-    else:
-        return None, ("sshd kept dropping the connection before the banner "
-                      "(rate limiting after the earlier auth-failure tests in "
-                      "this suite) — authentication never ran, so its message "
-                      "cannot be checked")
+    dropped = _sshd_dropped(out)
+    if dropped:
+        return False, dropped
     if rc == 124:
         return False, f"hung for {took:.0f}s"
     if rc == 0:

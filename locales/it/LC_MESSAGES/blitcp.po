@@ -143,9 +143,6 @@ msgstr "Disabilita la cifratura di trasporto SMB3 (attiva per impostazione prede
 msgid "Disable deduplication"
 msgstr "Disabilita la deduplicazione"
 
-msgid "Disable persistent hash cache (cross-run dedup database)"
-msgstr "Disabilita la cache hash persistente (database dedup tra esecuzioni)"
-
 msgid "Disk layout resolved: {n}/{total} files mapped"
 msgstr "Layout disco risolto: {n}/{total} file mappati"
 
@@ -437,14 +434,14 @@ msgstr "Imposta come sorgente"
 msgid "Show available updates and release notes"
 msgstr "Mostra aggiornamenti disponibili e note di rilascio"
 
-msgid "Show copy plan without copying"
-msgstr "Mostra il piano di copia senza copiare"
+msgid "Show the copy plan without copying. Reads every source file, and each file of the same size already at a destination; writes nothing there"
+msgstr "Mostra il piano di copia senza copiare. Legge ogni file di origine e ogni file della stessa dimensione già presente in una destinazione; non vi scrive nulla"
 
 msgid "Show version and exit"
 msgstr "Mostra la versione ed esci"
 
-msgid "Skip post-copy verification"
-msgstr "Salta la verifica post-copia"
+msgid "Skip post-copy verification. A file cloned from the source (reflink) is still read back once: that read gives it the hash its records keep"
+msgstr "Salta la verifica dopo la copia. Un file clonato dall'origine (reflink) viene comunque riletto una volta: quella lettura gli dà l'hash che i suoi registri conservano"
 
 msgid "Skip space check, copy even if not enough space"
 msgstr "Salta il controllo spazio; copia anche se insufficiente"
@@ -655,7 +652,6 @@ msgstr "subcommands:\n  creds <sub>      Gestisce i profili di connessione cloud
 
 msgid "Message language: {langs}. Overrides BLITCP_LANG and the system locale. Machine output (--log-file) stays English."
 msgstr "Lingua dei messaggi: {langs}. Prevale su BLITCP_LANG e sul locale di sistema. L'output macchina (--log-file) resta in inglese."
-
 
 # GUI deep-path strings + Settings/language section (2026-08-06)
 msgid "Access denied — run as Administrator to browse this folder"
@@ -949,7 +945,6 @@ msgstr "orari"
 msgid "xattr"
 msgstr "xattr"
 
-
 msgid "Small files"
 msgstr "File piccoli"
 
@@ -964,9 +959,6 @@ msgstr "Come vengono copiati i file sotto 1 MB nei trasferimenti locali: un pool
 
 msgid "Small-file engine for local copies: 'parallel' = worker pool (threads x4, default), 'stream' = single-threaded tar block-stream"
 msgstr "Motore per file piccoli nelle copie locali: 'parallel' = pool di worker (thread x4, predefinito), 'stream' = tar block-stream a thread singolo"
-
-msgid "subcommands:\n  creds <sub>      Manage saved cloud/SSH connection profiles in the\n                   credentials file: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Run 'blitcp creds' for help.\n  ls <target>      List a cloud location (saved connection name or\n                   s3:// / az:// / gs:// URL) or a remote SSH directory\n                   (saved ssh connection or user@host:/path, via SFTP).\n                   Alias: list-objects. Run 'blitcp ls -h' for help.\n\nexamples:\n  blitcp /data /media/usb/data           local  → local\n  blitcp /data user@host:/backup         local  → remote (SSH)\n  blitcp user@host:/data /local/backup   remote → local\n  blitcp /data s3://bucket/backup        local  → cloud\n  blitcp creds add aws-dev               save a connection profile\n  blitcp ls aws-dev                      list a saved cloud connection\n  blitcp ls user@host:/var/log           list a remote SSH directory\n"
-msgstr "sottocomandi:\n  creds <sub>      Gestione dei profili di connessione cloud/SSH salvati nel\n                   file delle credenziali: add, list, edit, remove, test,\n                   encrypt/decrypt, lock. Aiuto: 'blitcp creds'.\n  ls <target>      Elenca una posizione cloud (nome di connessione salvata o\n                   URL s3:// / az:// / gs://) o una directory SSH remota\n                   (connessione ssh salvata o user@host:/percorso, via SFTP).\n                   Alias: list-objects. Aiuto: 'blitcp ls -h'.\n\nesempi:\n  blitcp /data /media/usb/data           locale  → locale\n  blitcp /data user@host:/backup         locale  → remoto (SSH)\n  blitcp user@host:/data /local/backup   remoto → locale\n  blitcp /data s3://bucket/backup        locale  → cloud\n  blitcp creds add aws-dev               salva un profilo di connessione\n  blitcp ls aws-dev                      elenca una connessione cloud salvata\n  blitcp ls user@host:/var/log           elenca una directory SSH remota\n"
 
 msgid "Transfer over pure SFTP — never run commands on the server. For SFTP-only endpoints (managed gateways, restricted accounts) that close the exec channel. Incremental and verify work; dedup links and remote space check are skipped."
 msgstr "Trasferimento via SFTP puro — nessun comando viene mai eseguito sul server. Per endpoint solo-SFTP (gateway gestiti, account con restrizioni) che chiudono il canale exec. Incrementale e verify funzionano; i link di dedup e il controllo dello spazio remoto vengono saltati."
@@ -1024,8 +1016,6 @@ msgstr "{n} solo per esistenza + dimensione: link e cloni"
 
 msgid "{n} not content-checked: source unreadable"
 msgstr "{n} senza verifica del contenuto: sorgente illeggibile"
-
-
 
 msgid "Checked {n} remote path(s)"
 msgstr "Verificati {n} percorso/i sul remoto"
@@ -1221,3 +1211,2490 @@ msgstr "Connessione a {0}…"
 
 msgid "Showing the first {0} of {1} entries"
 msgstr "Mostrate le prime {0} di {1} voci"
+
+msgid "Not verified: the destination has no hash tool (xxh128sum / sha256sum / md5sum)."
+msgstr "Non verificato: la destinazione non ha uno strumento di hash (xxh128sum / sha256sum / md5sum)."
+
+msgid "Verification failed: {n} of {t} objects"
+msgstr "Verifica non riuscita: {n} di {t} oggetti"
+
+msgid "Verifying {n} objects against the store's checksums..."
+msgstr "Verifica di {n} oggetti con i checksum dello storage..."
+
+msgid "content differs from the source (store MD5)"
+msgstr "il contenuto differisce dalla sorgente (MD5 dello storage)"
+
+msgid "content differs from the source (store SHA-256)"
+msgstr "il contenuto differisce dalla sorgente (SHA-256 dello storage)"
+
+msgid "could not be checked ({err})"
+msgstr "impossibile verificare ({err})"
+
+msgid "no hash returned by the destination: {name}"
+msgstr "nessun hash restituito dalla destinazione: {name}"
+
+msgid "not found on the destination"
+msgstr "non trovato nella destinazione"
+
+msgid "on remote"
+msgstr "sull'host remoto"
+
+msgid "size differs on the destination"
+msgstr "la dimensione differisce nella destinazione"
+
+msgid "{n} by existence + size only"
+msgstr "{n} solo per esistenza + dimensione"
+
+msgid "{n} by existence + size only (the store keeps no checksum for it)"
+msgstr "{n} solo per esistenza + dimensione (lo storage non conserva un checksum)"
+
+msgid "{n} hashed on the remote host"
+msgstr "{n} con hash sull'host remoto"
+
+msgid "{n} hashed on the remote host (random sample)"
+msgstr "{n} con hash sull'host remoto (campione casuale)"
+
+msgid "{n} matched the hash recorded at upload"
+msgstr "{n} corrispondono all'hash registrato al caricamento"
+
+msgid "{n} matched the store's own MD5"
+msgstr "{n} corrispondono all'MD5 dello storage"
+
+msgid "{n} matched the store's own SHA-256"
+msgstr "{n} corrispondono allo SHA-256 dello storage"
+
+msgid "{n} read back from the disk (O_DIRECT)"
+msgstr "{n} riletti dal disco (O_DIRECT)"
+
+msgid "{n} read back over the network"
+msgstr "{n} riletti via rete"
+
+msgid "{n} read back through the OS cache (may not reflect the disk)"
+msgstr "{n} riletti attraverso la cache del SO (potrebbe non riflettere il disco)"
+
+msgid "✓ All {n} files present{where}, sizes match — content not compared"
+msgstr "✓ Tutti i {n} file presenti{where}, dimensioni corrispondenti — contenuto non confrontato"
+
+msgid "✓ All {n} objects present{where}, sizes match — content not compared"
+msgstr "✓ Tutti i {n} oggetti presenti{where}, dimensioni corrispondenti — contenuto non confrontato"
+
+msgid "✓ Verified: all {n} files OK{where}"
+msgstr "✓ Verificato: tutti i {n} file OK{where}"
+
+msgid "✓ Verified: all {n} objects OK{where}"
+msgstr "✓ Verificato: tutti i {n} oggetti OK{where}"
+
+msgid "cannot create the destination: {err}"
+msgstr "impossibile creare la destinazione: {err}"
+
+msgid "content differs from the source"
+msgstr "il contenuto differisce dalla sorgente"
+
+msgid "could not be read back from the destination"
+msgstr "non è stato possibile rileggerlo dalla destinazione"
+
+msgid "destination is not writable: {err}"
+msgstr "la destinazione non è scrivibile: {err}"
+
+msgid "not enough free space: {need} needed, {free} free"
+msgstr "spazio libero insufficiente: servono {need}, liberi {free}"
+
+msgid "--dest needs at least one source."
+msgstr "--dest richiede almeno una sorgente."
+
+msgid "--dest {dest} is given twice."
+msgstr "--dest {dest} è indicato due volte."
+
+msgid "--dest {dest} is inside the source {src}."
+msgstr "--dest {dest} si trova dentro la sorgente {src}."
+
+msgid "--dest {dest}: only local destinations are supported with --dest in this version."
+msgstr "--dest {dest}: in questa versione --dest supporta solo destinazioni locali."
+
+msgid "--fanout-buffer must be at least 1 MB."
+msgstr "--fanout-buffer deve essere almeno 1 MB."
+
+msgid "--stall-timeout must be at least 1 second."
+msgstr "--stall-timeout deve essere almeno 1 secondo."
+
+msgid "A destination that makes no progress for this long is marked FAILED and the others carry on (default: {n})"
+msgstr "Una destinazione che non fa progressi per questo tempo viene segnata come FALLITA e le altre proseguono (predefinito: {n})"
+
+msgid "A destination; repeat for several. The source is read once and written to every destination at the same time. With --dest, every positional argument is a source. A destination is a local folder, an SSH folder (user@host:/path, or a saved connection NAME:path), an SMB share (smb://server/share/path) or an object store (s3://, az://, gs://)."
+msgstr "Una destinazione; ripetere per più destinazioni. L'origine viene letta una volta e scritta in tutte le destinazioni contemporaneamente. Con --dest, ogni argomento posizionale è un'origine. Una destinazione è una cartella locale, una cartella SSH (user@host:/percorso, o una connessione salvata NOME:percorso), una condivisione SMB (smb://server/condivisione/percorso) o un archivio di oggetti (s3://, az://, gs://)."
+
+msgid "An unfinished file was left behind: {path}"
+msgstr "È rimasto un file incompleto: {path}"
+
+msgid "Destinations"
+msgstr "Destinazioni"
+
+msgid "FAILED: {reason}"
+msgstr "FALLITA: {reason}"
+
+msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
+msgstr "Memoria per i dati letti ma non ancora scritti su ogni destinazione; quando è piena, la destinazione più lenta detta il ritmo (predefinito: {n})"
+
+msgid "Pre-flight failed; no file was written."
+msgstr "Controllo preliminare non superato; nessun file è stato scritto."
+
+msgid "These counts do not add up to {n} files; treat this destination as unverified."
+msgstr "Questi conteggi non danno {n} file in totale; considerare questa destinazione non verificata."
+
+msgid "Two sources are both named {name}; they would land on top of each other."
+msgstr "Due sorgenti si chiamano entrambe {name}; finirebbero l'una sopra l'altra."
+
+msgid "copied"
+msgstr "copiato"
+
+msgid "copying"
+msgstr "copia in corso"
+
+msgid "done"
+msgstr "completato"
+
+msgid "one read, {n} destinations"
+msgstr "una lettura, {n} destinazioni"
+
+msgid "refused: {why}"
+msgstr "rifiutato: {why}"
+
+msgid "several destinations"
+msgstr "più destinazioni"
+
+msgid "source: {rel}: {why}"
+msgstr "sorgente: {rel}: {why}"
+
+msgid "stalled: no progress for {n} s"
+msgstr "bloccata: nessun progresso per {n} s"
+
+msgid "verifying"
+msgstr "verifica in corso"
+
+msgid "waiting"
+msgstr "in attesa"
+
+msgid "{bad} of {n} files failed verification"
+msgstr "{bad} di {n} file non hanno superato la verifica"
+
+msgid "{copied} written · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{copied} scritti · {refused} rifiutati · {failed} non riusciti · {src} illeggibili alla sorgente"
+
+msgid "{dests} are on the same device — this reduces redundancy and throughput."
+msgstr "{dests} si trovano sullo stesso dispositivo: questo riduce la ridondanza e il throughput."
+
+msgid "{n} files written, not verified (--no-verify)"
+msgstr "{n} file scritti, non verificati (--no-verify)"
+
+msgid "{n} files, {size}"
+msgstr "{n} file, {size}"
+
+msgid "{n} not written (the destination failed)"
+msgstr "{n} non scritti (la destinazione è fallita)"
+
+msgid "{opt} is not supported with --dest yet."
+msgstr "{opt} non è ancora supportato con --dest."
+
+msgid "{path}: no such source. With --dest, every positional argument is a source; give each destination with --dest."
+msgstr "{path}: sorgente inesistente. Con --dest ogni argomento posizionale è una sorgente; indicare ogni destinazione con --dest."
+
+msgid "{src}: only local sources are supported with --dest in this version."
+msgstr "{src}: in questa versione --dest supporta solo sorgenti locali."
+
+msgid "--dest is empty. Give a path (an empty one would mean the current directory)."
+msgstr "--dest è vuoto. Indicare un percorso (uno vuoto significherebbe la directory corrente)."
+
+msgid "--dest {dest} contains the source {src}."
+msgstr "--dest {dest} contiene la sorgente {src}."
+
+msgid "--dest {inner} is inside --dest {outer}; the two copies would write the same files."
+msgstr "--dest {inner} si trova dentro --dest {outer}; le due copie scriverebbero gli stessi file."
+
+msgid "{rel}: would be written into the source {src}"
+msgstr "{rel}: verrebbe scritto dentro la sorgente {src}"
+
+msgid "Incomplete: {n} of {total} files are not at this destination"
+msgstr "Incompleta: {n} file su {total} non sono in questa destinazione"
+
+msgid "this destination path is a source file (the same file on disk); it was not replaced"
+msgstr "questo percorso di destinazione è un file della sorgente (lo stesso file su disco); non è stato sostituito"
+
+msgid "this destination path already holds another file from this run (on a case-insensitive destination two names can be one); it was not replaced"
+msgstr "questo percorso di destinazione contiene già un altro file di questa esecuzione (su una destinazione che non distingue le maiuscole due nomi possono essere uno); non è stato sostituito"
+
+msgid "Not verified: the source changed during the run"
+msgstr "Non verificata: la sorgente è cambiata durante l'esecuzione"
+
+msgid "{n} source files changed during the run (another identity, size or modification time, or gone); no copy of this run is called verified."
+msgstr "{n} file della sorgente sono cambiati durante l'esecuzione (altra identità, dimensione o data di modifica, oppure spariti); nessuna copia di questa esecuzione è considerata verificata."
+
+msgid "{src} has no name of its own (a drive or filesystem root); with several sources, each one needs a name to land under."
+msgstr "{src} non ha un nome proprio (un'unità o la radice di un filesystem); con più sorgenti, ognuna ha bisogno di un nome sotto cui essere copiata."
+
+msgid "this destination folder is inside a source folder (the same folder on disk); nothing was written there"
+msgstr "questa cartella di destinazione si trova dentro una cartella della sorgente (la stessa cartella su disco); lì non è stato scritto nulla"
+
+msgid "--dest {a} and --dest {b} are the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} e --dest {b} sono la stessa cartella su disco; è una copia, non due."
+
+msgid "--dest {a} and --dest {b} would write into the same folder on disk; that is one copy, not two."
+msgstr "--dest {a} e --dest {b} scriverebbero nella stessa cartella su disco; è una copia, non due."
+
+msgid "An unfinished file may have been left behind: {path}"
+msgstr "Potrebbe essere rimasto un file incompleto: {path}"
+
+msgid "--dest does not run elevated (sudo or root) yet."
+msgstr "--dest non viene ancora eseguito con privilegi elevati (sudo o root)."
+
+msgid "stalled during pre-flight: no answer for {n} s"
+msgstr "bloccata nel controllo preliminare: nessuna risposta per {n} s"
+
+msgid "The source is on {fs}, whose timestamps are too coarse to notice a file rewritten in place at the same size while it was being read; for such a rewrite, 'changed during the run' cannot be ruled out."
+msgstr "La sorgente è su {fs}, i cui timestamp sono troppo grossolani per accorgersi di un file riscritto sul posto con la stessa dimensione mentre veniva letto; per una riscrittura del genere non si può escludere «modificato durante l'esecuzione»."
+
+msgid "{size} written · {time} for this destination"
+msgstr "{size} scritti · {time} per questa destinazione"
+
+msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
+msgstr "Legge le destinazioni da FILE, una per riga, come se ciascuna fosse data con --dest. Le righe vuote e quelle il cui primo carattere non spazio è # vengono saltate; nient'altro di una riga viene rimosso. Ripetibile."
+
+msgid "A name for this copy, shown in the summary and recorded with the result."
+msgstr "Un nome per questa copia, mostrato nel riepilogo e registrato con il risultato."
+
+msgid "--dests-file {path}: cannot read it ({why})"
+msgstr "--dests-file {path}: impossibile leggerlo ({why})"
+
+msgid "--dests-file {path} names no destination."
+msgstr "--dests-file {path} non indica alcuna destinazione."
+
+msgid "--job-name goes with --dest or --dests-file."
+msgstr "--job-name va usato con --dest o --dests-file."
+
+msgid "--job-name must be 1 to 200 printable characters on one line."
+msgstr "--job-name deve avere da 1 a 200 caratteri stampabili su una riga."
+
+msgid "Job: {name}"
+msgstr "Lavoro: {name}"
+
+msgid "Metadata not applied: {n} item(s) — elevated run with no safe handle on the file (never set through a path when elevated)"
+msgstr "Metadati non applicati: {n} elemento/i — esecuzione con privilegi elevati senza un handle sicuro sul file (con privilegi elevati non vengono mai impostati tramite un percorso)"
+
+msgid "'{name}' is both a folder here and a saved connection. Write ./{name} for the folder, or {name}: for the connection."
+msgstr "'{name}' è qui sia una cartella sia una connessione salvata. Scrivi ./{name} per la cartella o {name}: per la connessione."
+
+msgid "'{name}' is both a file here and a saved connection. Write ./{name} for the file, or {name}: for the connection."
+msgstr "'{name}' è qui sia un file sia una connessione salvata. Scrivi ./{name} per il file o {name}: per la connessione."
+
+msgid "{rel}: the destination folder was replaced during the run (not followed when elevated)"
+msgstr "{rel}: la cartella di destinazione è stata sostituita durante l'esecuzione (non seguita con privilegi elevati)"
+
+msgid "{rel}: a symlinked folder on the way (not followed when elevated)"
+msgstr "{rel}: una cartella lungo il percorso è un collegamento simbolico (non seguita con privilegi elevati)"
+
+msgid "replaced since the scan; not copied when elevated"
+msgstr "sostituito dopo la scansione; non copiato con privilegi elevati"
+
+msgid "--dest {name} is a saved connection; only local folders are destinations with --dest in this version. For a local folder of that name, write ./{name}."
+msgstr "--dest {name} è una connessione salvata; in questa versione solo le cartelle locali possono essere destinazioni con --dest. Per una cartella locale con quel nome, scrivi ./{name}."
+
+msgid "its ASC MHL history cannot be read ({why})"
+msgstr "la sua cronologia ASC MHL non può essere letta ({why})"
+
+msgid "its ASC MHL history does not match its chain file ({path})"
+msgstr "la sua cronologia ASC MHL non corrisponde al file della catena ({path})"
+
+msgid "no manifest written, the history was left as it is"
+msgstr "nessun manifest scritto, la cronologia è rimasta com'era"
+
+msgid "{n} names cannot be written into the ASC MHL file (control characters); they are in {list} only"
+msgstr "{n} nomi non possono essere scritti nel file ASC MHL (caratteri di controllo); sono solo in {list}"
+
+msgid "no manifest: the xxhash package is not installed"
+msgstr "nessun manifest: il pacchetto xxhash non è installato"
+
+msgid "the manifest could not be written: {why}"
+msgstr "impossibile scrivere il manifest: {why}"
+
+msgid "Manifest: {mhl} and {lst}"
+msgstr "Manifest: {mhl} e {lst}"
+
+msgid "manifest"
+msgstr "manifest"
+
+msgid "{rel}: not a regular file"
+msgstr "{rel}: non è un file regolare"
+
+msgid "{rel}: too large for a manifest"
+msgstr "{rel}: troppo grande per un manifest"
+
+msgid "Check a destination against its own manifest (ascmhl/ or blitcp.xxh128), without the source: every file it lists is read back and hashed. Writes nothing."
+msgstr "Controlla una destinazione rispetto al proprio manifest (ascmhl/ o blitcp.xxh128), senza l'origine: ogni file elencato viene riletto e ne viene calcolato l'hash. Non scrive nulla."
+
+msgid "--verify-manifest takes only the destination to check."
+msgstr "--verify-manifest accetta solo la destinazione da controllare."
+
+msgid "--verify-manifest needs the xxhash package."
+msgstr "--verify-manifest richiede il pacchetto xxhash."
+
+msgid "{dest}: no answer for {n} s"
+msgstr "{dest}: nessuna risposta per {n} s"
+
+msgid "{dest}: no such folder"
+msgstr "{dest}: cartella inesistente"
+
+msgid "{dest} has no manifest ({mhl}/ or {lst})."
+msgstr "{dest} non ha un manifest ({mhl}/ o {lst})."
+
+msgid "checking {dest} against its manifest ({n} files)"
+msgstr "controllo di {dest} rispetto al suo manifest ({n} file)"
+
+msgid "{k} of {n} checked"
+msgstr "{k} di {n} controllati"
+
+msgid "All {n} files match the manifest"
+msgstr "Tutti i {n} file corrispondono al manifest"
+
+msgid "{bad} of {n} files do not match the manifest ({differ} differ, {missing} missing)"
+msgstr "{bad} di {n} file non corrispondono al manifest ({differ} diversi, {missing} mancanti)"
+
+msgid "{rel}: missing"
+msgstr "{rel}: mancante"
+
+msgid "Up to date: the source matches the xxh128 its manifest records for all {n} files, and each is there at the recorded size; not read back this run — blitcp --verify-manifest checks them"
+msgstr "Aggiornata: l'origine corrisponde all'xxh128 che il suo manifest registra per tutti i {n} file, e ognuno è presente con la dimensione registrata; non riletti in questa esecuzione — blitcp --verify-manifest li controlla"
+
+msgid "{n} unchanged — the source matches the xxh128 its manifest records, and each is there at the recorded size; not written or read back again"
+msgstr "{n} invariati — l'origine corrisponde all'xxh128 che il suo manifest registra, e ognuno è presente con la dimensione registrata; non riscritti né riletti"
+
+msgid "{n} files were read a second time: read to compare with what the destination recorded for them, found changed, and read again to be written"
+msgstr "{n} file sono stati letti una seconda volta: letti per confrontarli con quanto la destinazione ne registrava, risultati modificati e riletti per essere scritti"
+
+msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
+msgstr "{n} file qui sono una nuova versione di un file già presente nella sua cronologia ASC MHL; ascmhl li confronterà con il record precedente (ASC MHL presume che i supporti non cambino). blitcp --verify-manifest e {lst} controllano la versione attuale."
+
+msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
+msgstr "Riprende un'esecuzione --dest interrotta: i file già scritti, la cui dimensione, data e xxh128 corrispondono ancora all'origine, non vengono ricopiati (quelli non ancora verificati vengono riletti e verificati ora)."
+
+msgid "--resume goes with --dest or --dests-file."
+msgstr "--resume va usato con --dest o --dests-file."
+
+msgid "the resume journal could not be written: {why}"
+msgstr "impossibile scrivere il diario di ripresa: {why}"
+
+msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
+msgstr "Sostituisce un file che il manifest di una destinazione registra con un contenuto diverso (per impostazione predefinita viene mantenuto e segnalato: le videocamere ricominciano i nomi dei clip su ogni scheda)."
+
+msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
+msgstr "{n} file esistono qui con contenuto diverso — mantenuti così come sono, non sovrascritti (--overwrite-changed li sostituisce; una cartella per scheda evita il conflitto)"
+
+msgid "… and {n} more"
+msgstr "… e altri {n}"
+
+msgid "not written: running as {user} needs Python 3.9 or later"
+msgstr "non scritto: eseguire come {user} richiede Python 3.9 o successivo"
+
+msgid "not written: cannot act as {user}"
+msgstr "non scritto: impossibile agire come {user}"
+
+msgid "no host name to record"
+msgstr "nessun nome host da registrare"
+
+msgid "Warning: {old} is deprecated and stops working in 5.0 — use {new}."
+msgstr "Avviso: {old} è deprecato e smetterà di funzionare nella 5.0 — usa {new}."
+
+msgid "blitcp-gui cannot start: PySide6 {qt} crashes on Python older than {good}. Install another version (pip install \"PySide6!={qt}\") or use Python {good} or later."
+msgstr "blitcp-gui non può avviarsi: PySide6 {qt} va in crash su Python precedente alla {good}. Installa un'altra versione (pip install \"PySide6!={qt}\") oppure usa Python {good} o successivo."
+
+msgid "Note: the SSH dedup cache is not kept between runs under sudo — it lives in your home folder, which this run does not write as root."
+msgstr "Nota: la cache di deduplicazione SSH non viene conservata tra un'esecuzione e l'altra con sudo — si trova nella tua cartella home, in cui questa esecuzione non scrive come root."
+
+msgid "not written: a frozen build cannot act as {user}"
+msgstr "non scritto: una build impacchettata non può agire come {user}"
+
+msgid "{dir} is not writable by {user} (an earlier blitcp run under sudo may have created it as root). Fix: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+msgstr "{dir} non è scrivibile da {user} (un'esecuzione precedente di blitcp con sudo potrebbe averla creata come root). Soluzione: sudo chown -R {user} \"{dir}\" && chmod -R u+w \"{dir}\""
+
+msgid "Note: {path} not saved: {why}"
+msgstr "Nota: {path} non salvato: {why}"
+
+msgid "cannot connect: {err}"
+msgstr "impossibile connettersi: {err}"
+
+msgid "content differs on the remote host"
+msgstr "il contenuto differisce sull'host remoto"
+
+msgid "no hash came back from the remote host"
+msgstr "l'host remoto non ha restituito alcun hash"
+
+msgid "not written by this run"
+msgstr "non scritto da questa esecuzione"
+
+msgid "the bytes sent differ from the bytes read"
+msgstr "i byte inviati differiscono da quelli letti"
+
+msgid "{path} is a symlink to {where}: the files would land somewhere else than the folder named; nothing was written"
+msgstr "{path} è un collegamento simbolico a {where}: i file finirebbero altrove rispetto alla cartella indicata; non è stato scritto nulla"
+
+msgid "{src}: an SSH source must be the only source of a --dest run."
+msgstr "{src}: una sorgente SSH deve essere l'unica sorgente di un'esecuzione con --dest."
+
+msgid "--ssh-no-sftp is not supported with --dest: the fan-out reads and writes SSH over SFTP."
+msgstr "--ssh-no-sftp non è supportato con --dest: la distribuzione legge e scrive SSH tramite SFTP."
+
+msgid "no such folder or file on the remote ({err})"
+msgstr "nessuna cartella o file con questo nome sull'host remoto ({err})"
+
+msgid "not listed on the remote"
+msgstr "non elencato sull'host remoto"
+
+msgid "the remote listing ended with exit code {rc}"
+msgstr "l'elenco remoto è terminato con il codice di uscita {rc}"
+
+msgid "the remote listing is larger than {n} MB; copy a smaller folder"
+msgstr "l'elenco remoto supera {n} MB; copia una cartella più piccola"
+
+msgid "{rel}: the name is not UTF-8, and SFTP cannot carry it"
+msgstr "{rel}: il nome non è UTF-8 e SFTP non può trasportarlo"
+
+msgid "--dest {a} and --dest {b} are the same place, reached two ways; that is one copy, not two."
+msgstr "--dest {a} e --dest {b} sono lo stesso posto, raggiunto in due modi; è una copia, non due."
+
+msgid "--dest {dest}: not a destination blitcp can write. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--dest {dest}: non è una destinazione su cui blitcp può scrivere. Indicate una cartella locale, user@host:/percorso, s3:// az:// gs://, smb://host/share o una connessione salvata come NOME: o NOME:percorso."
+
+msgid "--dest {name} is a saved connection: write {name}: to copy to it, or ./{name} for a local folder of that name."
+msgstr "--dest {name} è una connessione salvata: scrivete {name}: per copiarvi, oppure ./{name} per una cartella locale con quel nome."
+
+msgid "SMB password: "
+msgstr "Password SMB: "
+
+msgid "a Windows device name (CON, NUL, COM1…) is not a file on a share"
+msgstr "un nome di dispositivo Windows (CON, NUL, COM1…) non è un file su una condivisione"
+
+msgid "a share cannot hold \\ : * ? \" < > | or control characters in a name"
+msgstr "una condivisione non ammette \\ : * ? \" < > | o caratteri di controllo in un nome"
+
+msgid "a share may drop a trailing dot or space, making this name another file's"
+msgstr "una condivisione può eliminare un punto o uno spazio finale, rendendo questo nome quello di un altro file"
+
+msgid "content differs on the destination"
+msgstr "il contenuto differisce nella destinazione"
+
+msgid "the probe object {key} could not be removed: {err}"
+msgstr "impossibile rimuovere l'oggetto di prova {key}: {err}"
+
+msgid "{rel}: the name is not UTF-8, and an object store cannot hold it"
+msgstr "{rel}: il nome non è UTF-8 e un archivio di oggetti non può contenerlo"
+
+msgid "{rel}: the share cannot store this name"
+msgstr "{rel}: la condivisione non può memorizzare questo nome"
+
+msgid "Spool folder {path} cannot be used ({err}); spilling to {tmp}, which may be memory. Set BLITCP_SPOOL_DIR to a folder on disk."
+msgstr "Impossibile usare la cartella di spool {path} ({err}); l'eccedenza va in {tmp}, che può essere memoria. Impostate BLITCP_SPOOL_DIR su una cartella su disco."
+
+msgid "--deep goes with --verify-manifest."
+msgstr "--deep va con --verify-manifest."
+
+msgid "--verify-manifest {dest}: not a destination blitcp can check. Give a local folder, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME: or NAME:path."
+msgstr "--verify-manifest {dest}: non è una destinazione che blitcp può verificare. Indicate una cartella locale, user@host:/percorso, s3:// az:// gs://, smb://host/share o una connessione salvata come NOME: o NOME:percorso."
+
+msgid "All {n} files are present with the sizes the manifest records — content not compared; --deep reads them back and hashes them"
+msgstr "Tutti i {n} file sono presenti con le dimensioni registrate nel manifest — contenuto non confrontato; --deep li rilegge e ne calcola l'hash"
+
+msgid "With --verify-manifest on an SSH, SMB or object-store destination: download every file and hash it here, instead of asking the remote host or the store."
+msgstr "Con --verify-manifest su una destinazione SSH, SMB o object storage: scarica ogni file e ne calcola qui l'hash, invece di chiedere all'host remoto o all'archivio."
+
+msgid "cannot check whether --dest {a} and --dest {b} are one place ({why}); no file was written. Fix that destination, or copy to them in separate runs."
+msgstr "impossibile verificare se --dest {a} e --dest {b} sono lo stesso posto ({why}); nessun file è stato scritto. Correggete quella destinazione o copiate in esecuzioni separate."
+
+msgid "its own probe, just written, is not in the remote listing"
+msgstr "il suo file di prova, appena scritto, non compare nell'elenco remoto"
+
+msgid "its own probe, just written, is not in the store's listing"
+msgstr "il suo oggetto di prova, appena scritto, non compare nell'elenco dell'archivio"
+
+msgid "its own probe, just written, is not visible"
+msgstr "il suo file di prova, appena scritto, non è visibile"
+
+msgid "no answer for {n} s"
+msgstr "nessuna risposta per {n} s"
+
+msgid "no probe could be written to {d}: {why}"
+msgstr "impossibile scrivere un file di prova in {d}: {why}"
+
+msgid "not a regular file"
+msgstr "non è un file regolare"
+
+msgid "size differs from the manifest"
+msgstr "la dimensione differisce dal manifest"
+
+msgid "the object carries none of blitcp's hashes (replaced, or written by another tool); --deep compares its bytes"
+msgstr "l'oggetto non porta nessuno degli hash di blitcp (sostituito, o scritto da un altro strumento); --deep ne confronta i byte"
+
+msgid "the object is not the one the manifest records (its hash differs); --deep compares its bytes"
+msgstr "l'oggetto non è quello registrato nel manifest (il suo hash differisce); --deep ne confronta i byte"
+
+msgid "{n} of them by size only; --deep reads every file back and hashes it"
+msgstr "{n} di essi solo per dimensione; --deep rilegge ogni file e ne calcola l'hash"
+
+msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
+msgstr "Verifica una destinazione — cartella locale, cartella SSH, condivisione SMB o bucket — con il proprio manifest (ascmhl/ o blitcp.xxh128), senza la sorgente, al livello che offre: riletta, hash calcolato dall'host remoto, o il checksum dell'archivio stesso (--deep rilegge ogni file). Non scrive nulla."
+
+msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
+msgstr "--deep-verify va con --dest (con --verify-manifest usate --deep)."
+
+msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
+msgstr "--deep-verify {dest} non è una delle destinazioni --dest (indicatela esattamente come per --dest, oppure 'all')."
+
+msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
+msgstr "Verifica la --dest indicata (ripetibile; 'all' per tutte) scaricando ogni file inviatole e calcolandone qui l'hash, invece del checksum dell'archivio o dell'hash dell'host remoto. Per i blob Azure da 8 MiB in su (scarico di video) è l'unico controllo del contenuto: Azure non conserva un checksum per essi."
+
+msgid "content differs from the source (store CRC)"
+msgstr "il contenuto differisce dalla sorgente (CRC dell'archivio)"
+
+msgid "nothing under {src}"
+msgstr "niente sotto {src}"
+
+msgid "the store's checksum differs from the one the manifest records; --deep compares its bytes"
+msgstr "il checksum dell'archivio differisce da quello registrato nel manifest; --deep ne confronta i byte"
+
+msgid "{n} matched the store's own full-object CRC"
+msgstr "{n} corrispondevano al CRC dell'oggetto intero dell'archivio"
+
+msgid "{n} object(s) were rewritten in place (a server-side copy) to carry their metadata: this endpoint took no full-object checksum at upload. Each copy rewrites the whole object; on stores with a minimum storage duration (Wasabi, Backblaze B2) the replaced copy may be billed."
+msgstr "{n} oggetto/i sono stati riscritti sul posto (una copia lato server) per portare i loro metadati: questo endpoint non ha accettato un checksum dell'oggetto intero al caricamento. Ogni copia riscrive l'intero oggetto; negli archivi con durata minima di conservazione (Wasabi, Backblaze B2) la copia sostituita può essere addebitata."
+
+msgid "{src}: a remote source must be the only source of a --dest run."
+msgstr "{src}: una sorgente remota deve essere l'unica sorgente di un'esecuzione --dest."
+
+msgid "{src}: not a source blitcp can read with --dest. Give a local folder or file, user@host:/path, s3:// az:// gs://, smb://host/share, or a saved connection as NAME:path."
+msgstr "{src}: non è una sorgente che blitcp può leggere con --dest. Indicate una cartella o un file locale, user@host:/percorso, s3:// az:// gs://, smb://host/share o una connessione salvata come NOME:percorso."
+
+msgid "a reparse point on the share (link, junction, tiered or deduplicated file); not copied"
+msgstr "un punto di analisi sulla condivisione (collegamento, giunzione, file a livelli o deduplicato); non copiato"
+
+msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
+msgstr "Il manifest della sorgente ({mhl}/, {lst}: {n} file) non viene copiato: ogni destinazione scrive il proprio."
+
+msgid "--deep-verify: every file read back from this destination and hashed"
+msgstr "--deep-verify: ogni file viene riletto da questa destinazione e ne viene calcolato l'hash"
+
+msgid "A folder on this computer or a mounted drive."
+msgstr "Una cartella su questo computer o su un'unità montata."
+
+msgid "A web source cannot be copied to several destinations"
+msgstr "Una sorgente web non può essere copiata su più destinazioni"
+
+msgid "Add destination"
+msgstr "Aggiungi destinazione"
+
+msgid "Browse SMB"
+msgstr "Sfoglia SMB"
+
+msgid "Browse SMB share"
+msgstr "Sfoglia condivisione SMB"
+
+msgid "Check this destination against its manifest, without the source (--verify-manifest)"
+msgstr "Verifica questa destinazione con il suo manifest, senza la sorgente (--verify-manifest)"
+
+msgid "Checked again: all {n} files match the manifest"
+msgstr "Verificato di nuovo: tutti i {n} file corrispondono al manifest"
+
+msgid "Checked again: {bad} of {n} files do not match"
+msgstr "Verificato di nuovo: {bad} di {n} file non corrispondono"
+
+msgid "Checking against the manifest…"
+msgstr "Verifica con il manifest…"
+
+msgid "Choose destination folder"
+msgstr "Scegli cartella di destinazione"
+
+msgid "Copied, not verified"
+msgstr "Copiato, non verificato"
+
+msgid "Destination presets"
+msgstr "Preimpostazioni destinazioni"
+
+msgid "Destinations saved as {name}"
+msgstr "Destinazioni salvate come {name}"
+
+msgid "ETA {t}"
+msgstr "Tempo rimanente {t}"
+
+msgid "ETA —"
+msgstr "Tempo rimanente —"
+
+msgid "Failed: {why}"
+msgstr "Non riuscito: {why}"
+
+msgid "Incomplete: {f} failed, {r} refused"
+msgstr "Incompleto: {f} non riusciti, {r} rifiutati"
+
+msgid "Kept files that differ from the source"
+msgstr "Mantenuti file diversi dalla sorgente"
+
+msgid "Manifest: {where}"
+msgstr "Manifest: {where}"
+
+msgid "New connection…"
+msgstr "Nuova connessione…"
+
+msgid "Not available with several destinations: {opts}"
+msgstr "Non disponibile con più destinazioni: {opts}"
+
+msgid "Not verified: the source changed during the copy"
+msgstr "Non verificato: la sorgente è cambiata durante la copia"
+
+msgid "Open manifest"
+msgstr "Apri manifest"
+
+msgid "Recommended for Azure video offloads: Azure keeps no checksum for blobs of 8 MiB and over, so only a download proves them."
+msgstr "Consigliato per lo scarico di video su Azure: Azure non conserva un checksum per i blob da 8 MiB in su, quindi solo un download li verifica."
+
+msgid "Remove"
+msgstr "Rimuovi"
+
+msgid "Save destinations…"
+msgstr "Salva destinazioni…"
+
+msgid "Save these destinations as"
+msgstr "Salva queste destinazioni come"
+
+msgid "Sources → one or more destinations: the source is read once and written to every destination."
+msgstr "Sorgenti → una o più destinazioni: la sorgente viene letta una volta e scritta in ogni destinazione."
+
+msgid "The check could not run (exit {c})"
+msgstr "Impossibile eseguire la verifica (uscita {c})"
+
+msgid "Verified: {n} files"
+msgstr "Verificato: {n} file"
+
+msgid "Verify again later"
+msgstr "Verifica di nuovo più tardi"
+
+msgid "Verify by downloading every file (--deep-verify)"
+msgstr "Verifica scaricando ogni file (--deep-verify)"
+
+msgid "With several destinations, a remote source must be the only source"
+msgstr "Con più destinazioni, una sorgente remota deve essere l'unica sorgente"
+
+msgid "download to verify"
+msgstr "scarica per verificare"
+
+msgid "hashed on the remote host"
+msgstr "hash sull'host remoto"
+
+msgid "hashed on the remote host (sample)"
+msgstr "hash sull'host remoto (campione)"
+
+msgid "links and clones"
+msgstr "collegamenti e cloni"
+
+msgid "read back from the disk"
+msgstr "riletto dal disco"
+
+msgid "read back over the network"
+msgstr "riletto via rete"
+
+msgid "read back through the OS cache"
+msgstr "riletto tramite la cache del sistema"
+
+msgid "s3://bucket/prefix, az://container/prefix, gs://bucket/prefix, or a saved connection as NAME:path."
+msgstr "s3://bucket/prefisso, az://container/prefisso, gs://bucket/prefisso o una connessione salvata come NOME:percorso."
+
+msgid "size only"
+msgstr "solo dimensione"
+
+msgid "size only (no store checksum)"
+msgstr "solo dimensione (nessun checksum dell'archivio)"
+
+msgid "smb://host/share/path, a UNC path, or a saved SMB connection as NAME:path."
+msgstr "smb://host/share/percorso, un percorso UNC o una connessione SMB salvata come NOME:percorso."
+
+msgid "source unreadable"
+msgstr "sorgente illeggibile"
+
+msgid "the hash recorded at upload"
+msgstr "l'hash registrato al caricamento"
+
+msgid "the store's own MD5"
+msgstr "l'MD5 dell'archivio stesso"
+
+msgid "the store's own SHA-256"
+msgstr "lo SHA-256 dell'archivio stesso"
+
+msgid "the store's own full-object CRC"
+msgstr "il CRC dell'oggetto intero dell'archivio"
+
+msgid "user@host:/path, or a saved SSH connection as NAME:path."
+msgstr "user@host:/percorso o una connessione SSH salvata come NOME:percorso."
+
+msgid "verification: {level}"
+msgstr "verifica: {level}"
+
+msgid "{done} / {total} files"
+msgstr "{done} / {total} file"
+
+msgid "{n} files failed verification"
+msgstr "{n} file non hanno superato la verifica"
+
+msgid "{n} files present, sizes match — content not compared"
+msgstr "{n} file presenti, dimensioni corrispondenti — contenuto non confrontato"
+
+msgid "Verified: {n} files — {levels}"
+msgstr "Verificato: {n} file — {levels}"
+
+msgid "Checked again: all {n} files present with the recorded sizes — content not compared"
+msgstr "Verificato di nuovo: tutti i {n} file presenti con le dimensioni registrate — contenuto non confrontato"
+
+msgid "data after the end of the archive"
+msgstr "dati dopo la fine dell'archivio"
+
+msgid "a tar header with a wrong checksum"
+msgstr "un'intestazione tar con un checksum errato"
+
+msgid "an oversized tar header"
+msgstr "un'intestazione tar troppo grande"
+
+msgid "a hard link"
+msgstr "un collegamento fisico"
+
+msgid "a symbolic link"
+msgstr "un collegamento simbolico"
+
+msgid "a folder"
+msgstr "una cartella"
+
+msgid "a special file"
+msgstr "un file speciale"
+
+msgid "{name}: {what}, not a file that was asked for"
+msgstr "{name}: {what}, non un file richiesto"
+
+msgid "{name}: not a file that was asked for"
+msgstr "{name}: non è un file richiesto"
+
+msgid "a malformed pax header"
+msgstr "un'intestazione pax malformata"
+
+msgid "Refused: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "Rifiutato: l'archivio dell'host di origine contiene {what} — fermato prima che raggiungesse la destinazione"
+
+msgid "refused: {what}"
+msgstr "rifiutato: {what}"
+
+msgid "not requested: the source host sent {what} in an earlier batch"
+msgstr "non richiesto: l'host di origine ha inviato {what} in un lotto precedente"
+
+msgid "Error: the source host's archive holds {what} — stopped before it reached the destination"
+msgstr "Errore: l'archivio dell'host di origine contiene {what} — fermato prima che raggiungesse la destinazione"
+
+msgid "a negative number in a tar header"
+msgstr "un numero negativo in un'intestazione tar"
+
+msgid "a tar header that is not a number"
+msgstr "un'intestazione tar che non è un numero"
+
+msgid "{path}: the folder changed after it was checked (it now leads outside the destination); nothing was written there"
+msgstr "{path}: la cartella è cambiata dopo il controllo (ora porta fuori dalla destinazione); lì non è stato scritto nulla"
+
+msgid "{rel}: {folder} is a symlink to {where}, outside the destination; nothing was written there"
+msgstr "{rel}: {folder} è un collegamento simbolico a {where}, fuori dalla destinazione; lì non è stato scritto nulla"
+
+msgid "a member named twice"
+msgstr "un membro con due nomi"
+
+msgid "a pax header that changes what tar makes ({key})"
+msgstr "un'intestazione pax che cambia ciò che tar crea ({key})"
+
+msgid "an unknown place"
+msgstr "un luogo sconosciuto"
+
+msgid "Error: {opt} does not apply {where}."
+msgstr "Errore: {opt} non si applica {where}."
+
+msgid "to a copy to one destination"
+msgstr "a una copia verso una sola destinazione"
+
+msgid "with --dest"
+msgstr "con --dest"
+
+msgid "with --verify-manifest"
+msgstr "con --verify-manifest"
+
+msgid "--ssh-no-sftp and --sftp-only exclude each other."
+msgstr "--ssh-no-sftp e --sftp-only si escludono a vicenda."
+
+msgid "the server offers no SFTP, and --sftp-only (or the saved connection's protocol \"sftp\") allows nothing else"
+msgstr "il server non offre SFTP, e --sftp-only (o il protocollo \"sftp\" della connessione salvata) non consente altro"
+
+msgid "could not be moved into place: {err}"
+msgstr "non è stato possibile spostarlo al suo posto: {err}"
+
+msgid "the remote tar batch failed: {err}"
+msgstr "il lotto tar remoto non è riuscito: {err}"
+
+msgid "not written: {twin}, the file with the same content, did not land"
+msgstr "non scritto: {twin}, il file con lo stesso contenuto, non è arrivato"
+
+msgid "could not be linked on the remote host: {err}"
+msgstr "impossibile creare il link sull'host remoto: {err}"
+
+msgid "could not be linked or copied on the remote host"
+msgstr "impossibile creare il link o copiare sull'host remoto"
+
+msgid "{n} folder(s) did not take the source folder's mode and time"
+msgstr "{n} cartella/e non hanno preso modo e orario della cartella di origine"
+
+msgid "not synced to disk on the remote host (no shell there)"
+msgstr "non sincronizzato su disco sull'host remoto (lì non c'è una shell)"
+
+msgid "could not sync the remote destination: the files may still be in its cache"
+msgstr "impossibile sincronizzare la destinazione remota: i file potrebbero essere ancora nella sua cache"
+
+msgid "{n} of them hold the same content as another file of this run: hard links to it there"
+msgstr "{n} di questi hanno lo stesso contenuto di un altro file di questa esecuzione: lì sono hard link a esso"
+
+msgid "{n} copied on the remote host (it took no hard link)"
+msgstr "{n} copiati sull'host remoto (non ha accettato hard link)"
+
+msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
+msgstr "Destinazioni locali: scrive ogni file con un nome nascosto, lo scarica su disco e lo rinomina al suo posto: un file non si vede mai scritto a metà. Senza questa opzione, un file nuovo viene scritto al suo posto e uno già presente viene sostituito tramite un nome nascosto."
+
+msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
+msgstr "Destinazioni locali: scrive un file nuovo al suo posto e sostituisce uno già presente tramite un nome nascosto; il disco della destinazione viene scaricato alla fine (predefinito, anche per un download da un archivio di oggetti)."
+
+msgid "{opt} goes with --dest."
+msgstr "{opt} va con --dest."
+
+msgid "Note: no deduplication for {dest}: {why}"
+msgstr "Nota: nessuna deduplicazione per {dest}: {why}"
+
+msgid "already in place"
+msgstr "già al suo posto"
+
+msgid "copies (no links here)"
+msgstr "copie (qui niente link)"
+
+msgid "hard links"
+msgstr "hard link"
+
+msgid "reflinks"
+msgstr "reflink"
+
+msgid "symlinks"
+msgstr "link simbolici"
+
+msgid "the file with the same content changed while linking"
+msgstr "il file con lo stesso contenuto è cambiato durante il collegamento"
+
+msgid "the file with the same content is no longer a regular file"
+msgstr "il file con lo stesso contenuto non è più un file regolare"
+
+msgid "{n} of them have the same content as a file already there or written in this run, and were not written again: {how}"
+msgstr "{n} di questi hanno lo stesso contenuto di un file già presente o scritto in questa esecuzione, e non sono stati riscritti: {how}"
+
+msgid "the file with the same content is outside the destination (not linked when elevated)"
+msgstr "il file con lo stesso contenuto è fuori dalla destinazione (non collegato con privilegi elevati)"
+
+msgid "the destination folder was replaced during the run (not followed when elevated)"
+msgstr "la cartella di destinazione è stata sostituita durante l'esecuzione (non seguita con privilegi elevati)"
+
+msgid "a symlinked folder on the way to the file with the same content (not followed when elevated)"
+msgstr "una cartella collegata simbolicamente sul percorso verso il file con lo stesso contenuto (non seguita con privilegi elevati)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links; every other destination gets a full copy of each file."
+msgstr "Deduplicazione con --dest: su una destinazione locale o SSH, i duplicati di questa esecuzione e i file già presenti diventano link; ogni altra destinazione riceve una copia completa di ciascun file."
+
+msgid "cannot rename on the destination (each file lands by a rename): {err}"
+msgstr "impossibile rinominare sulla destinazione (ogni file arriva con una ridenominazione): {err}"
+
+msgid "cannot read back what was written (each file is verified so): {err}"
+msgstr "impossibile rileggere quanto scritto (così si verifica ogni file): {err}"
+
+msgid "cannot read back what was written (each file is verified so): the bytes differ"
+msgstr "impossibile rileggere quanto scritto (così si verifica ogni file): i byte differiscono"
+
+msgid "The share took {got} of {want} connections: files went {n} at a time."
+msgstr "La condivisione ha accettato {got} di {want} connessioni: i file sono andati {n} alla volta."
+
+msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "Aggiornata: tutti i {n} file sono invariati per dimensione e data di modifica (come registra il suo manifest); non letti — --verify-source li legge e li confronta"
+
+msgid "Up to date: nothing here needed writing"
+msgstr "Aggiornata: qui non c'era nulla da scrivere"
+
+msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} invariati per dimensione e data di modifica (come registra il suo manifest); non letti — --verify-source li legge e li confronta"
+
+msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "Aggiornata: tutti i {n} file sono invariati per dimensione e tag di versione dello storage (come registra il suo manifest); non letti — --verify-source li legge e li confronta"
+
+msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
+msgstr "{n} invariati per dimensione e tag di versione dello storage (come registra il suo manifest); non letti — --verify-source li legge e li confronta"
+
+msgid "the object changed after it was listed"
+msgstr "l'oggetto è cambiato dopo essere stato elencato"
+
+msgid "Removed {n} unfinished files an interrupted run had left here:"
+msgstr "Rimossi {n} file incompleti che un'esecuzione interrotta aveva lasciato qui:"
+
+msgid "Could not look for unfinished files an interrupted run may have left: {why}"
+msgstr "Impossibile cercare file incompleti che un'esecuzione interrotta potrebbe aver lasciato: {why}"
+
+msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
+msgstr "Mantieni un manifest ASC MHL e blitcp.xxh128 in una copia verso una sola destinazione (--dest, --resume, --overwrite-changed e --job-name lo fanno sempre). Con esso, i file invariati vengono saltati senza leggerli (veloce, si fida dei record). Senza, una destinazione locale è decisa dai record di blitcp (un file che mostrano invariato su entrambi i lati non viene letto; ogni altro file della stessa dimensione viene confrontato); su SSH e SMB decide la cache hash firmata di blitcp lì finché dimensione e data di modifica di un file sono quelle registrate, quindi un file di destinazione modificato fuori da blitcp con la stessa dimensione e la data ripristinata non viene rilevato in una nuova esecuzione, a meno di usare --no-cache."
+
+msgid "hash cache not updated: {why}"
+msgstr "cache hash non aggiornata: {why}"
+
+msgid "manifest mode — its records ({mhl}) decide what is unchanged"
+msgstr "modalità manifest — i suoi record ({mhl}) decidono cosa è invariato"
+
+msgid "no manifest — a file whose size and modification time there are the ones blitcp's signed hash cache recorded is decided by that cache; one changed there with its time put back is not seen (--no-cache compares the files)"
+msgstr "nessun manifest — un file la cui dimensione e data di modifica lì sono quelle registrate dalla cache hash firmata di blitcp è deciso da quella cache; uno modificato lì con la data ripristinata non viene notato (--no-cache confronta i file)"
+
+msgid "no manifest — each file of the same size is compared with what is there"
+msgstr "nessun manifest — ogni file della stessa dimensione viene confrontato con ciò che c'è lì"
+
+msgid "no manifest, --no-cache — every file is written again"
+msgstr "nessun manifest, --no-cache — ogni file viene riscritto"
+
+msgid "{n} files: the dedup database and this destination's manifest record different content at the same size and time — the manifest decided; the database was left as it is:"
+msgstr "{n} file: il database dedup e il manifest di questa destinazione registrano contenuti diversi con la stessa dimensione e data — ha deciso il manifest; il database è stato lasciato com'era:"
+
+msgid "{rel}: the dedup database and the manifest record different hashes for this source file at the same size and time — the manifest decided; the database's record was left as it is (database {db}, manifest {got})"
+msgstr "{rel}: il database dedup e il manifest registrano hash diversi per questo file di origine con la stessa dimensione e data — ha deciso il manifest; il record del database è stato lasciato com'era (database {db}, manifest {got})"
+
+msgid "DRY RUN — nothing is written."
+msgstr "PROVA A VUOTO — non viene scritto nulla."
+
+msgid "would write {n} files ({size})"
+msgstr "scriverebbe {n} file ({size})"
+
+msgid "{n} unchanged"
+msgstr "{n} invariati"
+
+msgid "{n} conflicts (there with other content, kept)"
+msgstr "{n} conflitti (presenti con altro contenuto, mantenuti)"
+
+msgid "{n} unreadable at the source"
+msgstr "{n} illeggibili all'origine"
+
+msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
+msgstr "Non cercati in una prova a vuoto: file incompleti lasciati da un'esecuzione interrotta (--resume li rimuove)."
+
+msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
+msgstr "Non verificato in una prova a vuoto: se due destinazioni sono lo stesso luogo (quel controllo scrive un file di prova)."
+
+msgid "Not planned in a dry run: links to identical files already at a destination; such files are counted as written."
+msgstr "Non pianificati in una prova a vuoto: collegamenti a file identici già presenti in una destinazione; quei file sono contati come scritti."
+
+msgid "Whether each destination takes a write is not tested in a dry run (that test writes a probe file)."
+msgstr "In una prova a vuoto non si verifica se ogni destinazione accetta una scrittura (quel test scrive un file di prova)."
+
+msgid "Fail the run when the dedup database at the destination could have been written by someone else (its owner, permissions, or a folder others can replace files in). Default: ignore that database, say so, and copy without the cache."
+msgstr "Far fallire l'esecuzione quando il database di deduplicazione nella destinazione potrebbe essere stato scritto da qualcun altro (proprietario, permessi o una cartella in cui altri possono sostituire file). Predefinito: ignorare quel database, segnalarlo e copiare senza la cache."
+
+msgid "{name} is not a regular file"
+msgstr "{name} non è un file regolare"
+
+msgid "{name} is owned by another user (uid {uid})"
+msgstr "{name} appartiene a un altro utente (uid {uid})"
+
+msgid "{name} can be written by others (mode {mode})"
+msgstr "{name} è scrivibile da altri (modo {mode})"
+
+msgid "its folder {dir} is owned by another user (uid {uid})"
+msgstr "la sua cartella {dir} appartiene a un altro utente (uid {uid})"
+
+msgid "its folder {dir} lets anyone replace files in it (mode {mode}, no sticky bit)"
+msgstr "nella sua cartella {dir} chiunque può sostituire file (modo {mode}, senza sticky bit)"
+
+msgid "its folder {dir} lets other members of its group replace files in it (mode {mode})"
+msgstr "nella sua cartella {dir} altri membri del suo gruppo possono sostituire file (modo {mode})"
+
+msgid "{name} is a symlink"
+msgstr "{name} è un collegamento simbolico"
+
+msgid "{name} was replaced after it was checked"
+msgstr "{name} è stato sostituito dopo il controllo"
+
+msgid "dedup DB ignored: {why} — copying without the cache. Fix:\n      chown {user} {path} && chmod 600 {path}"
+msgstr "database di deduplicazione ignorato: {why} — si copia senza la cache. Soluzione:\n      chown {user} {path} && chmod 600 {path}"
+
+msgid "Up to date: all {n} files are as blitcp recorded them when it last wrote or compared them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "Aggiornato: tutti i {n} file sono come blitcp li ha registrati l'ultima volta che li ha scritti o confrontati (dimensione e tempi, su entrambi i lati); non letti — --no-cache li confronta"
+
+msgid "{n} unchanged as blitcp recorded them (size and times, on both sides); not read — --no-cache compares them"
+msgstr "{n} invariati come registrati da blitcp (dimensione e tempi, su entrambi i lati); non letti — --no-cache li confronta"
+
+msgid "no manifest — blitcp's records decide: a file they show unchanged on both sides is not read; any other file of the same size is compared with what is there (--no-cache compares every file)"
+msgstr "nessun manifest — decidono le registrazioni di blitcp: un file che mostrano invariato su entrambi i lati non viene letto; ogni altro file della stessa dimensione viene confrontato con ciò che c'è (--no-cache confronta ogni file)"
+
+msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
+msgstr "Disattiva le cache di hash persistenti: il database di deduplicazione con le registrazioni di blitcp e, senza --manifest, la cache di hash firmata di blitcp su una destinazione SSH o SMB (.blitcp_manifest.json). Un nuovo avvio legge e confronta ogni file della stessa dimensione su una destinazione locale, ne calcola l'hash sull'host SSH e riscrive ogni file su una condivisione SMB. Su FAT, exFAT, NFS, SMB e FUSE le registrazioni decidono per dimensione e ora di modifica: un file cambiato lì con la stessa dimensione e con l'ora di modifica ripristinata viene rilevato solo con --no-cache."
+
+msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
+msgstr "Leggere e calcolare l'hash di ogni file di origine, anche di uno che il manifest di ogni destinazione registra con la stessa dimensione, ora di modifica e ora di cambiamento (senza questa opzione non vengono letti). Su un'origine su FAT, exFAT, NFS, SMB o FUSE decidono dimensione e ora di modifica: un file cambiato lì con la stessa dimensione e con l'ora di modifica ripristinata viene rilevato solo con --verify-source."
+
+msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
+msgstr "Nota: --relay-spool-mb non ha effetto su questa copia: fa passare ogni file attraverso il suo buffer e non scrive nulla su disco."
+
+msgid "enabled"
+msgstr "attiva"
+
+msgid "disabled (--no-dedup)"
+msgstr "disattivata (--no-dedup)"
+
+msgid "{n} files matched"
+msgstr "{n} file corrispondono"
+
+msgid "Source '{src}' — no matching files or directory found"
+msgstr "Origine '{src}' — nessun file o cartella corrispondente trovato"
+
+msgid "no remote files matched {pattern!r} in {folder}"
+msgstr "nessun file remoto corrisponde a {pattern!r} in {folder}"
+
+msgid "glob characters are only supported in the final path component for remote sources."
+msgstr "Per le origini remote i caratteri jolly sono ammessi solo nell'ultimo componente del percorso."
+
+msgid "changed after it was found to be a duplicate of {twin}; not linked, and not written — copy it again"
+msgstr "modificato dopo essere stato riconosciuto come duplicato di {twin}; non collegato e non scritto — copiarlo di nuovo"
+
+msgid "Note: {note}"
+msgstr "Nota: {note}"
+
+msgid ""
+"exit codes:\n"
+"  0  everything done\n"
+"  1  the run ran and some files failed (a write to a destination,\n"
+"     a destination that failed mid-run, a file refused or failing\n"
+"     verification)\n"
+"  2  nothing was done: a usage error, a pre-flight failure, a\n"
+"     connection that cannot be made, a host key that cannot be\n"
+"     confirmed\n"
+"  3  only source files could not be read\n"
+msgstr ""
+"codici di uscita:\n"
+"  0  tutto fatto\n"
+"  1  l'esecuzione è avvenuta e alcuni file non sono riusciti (una\n"
+"     scrittura su una destinazione, una destinazione fallita a metà, un\n"
+"     file rifiutato o che non ha superato la verifica)\n"
+"  2  non è stato fatto nulla: un errore d'uso, un controllo preliminare\n"
+"     fallito, una connessione impossibile, una chiave host non confermabile\n"
+"  3  solo alcuni file di origine non sono stati letti\n"
+
+msgid "{n} file(s) could NOT be read from the source (permission denied / locked); everything else copied OK — exclude or unlock them and re-run."
+msgstr "{n} file NON sono stati letti dall'origine (permesso negato / bloccati); tutto il resto è stato copiato correttamente — escluderli o sbloccarli e rieseguire."
+
+msgid "{n} duplicate(s) named by the source host are downloaded too: the host's word is not proof that they match"
+msgstr "{n} duplicato/i indicati dall'host di origine vengono scaricati anch'essi: la parola dell'host non prova che coincidano"
+
+msgid "{n} file(s) the source host called duplicates differ here: kept as separate copies"
+msgstr "{n} file che l'host di origine ha chiamato duplicati qui sono diversi: mantenuti come copie separate"
+
+msgid "could not compare what is there ({why}): every file is written again, except one dedup finds already in place"
+msgstr "impossibile confrontare con ciò che c'è ({why}): ogni file viene riscritto, tranne uno che la deduplicazione trova già al suo posto"
+
+msgid "{dir} is in a cloud-synced folder: the sync client would upload the dedup database (--dedup-in-sync-folder keeps it there)"
+msgstr "{dir} è in una cartella sincronizzata con il cloud: il client di sincronizzazione caricherebbe il database di deduplicazione (--dedup-in-sync-folder lo mantiene lì)"
+
+msgid "It also keeps blitcp's dedup database in such a folder, which is otherwise not made there."
+msgstr "Mantiene anche il database di deduplicazione di blitcp in una tale cartella, dove altrimenti non viene creato."
+
+msgid "changed after it was read; not written — copy it again"
+msgstr "modificato dopo la lettura; non scritto — copiarlo di nuovo"
+
+msgid "Stages (wall clock): pre-flight {pre} · copy {copy} · verify {verify} · records and close {close}"
+msgstr "Fasi (tempo reale): controllo preliminare {pre} · copia {copy} · verifica {verify} · registri e chiusura {close}"
+
+msgid "no manifest: the xxhash package is not installed (pip install xxhash)"
+msgstr "nessun manifest: il pacchetto xxhash non è installato (pip install xxhash)"
+
+msgid "Up to date: all {n} files have the same content here as at the source (read on both sides and compared); not written again"
+msgstr "Aggiornato: tutti i {n} file hanno qui lo stesso contenuto della sorgente (letti da entrambi i lati e confrontati); non riscritti"
+
+msgid "{n} unchanged — the same content here as at the source (read on both sides and compared); not written again"
+msgstr "{n} invariati — qui lo stesso contenuto della sorgente (letti da entrambi i lati e confrontati); non riscritti"
+
+msgid "interrupted"
+msgstr "interrotto"
+
+msgid "To retry once there is room: {cmd}"
+msgstr "Per riprovare quando c'è spazio: {cmd}"
+
+msgid "out of file descriptors even for one file at a time ({err})"
+msgstr "descrittori di file esauriti anche per un file alla volta ({err})"
+
+msgid "the process ran out of file descriptors ({err})"
+msgstr "il processo ha esaurito i descrittori di file ({err})"
+
+msgid "{written} written · {skipped} skipped · {cloned} cloned · {linked} linked within run · {refused} refused · {failed} failed · {src} unreadable at the source"
+msgstr "{written} scritti · {skipped} saltati · {cloned} clonati · {linked} collegati nell'esecuzione · {refused} rifiutati · {failed} non riusciti · {src} illeggibili alla sorgente"
+
+msgid "links only within this destination folder; a new folder is a full copy"
+msgstr "link solo all'interno di questa cartella di destinazione; una nuova cartella è una copia completa"
+
+msgid "links anywhere on the drive (--index-existing)"
+msgstr "link ovunque sull'unità (--index-existing)"
+
+msgid "Deduplication with --dest: on a local or SSH destination, duplicates within this run and files already there become links — {scope}; every other destination gets a full copy of each file."
+msgstr "Deduplicazione con --dest: su una destinazione locale o SSH, i duplicati di questa esecuzione e i file già presenti diventano link — {scope}; ogni altra destinazione riceve una copia completa di ogni file."
+
+msgid "Stages (wall clock): scan source {scan} · scan destination {dest} · compare {compare} · dedup lookup {lookup} · plan {plan} · copy {copy} · verify {verify} · records {close}"
+msgstr "Fasi (tempo reale): scansione sorgente {scan} · scansione destinazione {dest} · confronto {compare} · ricerca duplicati {lookup} · piano {plan} · copia {copy} · verifica {verify} · registri {close}"
+
+msgid "Linked to a copy already here: {n} — the list: {path}"
+msgstr "Collegati a una copia già presente qui: {n} — l'elenco: {path}"
+
+msgid "input {input}"
+msgstr "input {input}"
+
+msgid "other destinations {others}"
+msgstr "altre destinazioni {others}"
+
+msgid "Up to date: all {n} files have the same content here as at the source — the source read for each; here {rec} as this destination's records hold them (not read), {read} read and compared; not written again"
+msgstr "Aggiornato: tutti i {n} file hanno qui lo stesso contenuto della sorgente — la sorgente letta per ciascuno; qui {rec} come li registrano i registri di questa destinazione (non letti), {read} letti e confrontati; non riscritti"
+
+msgid "could not look at what is there: {why} — nothing written to it"
+msgstr "impossibile vedere cosa c'è lì: {why} — non vi è stato scritto nulla"
+
+msgid "the host could not look at a file there: {why}"
+msgstr "l'host non ha potuto esaminare un file lì: {why}"
+
+msgid "Source"
+msgstr "Sorgente"
+
+msgid "Destination"
+msgstr "Destinazione"
+
+msgid "Dedup DB"
+msgstr "DB dedup"
+
+msgid "Hash"
+msgstr "Hash"
+
+msgid "Manifest"
+msgstr "Manifest"
+
+msgid "Write"
+msgstr "Scrittura"
+
+msgid "Journal"
+msgstr "Journal"
+
+msgid "Verify"
+msgstr "Verifica"
+
+msgid "{n} (tables below)"
+msgstr "{n} (tabelle sotto)"
+
+msgid "manifest {state}"
+msgstr "manifest {state}"
+
+msgid "verify {how}"
+msgstr "verifica {how}"
+
+msgid "Phase"
+msgstr "Fase"
+
+msgid "progress"
+msgstr "avanzamento"
+
+msgid "verified"
+msgstr "verificato"
+
+msgid "mismatch"
+msgstr "discordanza"
+
+msgid "Link"
+msgstr "Collegamento"
+
+msgid "Files/s"
+msgstr "File/s"
+
+msgid "Rate"
+msgstr "Velocità"
+
+msgid "State"
+msgstr "Stato"
+
+msgid "{n} files/s"
+msgstr "{n} file/s"
+
+msgid "buffer {pct} % full"
+msgstr "buffer pieno al {pct} %"
+
+msgid "waiting on #{n}"
+msgstr "in attesa di #{n}"
+
+msgid "Reader"
+msgstr "Lettore"
+
+msgid "Method"
+msgstr "Metodo"
+
+msgid "Copied"
+msgstr "Copiati"
+
+msgid "Skipped"
+msgstr "Saltati"
+
+msgid "Cloned"
+msgstr "Clonati"
+
+msgid "Linked"
+msgstr "Collegati"
+
+msgid "Time"
+msgstr "Tempo"
+
+msgid "Result"
+msgstr "Risultato"
+
+msgid "{n} FAILED"
+msgstr "{n} FALLITI"
+
+msgid "Done"
+msgstr "Fatto"
+
+msgid "{n} written"
+msgstr "{n} scritti"
+
+msgid "{n} destinations"
+msgstr "{n} destinazioni"
+
+msgid "source read once"
+msgstr "sorgente letta una volta"
+
+msgid "none left"
+msgstr "nessuno"
+
+msgid "{n} left {dash} see list"
+msgstr "{n} rimasti {dash} vedi elenco"
+
+msgid "+{n} records"
+msgstr "+{n} record"
+
+msgid "Timings"
+msgstr "Tempi"
+
+msgid "{why} while writing"
+msgstr "{why} durante la scrittura"
+
+msgid "{why} while reading the source"
+msgstr "{why} durante la lettura della sorgente"
+
+msgid "(and {n} other errors {dash} see list)"
+msgstr "(e altri {n} errori {dash} vedi elenco)"
+
+msgid "{n} files on {dest}"
+msgstr "{n} file su {dest}"
+
+msgid "1 file on {dest}"
+msgstr "1 file su {dest}"
+
+msgid "first"
+msgstr "primo"
+
+msgid "list"
+msgstr "elenco"
+
+msgid "retry"
+msgstr "riprova"
+
+msgid "partitions of the same {bus} disk ({disk})"
+msgstr "partizioni dello stesso disco {bus} ({disk})"
+
+msgid "partitions of the same disk ({disk})"
+msgstr "partizioni dello stesso disco ({disk})"
+
+msgid "#{a} and #{b} are {what}. They share one spindle, so each"
+msgstr "#{a} e #{b} sono {what}. Condividono un solo disco, quindi ciascuno"
+
+msgid "Note"
+msgstr "Nota"
+
+msgid "gets about half the speed. To copy them one after the other instead:"
+msgstr "ottiene circa metà della velocità. Per copiarli uno dopo l'altro:"
+
+msgid "Verified"
+msgstr "Verific."
+
+msgid "read back device"
+msgstr "rilettura disco"
+
+msgid "read back from device (O_DIRECT)"
+msgstr "rilettura dal disco (O_DIRECT)"
+
+msgid "device"
+msgstr "disco"
+
+msgid "{n} read back from device"
+msgstr "{n} riletti dal disco"
+
+msgid "verified from device"
+msgstr "verificato dal disco"
+
+msgid "read back (cache)"
+msgstr "rilettura (cache)"
+
+msgid "OS cache"
+msgstr "cache SO"
+
+msgid "{n} read back through the OS cache"
+msgstr "{n} riletti tramite la cache del SO"
+
+msgid "verified through the OS cache"
+msgstr "verificato tramite la cache del SO"
+
+msgid "read back network"
+msgstr "rilettura rete"
+
+msgid "network"
+msgstr "rete"
+
+msgid "verified over the network"
+msgstr "verificato via rete"
+
+msgid "remote hash check"
+msgstr "hash remoto"
+
+msgid "remote hash"
+msgstr "hash remoto"
+
+msgid "{n} hash-checked on the remote"
+msgstr "{n} controllati con hash sul remoto"
+
+msgid "verified by remote hash"
+msgstr "verificato con hash remoto"
+
+msgid "remote hash sample"
+msgstr "campione hash rem."
+
+msgid "remote hash check (random sample)"
+msgstr "controllo hash remoto (campione casuale)"
+
+msgid "remote sample"
+msgstr "campione remoto"
+
+msgid "{n} hash-checked on the remote (sample)"
+msgstr "{n} controllati con hash sul remoto (campione)"
+
+msgid "a sample verified by remote hash"
+msgstr "un campione verificato con hash remoto"
+
+msgid "store checksum"
+msgstr "checksum store"
+
+msgid "the store's own checksum"
+msgstr "il checksum dello store stesso"
+
+msgid "{n} matched the store's checksum"
+msgstr "{n} corrispondono al checksum dello store"
+
+msgid "verified by the store's checksum"
+msgstr "verificato con il checksum dello store"
+
+msgid "existence and size only"
+msgstr "solo esistenza e dimensione"
+
+msgid "{n} present at the right size"
+msgstr "{n} presenti con la dimensione giusta"
+
+msgid "sizes match, content not compared"
+msgstr "le dimensioni coincidono, contenuto non confrontato"
+
+msgid "Warning"
+msgstr "Avviso"
+
+msgid "Error"
+msgstr "Errore"
+
+msgid "{n} sources"
+msgstr "{n} sorgenti"
+
+msgid "off"
+msgstr "no"
+
+msgid "on"
+msgstr "sì"
+
+msgid "(xxhash is not installed)"
+msgstr "(xxhash non è installato)"
+
+msgid "(the destination has one)"
+msgstr "(la destinazione ne ha uno)"
+
+msgid "(the store's sidecar)"
+msgstr "(sidecar dello store)"
+
+msgid "(on with --manifest/--resume)"
+msgstr "(sì con --manifest/--resume)"
+
+msgid "partial"
+msgstr "parziale"
+
+msgid "partial (--partial)"
+msgstr "parziale (--partial)"
+
+msgid "partial, renamed into place"
+msgstr "parziale, poi rinominato"
+
+msgid "objects"
+msgstr "oggetti"
+
+msgid "whole objects"
+msgstr "oggetti interi"
+
+msgid "partial, renamed when complete"
+msgstr "parziale, rinominato al termine"
+
+msgid "in-place"
+msgstr "sul posto"
+
+msgid "partial only on replace"
+msgstr "parziale solo in sostituzione"
+
+msgid "resume"
+msgstr "ripresa"
+
+msgid "remote hash, or read back by SFTP"
+msgstr "hash remoto, o rilettura via SFTP"
+
+msgid "remote"
+msgstr "remoto"
+
+msgid "this machine's hash cache"
+msgstr "cache hash di questa macchina"
+
+msgid "(with the manifest)"
+msgstr "(con il manifest)"
+
+msgid "hashed once, at source"
+msgstr "hash una volta, alla sorgente"
+
+msgid "stalled"
+msgstr "bloccato"
+
+msgid "empty"
+msgstr "vuoto"
+
+msgid "not there yet"
+msgstr "non esiste ancora"
+
+msgid "{n} existing"
+msgstr "{n} esistenti"
+
+msgid "{n} known"
+msgstr "{n} noti"
+
+msgid "{n} to link"
+msgstr "{n} da collegare"
+
+msgid "{n} to copy"
+msgstr "{n} da copiare"
+
+msgid "dedup off (--no-dedup)"
+msgstr "dedup disattivato (--no-dedup)"
+
+msgid "1 lane"
+msgstr "1 corsia"
+
+msgid "{size} batches"
+msgstr "lotti da {size}"
+
+msgid "each file through a partial"
+msgstr "ogni file tramite un parziale"
+
+msgid "1 reader"
+msgstr "1 lettore"
+
+msgid "fan-out"
+msgstr "fan-out"
+
+msgid "{n} lanes"
+msgstr "{n} corsie"
+
+msgid "pace = slowest lane"
+msgstr "ritmo = corsia più lenta"
+
+msgid "physical order: {n} files mapped"
+msgstr "ordine fisico: {n} file mappati"
+
+msgid "physical order: skipped (SSD)"
+msgstr "ordine fisico: saltato (SSD)"
+
+msgid "physical order: unavailable (the source filesystem gives no offsets)"
+msgstr "ordine fisico: non disponibile (il filesystem sorgente non fornisce offset)"
+
+msgid "tar push"
+msgstr "tar push"
+
+msgid "Copy"
+msgstr "Copia"
+
+msgid "copied {done} / {total}"
+msgstr "copiati {done} / {total}"
+
+msgid "ETA {eta}"
+msgstr "ETA {eta}"
+
+msgid "checked {done} / {total}"
+msgstr "controllati {done} / {total}"
+
+msgid "nothing to copy"
+msgstr "niente da copiare"
+
+msgid "1 file"
+msgstr "1 file"
+
+msgid "{n} files"
+msgstr "{n} file"
+
+msgid "{n} cloned"
+msgstr "{n} clonati"
+
+msgid "all done"
+msgstr "tutto fatto"
+
+msgid "{n} failed on #{idx}"
+msgstr "{n} falliti su #{idx}"
+
+msgid "{n} MISMATCH"
+msgstr "{n} DISCORDANZA"
+
+msgid "nothing written"
+msgstr "niente scritto"
+
+msgid "sizes only"
+msgstr "solo dimensioni"
+
+msgid "all match"
+msgstr "tutto coincide"
+
+msgid "nothing to verify (nothing was written)"
+msgstr "niente da verificare (nulla è stato scritto)"
+
+msgid "the destination failed"
+msgstr "la destinazione è fallita"
+
+msgid "not verified (--no-verify)"
+msgstr "non verificato (--no-verify)"
+
+msgid "not verified: the source changed"
+msgstr "non verificato: la sorgente è cambiata"
+
+msgid "incomplete"
+msgstr "incompleto"
+
+msgid "nothing written, nothing to verify"
+msgstr "niente scritto, niente da verificare"
+
+msgid "the source"
+msgstr "la sorgente"
+
+msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
+msgstr "presenti con contenuto diverso, lasciati come sono (--overwrite-changed li sostituisce)"
+
+msgid "hash mismatch after write"
+msgstr "hash diverso dopo la scrittura"
+
+msgid "scan"
+msgstr "scansione"
+
+msgid "plan"
+msgstr "piano"
+
+msgid "copy"
+msgstr "copia"
+
+msgid "sync"
+msgstr "sync"
+
+msgid "records"
+msgstr "record"
+
+msgid "input"
+msgstr "input"
+
+msgid "scan source"
+msgstr "scansione sorgente"
+
+msgid "scan destination"
+msgstr "scansione destinazione"
+
+msgid "compare"
+msgstr "confronto"
+
+msgid "dedup lookup"
+msgstr "ricerca dedup"
+
+msgid "other destinations"
+msgstr "altre destinazioni"
+
+msgid "Stages"
+msgstr "Fasi"
+
+msgid "one destination"
+msgstr "una destinazione"
+
+msgid "several"
+msgstr "più di una"
+
+msgid "no destination given."
+msgstr "nessuna destinazione indicata."
+
+msgid "no source and no destination given."
+msgstr "nessuna sorgente e nessuna destinazione indicate."
+
+msgid "A copy needs a source and at least one destination:"
+msgstr "Una copia richiede una sorgente e almeno una destinazione:"
+
+msgid "--dest and a positional destination cannot be mixed."
+msgstr "--dest e una destinazione posizionale non si possono mescolare."
+
+msgid "You gave --dest {dest} and also {extra}: a second source, or a mistyped destination? Say which:"
+msgstr "Hai indicato --dest {dest} e anche {extra}: una seconda sorgente o una destinazione scritta male? Indica quale:"
+
+msgid "a destination too"
+msgstr "anche una destinazione"
+
+msgid "a second source"
+msgstr "una seconda sorgente"
+
+msgid "source not found: {src}"
+msgstr "sorgente non trovata: {src}"
+
+msgid "No matching files or directory found. With your destination, the command is:"
+msgstr "Nessun file o cartella corrispondente. Con la tua destinazione, il comando è:"
+
+msgid "the destination {dest} is inside the source {src}."
+msgstr "la destinazione {dest} è dentro la sorgente {src}."
+
+msgid "the destination {dest} contains the source {src}."
+msgstr "la destinazione {dest} contiene la sorgente {src}."
+
+msgid "A copy must not land in what it is reading. Give a destination apart from the source:"
+msgstr "Una copia non deve finire in ciò che sta leggendo. Indica una destinazione separata dalla sorgente:"
+
+msgid "the destination {dest} is given twice."
+msgstr "la destinazione {dest} è indicata due volte."
+
+msgid "Each destination is one copy; give it once:"
+msgstr "Ogni destinazione è una copia; indicala una sola volta:"
+
+msgid "Scan source"
+msgstr "Scansione sorg."
+
+msgid "listing"
+msgstr "elenco in corso"
+
+msgid "{n} dirs"
+msgstr "{n} cartelle"
+
+msgid "{n} unreadable"
+msgstr "{n} illeggibili"
+
+msgid "Scan destination"
+msgstr "Scansione dest."
+
+msgid "Scan destinations"
+msgstr "Scansione dest."
+
+msgid "looking"
+msgstr "controllo in corso"
+
+msgid "Dedup lookup"
+msgstr "Ricerca dedup"
+
+msgid "looking up"
+msgstr "ricerca in corso"
+
+msgid "Dedup DB: {path}"
+msgstr "DB dedup: {path}"
+
+msgid "Plan"
+msgstr "Piano"
+
+msgid "syncing the destination and writing the records"
+msgstr "sincronizzazione della destinazione e scrittura dei record"
+
+msgid "No bars and no redrawing: each phase as one line when it has finished, as when the output is not a terminal."
+msgstr "Niente barre e nessun ridisegno: ogni fase su una riga quando è finita, come quando l'output non è un terminale."
+
+msgid "1 destination FAILED"
+msgstr "1 destinazione FALLITA"
+
+msgid "{n} destinations FAILED"
+msgstr "{n} destinazioni FALLITE"
+
+msgid "{dest} failed: {why}"
+msgstr "{dest} fallita: {why}"
+
+msgid "{n} files not written"
+msgstr "{n} file non scritti"
+
+msgid "nothing to verify"
+msgstr "niente da verificare"
+
+msgid "read back"
+msgstr "rilettura"
+
+msgid "links anywhere on the drive"
+msgstr "collegamenti ovunque sul disco"
+
+msgid "links within this folder only"
+msgstr "collegamenti solo in questa cartella"
+
+msgid "{n} files not written or not verified"
+msgstr "{n} file non scritti o non verificati"
+
+msgid "Dedup"
+msgstr "Dedup"
+
+msgid "no DB {dash} {why}"
+msgstr "nessun DB {dash} {why}"
+
+msgid "kept for local and SSH destinations only"
+msgstr "tenuto solo per destinazioni locali e SSH"
+
+msgid "links anywhere on this drive"
+msgstr "collegamenti ovunque su questo disco"
+
+msgid "Written"
+msgstr "Scritti"
+
+msgid "written"
+msgstr "scritti"
+
+msgid "written {done} / {total}"
+msgstr "scritti {done} / {total}"
+
+msgid "{n} of {total} files are not at this destination"
+msgstr "{n} file su {total} non sono in questa destinazione"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "All {n} files are already up to date."
+msgstr "Tutti i {n} file sono già aggiornati."
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out before the copy"
+msgstr "escluso prima della copia"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "left out — nothing is written there"
+msgstr "escluso — lì non viene scritto nulla"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{a} and {b} are one folder, or one holds the other"
+msgstr "{a} e {b} sono una sola cartella, o una contiene l'altra"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{d} is the source, inside it, or holds it"
+msgstr "{d} è la sorgente, è al suo interno o la contiene"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{opt} takes one destination for now"
+msgstr "{opt} per ora accetta una sola destinazione"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "Warning:"
+msgstr "Avviso:"
+
+#: blitcp.py (×N on the 4.2.15 engine)
+msgid "{dests} are on one filesystem: together they need {need}, it has {free} free"
+msgstr "{dests} sono sullo stesso filesystem: insieme richiedono {need}, ha {free} liberi"
+
+msgid "stalled: no answer for {n} s — dropped"
+msgstr "bloccato: nessuna risposta per {n} s — abbandonato"
+
+msgid "stalled after the copy: no answer for {n} s"
+msgstr "bloccato dopo la copia: nessuna risposta per {n} s"
+
+msgid "stalled during verification: no answer for {n} s"
+msgstr "bloccato durante la verifica: nessuna risposta per {n} s"
+
+msgid "dropped; what it holds is not verified"
+msgstr "abbandonato; il contenuto non è verificato"
+
+msgid "stalled: no answer for {n} s"
+msgstr "bloccato: nessuna risposta per {n} s"
+
+msgid "stalled during the copy: no answer for {n} s"
+msgstr "bloccato durante la copia: nessuna risposta per {n} s"
+
+msgid "half-written:"
+msgstr "scritti a metà:"
+
+msgid "not checked"
+msgstr "non verificato"
+
+msgid "{opt} does not apply to several local or SSH destinations"
+msgstr "{opt} non si applica a più destinazioni locali o SSH"
+
+msgid "could not be checked against the sources ({err}); nothing was written there"
+msgstr "non è stato possibile verificarlo rispetto alle sorgenti ({err}); lì non è stato scritto nulla"
+
+msgid "the host offers none"
+msgstr "l'host non ne offre"
+
+msgid "no SFTP ({how}) — with several destinations an SSH destination needs SFTP; copy to it on its own"
+msgstr "niente SFTP ({how}) — con più destinazioni una destinazione SSH richiede SFTP; copiate su di essa da sola"
+
+msgid "no SFTP and no tar there ({how}) — nothing can write to it"
+msgstr "né SFTP né tar lì ({how}) — niente può scriverci"
+
+msgid "copied, not verified: {why}"
+msgstr "copiato, non verificato: {why}"
+
+msgid "copied, not verified"
+msgstr "copiato, non verificato"
+
+#: blitcp.py (×N --use-sudo)
+msgid "{src}: with several destinations, --use-sudo takes a local source"
+msgstr "{src}: con più destinazioni, --use-sudo accetta un'origine locale"
+
+msgid "{opt} does not take --use-sudo with several destinations"
+msgstr "{opt} non accetta --use-sudo con più destinazioni"
+
+msgid "an SMB or cloud destination does not take --use-sudo"
+msgstr "una destinazione SMB o cloud non accetta --use-sudo"
+
+msgid "an SSH destination or a saved connection does not take --use-sudo yet — copy to it without --use-sudo"
+msgstr "una destinazione SSH o una connessione salvata non accetta ancora --use-sudo — copia lì senza --use-sudo"
+
+msgid "{mnt} is not mounted — mount it, or name another destination"
+msgstr "{mnt} non è montato — montalo o indica un'altra destinazione"
+
+#: blitcp.py (the fan-out's options, gone)
+msgid "{opt} is not available in this version"
+msgstr "{opt} non è disponibile in questa versione"
+
+msgid "{opt} goes with several destinations"
+msgstr "{opt} vale solo con più destinazioni"
+
+#: blitcp.py (several destinations: the fan-out's shapes)
+msgid "{src}: several destinations take a local source"
+msgstr "{src}: più destinazioni richiedono un'origine locale"
+
+msgid "a bare name — write it as NAME:folder/ for a saved connection, or ./{name} for a folder here"
+msgstr "un nome nudo — scrivilo NAME:cartella/ per una connessione salvata, o ./{name} per una cartella qui"
+
+#: blitcp_gui.py (several destinations: a verdict without a count)
+msgid "Verification failed"
+msgstr "Verifica non riuscita"
+
+#: blitcp.py (--manifest on the 4.2.15 engine)
+msgid "--manifest takes a local source, xxh128 hashes and verification"
+msgstr "--manifest richiede un'origine locale, hash xxh128 e verifica"
+
+msgid "manifest {name}"
+msgstr "manifest {name}"
+
+msgid "no manifest: its verification did not pass"
+msgstr "nessun manifest: la sua verifica non è riuscita"
+
+msgid "no manifest: nothing new to record"
+msgstr "nessun manifest: niente di nuovo da registrare"
+
+msgid "{n} files are not in its manifest: this run has no xxh128 of them"
+msgstr "{n} file non sono nel suo manifest: questa esecuzione non ne ha l'xxh128"
+
+#: blitcp.py (--manifest: files it does not hold)
+msgid "manifest incomplete: {n} files"
+msgstr "manifest incompleto: {n} file"
+
+#: blitcp.py (several destinations: a kind they do not take)
+msgid "not a destination several destinations take — a local folder, user@host:/path, smb://, s3://, az:// or gs://"
+msgstr "non è una destinazione che più destinazioni accettano — una cartella locale, user@host:/percorso, smb://, s3://, az:// o gs://"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "{why} — not written"
+msgstr "{why} — non scritto"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "the destination folder is not the one this run started with"
+msgstr "la cartella di destinazione non è quella con cui è iniziata questa esecuzione"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not a name under the destination"
+msgstr "non è un nome all'interno della destinazione"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "a folder on the way resolves outside the destination"
+msgstr "una cartella lungo il percorso porta fuori dalla destinazione"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "this destination folder is inside a source folder (the same folder on disk)"
+msgstr "questa cartella di destinazione è dentro una cartella di origine (la stessa cartella sul disco)"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "could not be reached from the destination root"
+msgstr "non raggiungibile dalla radice della destinazione"
+
+#: blitcp.py (an elevated run: a write or read not made)
+msgid "not the file the scan found (it, or a folder on the way, changed since) — not read"
+msgstr "non è il file trovato dalla scansione (il file, o una cartella lungo il percorso, è cambiato da allora) — non letto"
+msgid "1–{n} one destination"
+msgstr "1–{n} una destinazione"
+
+msgid "BLITCP_UI={val} is not lines, dashboard or quiet — ignored"
+msgstr "BLITCP_UI={val} non è lines, dashboard o quiet — ignorato"
+
+msgid "DEDUP"
+msgstr "DEDUP"
+
+msgid "DESTINATIONS"
+msgstr "DESTINAZIONI"
+
+msgid "DETAILS"
+msgstr "DETTAGLI"
+
+msgid "Deduplication"
+msgstr "Deduplicazione"
+
+msgid "Disk layout"
+msgstr "Layout disco"
+
+msgid "FROM"
+msgstr "DA"
+
+msgid "HASH"
+msgstr "HASH"
+
+msgid "How a copy is shown: lines (the default) or dashboard (full screen, a terminal of at least 100 × 24). Also [ui] mode in ~/.config/blitcp/config.toml or BLITCP_UI; -q always wins."
+msgstr "Come viene mostrata una copia: lines (predefinito) o dashboard (schermo intero, un terminale di almeno 100 × 24). Anche [ui] mode in ~/.config/blitcp/config.toml o BLITCP_UI; -q vince sempre."
+
+msgid "Incremental"
+msgstr "Controllo incrementale"
+
+msgid "Index existing"
+msgstr "Indicizza esistenti"
+
+msgid "NOTES"
+msgstr "NOTE"
+
+msgid "Notes"
+msgstr "Note"
+
+msgid "PHASES"
+msgstr "FASI"
+
+msgid "READ RATE, last 5 min"
+msgstr "LETTURA, ultimi 5 min"
+
+msgid "Source and {tag}destination are on the same disk ({disk}): reads and writes take turns."
+msgstr "Sorgente e {tag}destinazione sono sullo stesso disco ({disk}): letture e scritture si alternano."
+
+msgid "Source and {tag}destinations are on the same disk ({disk}): reads and writes take turns."
+msgstr "Sorgente e {tag}destinazioni sono sullo stesso disco ({disk}): letture e scritture si alternano."
+
+msgid "Source on a {dev}: files are read in their order on the disk."
+msgstr "Sorgente su {dev}: i file vengono letti nel loro ordine sul disco."
+
+msgid "Source on a {dev}: read order does not matter."
+msgstr "Sorgente su {dev}: l'ordine di lettura non conta."
+
+msgid "Space check"
+msgstr "Spazio"
+
+msgid "Stopped"
+msgstr "Fermato"
+
+msgid "Stopping safely: the file in progress finishes, the destination is synced, then blitcp exits."
+msgstr "Arresto sicuro: il file in corso termina, la destinazione viene sincronizzata, poi blitcp esce."
+
+msgid "Syncing the destination…"
+msgstr "Sincronizzazione della destinazione…"
+
+msgid "TO"
+msgstr "A"
+
+msgid "The dashboard without colours (as NO_COLOR)."
+msgstr "Il dashboard senza colori (come NO_COLOR)."
+
+msgid "all the time"
+msgstr "tutto il tempo"
+
+msgid "{pct} % of the time"
+msgstr "il {pct} % del tempo"
+
+msgid "(a rested HDD: 5–15 ms)"
+msgstr "(un HDD a riposo: 5–15 ms)"
+
+msgid "(a rested SATA SSD: under 1 ms)"
+msgstr "(un SSD SATA a riposo: meno di 1 ms)"
+
+msgid "(a rested NVMe drive: under 0.2 ms)"
+msgstr "(un'unità NVMe a riposo: meno di 0,2 ms)"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "Il disco di origine{dev} è il limite: è occupato {busy} e ogni lettura attende ~{ms} ms{ref}."
+
+msgid "The source disk{dev} is the limit: it is busy {busy}."
+msgstr "Il disco di origine{dev} è il limite: è occupato {busy}."
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else reading from it would help."
+msgstr "blitcp lo sta aspettando; aiuterebbe un disco più veloce, uno a riposo o che nient'altro legga da esso."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "Il {tag}disco di destinazione{dev} è il limite: è occupato {busy} e ogni scrittura attende ~{ms} ms{ref}."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy}."
+msgstr "Il {tag}disco di destinazione{dev} è il limite: è occupato {busy}."
+
+msgid "blitcp is waiting for it; a faster disk, a rested one, or nothing else writing to it would help."
+msgstr "blitcp lo sta aspettando; aiuterebbe un disco più veloce, uno a riposo o che nient'altro scriva su di esso."
+
+msgid "The network is the limit: it carries {pct} % of what its {mbps} Mb/s link can. blitcp is waiting for it; a faster link, or nothing else using it, would help."
+msgstr "La rete è il limite: trasporta il {pct} % di quanto consente il suo collegamento da {mbps} Mb/s. blitcp la sta aspettando; aiuterebbe un collegamento più veloce o che nient'altro lo usi."
+
+msgid "blitcp's CPU is the limit: it keeps one core busy all the time, while the disks and the network have room to spare. A faster CPU would help."
+msgstr "La CPU è il limite di blitcp: tiene un core occupato tutto il tempo, mentre i dischi e la rete hanno margine. Aiuterebbe una CPU più veloce."
+
+msgid "The network was the limit for {pct} % of the run."
+msgstr "La rete è stata il limite per il {pct} % dell'esecuzione."
+
+msgid "The source disk was the limit for {pct} % of the run."
+msgstr "Il disco sorgente è stato il limite per il {pct} % dell'esecuzione."
+
+msgid "The {tag}destination disk was the limit for {pct} % of the run."
+msgstr "Il disco di {tag}destinazione è stato il limite per il {pct} % dell'esecuzione."
+
+msgid "Total"
+msgstr "Totale"
+
+msgid "VERIFY"
+msgstr "VERIFICA"
+
+msgid "WHAT LIMITS THE SPEED"
+msgstr "COSA LIMITA LA VELOCITÀ"
+
+msgid "WRITE"
+msgstr "SCRITTURA"
+
+msgid "WRITE RATE, last 5 min"
+msgstr "SCRITTURA, ultimi 5 min"
+
+msgid "before the copy began; nothing was written"
+msgstr "prima che iniziasse la copia; nulla è stato scritto"
+
+msgid "blitcp's CPU was the limit for {pct} % of the run."
+msgstr "La CPU di blitcp è stata il limite per il {pct} % dell'esecuzione."
+
+msgid "blitcp: the terminal is {c} × {r}; the dashboard needs 100 × 24. The copy goes on."
+msgstr "blitcp: il terminale è {c} × {r}; il dashboard richiede 100 × 24. La copia prosegue."
+
+msgid "busy %  wait ms  read/s     write/s    r/s     w/s"
+msgstr "occ %   attesa ms lett/s    scritt/s   r/s     w/s"
+
+msgid "cpu"
+msgstr "cpu"
+
+msgid "dashboard: {err}"
+msgstr "dashboard: {err}"
+
+msgid "dest"
+msgstr "dest"
+
+msgid "engine"
+msgstr "motore"
+
+msgid "error — see notes"
+msgstr "errore — vedi note"
+
+msgid "g graph"
+msgstr "g grafico"
+
+msgid "half-written: {name} ({done} of {total})"
+msgstr "scritto a metà: {name} ({done} di {total})"
+
+msgid "in place"
+msgstr "sul posto"
+
+msgid "index"
+msgstr "indice"
+
+msgid "layout"
+msgstr "layout"
+
+msgid "limit: "
+msgstr "limite: "
+
+msgid "limit: blitcp"
+msgstr "limite: blitcp"
+
+msgid "n notes"
+msgstr "n note"
+
+msgid "net"
+msgstr "rete"
+
+msgid "no disk statistics"
+msgstr "nessuna statistica del disco"
+
+msgid "not verified"
+msgstr "non verificato"
+
+msgid "nothing half-written"
+msgstr "niente scritto a metà"
+
+msgid "now"
+msgstr "ora"
+
+msgid "now {rate}"
+msgstr "ora {rate}"
+
+msgid "of one core"
+msgstr "di un core"
+
+msgid "one core busy ◀"
+msgstr "un core pieno ◀"
+
+msgid "over SSH"
+msgstr "via SSH"
+
+msgid "q stop safely"
+msgstr "q ferma in sicurezza"
+
+msgid "rate"
+msgstr "velocità"
+
+msgid "send {tx} · receive {rx} · link {mbps}"
+msgstr "invio {tx} · ricezione {rx} · link {mbps}"
+
+msgid "source"
+msgstr "sorgente"
+
+msgid "source files skipped"
+msgstr "file sorgente saltati"
+
+msgid "space"
+msgstr "spazio"
+
+msgid "state"
+msgstr "stato"
+
+msgid "to continue: {cmd}"
+msgstr "per continuare: {cmd}"
+
+msgid "v back"
+msgstr "v indietro"
+
+msgid "v details"
+msgstr "v dettagli"
+
+msgid "verification FAILED"
+msgstr "verifica NON RIUSCITA"
+
+msgid "verified from disk"
+msgstr "verificato dal disco"
+
+msgid "waits for [{k}]"
+msgstr "attende [{k}]"
+
+msgid "writing"
+msgstr "in scrittura"
+
+msgid "{c} copied · {s} skipped · {l} linked · {f} failed"
+msgstr "{c} copiati · {s} saltati · {l} collegati · {f} non riusciti"
+
+msgid "{f} of {t} files copied · {b}"
+msgstr "{f} di {t} file copiati · {b}"
+
+msgid "{ms} ms/read ◀"
+msgstr "{ms} ms/lettura ◀"
+
+msgid "{ms} ms/write ◀"
+msgstr "{ms} ms/scrittura ◀"
+
+msgid "{n} destinations · {ok} done · {bad} failed"
+msgstr "{n} destinazioni · {ok} completate · {bad} non riuscite"
+
+msgid "{n} duplicates"
+msgstr "{n} duplicati"
+
+msgid "{path}: cannot be read ({why}) — ignored"
+msgstr "{path}: non leggibile ({why}) — ignorato"
+
+msgid "{path}: not valid TOML ({why}) — ignored"
+msgstr "{path}: TOML non valido ({why}) — ignorato"
+
+msgid "{path}: this Python cannot read TOML — ignored"
+msgstr "{path}: questo Python non sa leggere TOML — ignorato"
+
+msgid "{path}: ui.{key} = {val!r} is not allowed — ignored"
+msgstr "{path}: ui.{key} = {val!r} non è consentito — ignorato"
+
+msgid "{path}: unknown key '{key}' — ignored"
+msgstr "{path}: chiave sconosciuta '{key}' — ignorata"
+
+msgid "left out"
+msgstr "escluso"
+
+msgid "dropped — see notes"
+msgstr "abbandonato — vedi note"
+
+msgid "stalled — see notes"
+msgstr "bloccato — vedi note"
+
+msgid "{pct} % of {mbps} Mb/s"
+msgstr "{pct} % di {mbps} Mb/s"
+
+msgid "The source disk{dev} is the limit: it is busy {busy} and each write waits ~{ms} ms{ref}."
+msgstr "Il disco di origine{dev} è il limite: è occupato {busy} e ogni scrittura attende ~{ms} ms{ref}."
+
+msgid "The {tag}destination disk{dev} is the limit: it is busy {busy} and each read waits ~{ms} ms{ref}."
+msgstr "Il {tag}disco di destinazione{dev} è il limite: è occupato {busy} e ogni lettura attende ~{ms} ms{ref}."
+
+msgid "{rate} · {f} / {t} files"
+msgstr "{rate} · {f} / {t} file"
+
+msgid "↑↓ notes"
+msgstr "↑↓ note"
+
+msgid "◀ limit: cpu"
+msgstr "◀ limite: cpu"
+
+msgid "◀ limit: disk {pct} %"
+msgstr "◀ limite: disco {pct} %"
+
+msgid "◀ limit: network {mbps} Mb/s"
+msgstr "◀ limite: rete {mbps} Mb/s"
+
+msgid "The small files finish first; no large file is started."
+msgstr "I file piccoli finiscono prima; nessun file grande viene avviato."
+
+msgid "Stopped: the copied files get their links, folders, records and sync…"
+msgstr "Fermato: i file copiati ricevono collegamenti, cartelle, record e sincronizzazione…"
+
+msgid "Stopping safely: the files in progress finish, what was copied gets its links, folders, records and sync, then blitcp exits."
+msgstr "Arresto sicuro: i file in corso terminano, ciò che è stato copiato riceve collegamenti, cartelle, record e sincronizzazione, poi blitcp esce."
+
+msgid "size checked"
+msgstr "dimensione controllata"
+
+
+msgid "owner {owner}, mode {mode}"
+msgstr "proprietario {owner}, modo {mode}"
+
+msgid "local folder {path}"
+msgstr "cartella locale {path}"
+
+msgid "{where}, folder {path}"
+msgstr "{where}, cartella {path}"
+
+msgid "shares there: {names}"
+msgstr "condivisioni presenti: {names}"
+
+msgid "SMB share {share} on {host}, folder {path}"
+msgstr "condivisione SMB {share} su {host}, cartella {path}"
+
+msgid "{scheme} bucket {bucket}, prefix {prefix} (listed, nothing written)"
+msgstr "bucket {scheme} {bucket}, prefisso {prefix} (elencato, nulla scritto)"
+
+msgid "no answer from {host} in {n} s: is it on, reachable, firewalled?"
+msgstr "nessuna risposta da {host} in {n} s: è acceso, raggiungibile, bloccato da un firewall?"
+
+msgid "folder not writable: {folder} ({detail}) — give {user} write access, or choose another folder"
+msgstr "cartella non scrivibile: {folder} ({detail}) — dai a {user} il permesso di scrittura o scegli un'altra cartella"
+
+msgid "cannot connect to {host}: {err}"
+msgstr "impossibile connettersi a {host}: {err}"
+
+msgid "the host key could not be confirmed"
+msgstr "impossibile confermare la chiave dell'host"
+
+msgid "cannot list {where}: {err}"
+msgstr "impossibile elencare {where}: {err}"
+
+msgid "OK — connected, folder writable: {what}"
+msgstr "OK — connesso, cartella scrivibile: {what}"
+
+msgid "OK — connected, bucket listed: {what}"
+msgstr "OK — connesso, bucket elencato: {what}"
+
+msgid "connection {name!r} has no valid type"
+msgstr "la connessione {name!r} non ha un tipo valido"
+
+msgid "{path} is not a folder"
+msgstr "{path} non è una cartella"
+
+msgid "{host} does not accept {proto} on port {port} — check the port"
+msgstr "{host} non accetta {proto} sulla porta {port} — controlla la porta"
+
+msgid "cannot find host {host}: check its name"
+msgstr "host {host} non trovato: controlla il nome"
+
+msgid "its shares could not be listed: {err}"
+msgstr "impossibile elencare le sue condivisioni: {err}"
+
+msgid "the share {share} is a path — a share is a name, not a path: set the share to {head} and put {rest} in the path"
+msgstr "la condivisione {share} è un percorso — una condivisione è un nome, non un percorso: imposta {head} come condivisione e metti {rest} nel percorso"
+
+msgid "share {share} not found on {host}; {shares}. If it is a folder, put it in the path"
+msgstr "condivisione {share} non trovata su {host}; {shares}. Se è una cartella, mettila nel percorso"
+
+msgid "{who} refused the login (user {user}). Set the user and password in this connection"
+msgstr "{who} ha rifiutato l'accesso (utente {user}). Imposta utente e password in questa connessione"
+
+msgid "bucket {bucket} not found — check its name, and the region or account of this connection"
+msgstr "bucket {bucket} non trovato — controlla il nome e la regione o l'account di questa connessione"
+
+msgid "access denied to bucket {bucket} — check the keys of this connection and what they may read"
+msgstr "accesso negato al bucket {bucket} — controlla le chiavi di questa connessione e cosa possono leggere"
+
+msgid "the endpoint {endpoint} does not answer as a storage service — check the endpoint URL"
+msgstr "l'endpoint {endpoint} non risponde come servizio di archiviazione — controlla l'URL dell'endpoint"
+
+msgid "this connection has no host"
+msgstr "questa connessione non ha un host"
+
+msgid "access denied"
+msgstr "accesso negato"
+
+msgid "cannot check {dest}: {err}"
+msgstr "impossibile verificare {dest}: {err}"
+
+msgid "this connection has no share; {shares}"
+msgstr "questa connessione non ha una condivisione; {shares}"
+
+msgid "this connection has no default bucket: test it as {name}:BUCKET in a run, or set one with: blitcp creds edit {name}"
+msgstr "questa connessione non ha un bucket predefinito: provala come {name}:BUCKET in un'esecuzione, o impostane uno con: blitcp creds edit {name}"
+
+msgid "Password for {who}: "
+msgstr "Password per {who}: "
+
+msgid "the host key of {host} is not known yet (SHA256:{fp}) — connect once from a terminal to confirm it, or add it to {path}"
+msgstr "la chiave dell'host {host} non è ancora nota (SHA256:{fp}) — connettiti una volta da un terminale per confermarla, o aggiungila a {path}"
+
+msgid "{host} has no SFTP, and this connection is SFTP only"
+msgstr "{host} non ha SFTP, e questa connessione è solo SFTP"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection"
+msgstr "{who} ha rifiutato l'accesso. Provato: {tried}. Imposta una password o una chiave in questa connessione"
+
+msgid "{who} refused the login. Tried: {tried}. Set a password or key in this connection, or give --ssh-key / --ssh-password-env"
+msgstr "{who} ha rifiutato l'accesso. Provato: {tried}. Imposta una password o una chiave in questa connessione, oppure usa --ssh-key / --ssh-password-env"
+
+msgid "cannot be tested without the engine"
+msgstr "non verificabile senza il motore"
+
+msgid "test failed"
+msgstr "test non riuscito"
+
+msgid "SSH {who} port {port}"
+msgstr "SSH {who} porta {port}"
+
+msgid "dashboard closed ({err}); the copy goes on below"
+msgstr "dashboard chiusa ({err}); la copia prosegue qui sotto"
+
+msgid "dashboard: that view could not be drawn ({err}); back to the main view"
+msgstr "dashboard: impossibile disegnare quella vista ({err}); torno alla vista principale"
+
+msgid "the endpoint {endpoint} is not a valid URL — check the endpoint URL (for example https://host:port)"
+msgstr "l'endpoint {endpoint} non è un URL valido — controlla l'URL dell'endpoint (per esempio https://host:port)"
+
+msgid "Warning: could not read the cookies in {src} for {host} ({why}) — downloading without them"
+msgstr "Avviso: impossibile leggere i cookie in {src} per {host} ({why}) — download senza di essi"
+
+msgid "no such file"
+msgstr "file inesistente"
+
+msgid "not a cookies.txt file: {err}"
+msgstr "non è un file cookies.txt: {err}"
+
+msgid "this build cannot read a browser's session; export the browser's cookies to a cookies.txt and use --cookies FILE"
+msgstr "questa versione non legge la sessione di un browser; esporta i cookie del browser in un cookies.txt e usa --cookies FILE"
+
+msgid "browser_cookie3 is not installed: python -m pip install browser-cookie3"
+msgstr "browser_cookie3 non è installato: python -m pip install browser-cookie3"
+
+msgid "this build cannot read {src}"
+msgstr "questa versione non legge {src}"
+
+msgid "this site needs sign-in: open it in {browser} and sign in, or set cookies"
+msgstr "questo sito richiede l'accesso: aprilo in {browser} e accedi, oppure imposta i cookie"
+
+msgid "this site needs sign-in: open it in your browser and sign in, then choose it as the live session, or set cookies (--cookies FILE / --cookies-from-browser NAME)"
+msgstr "questo sito richiede l'accesso: aprilo nel tuo browser, accedi e sceglilo come sessione attiva, oppure imposta i cookie (--cookies FILE / --cookies-from-browser NAME)"
+
+msgid "Dry run…"
+msgstr "Prova…"
+
+msgid "Starting…"
+msgstr "Avvio…"
+
+msgid "copied — waiting for the others"
+msgstr "copiato — in attesa degli altri"
+
+msgid " and mtime"
+msgstr " e data di modifica"
+
+msgid "HTTP → {n} destinations  [one download]"
+msgstr "HTTP → {n} destinazioni  [un download]"
+
+msgid "SSH transfers require paramiko"
+msgstr "i trasferimenti SSH richiedono paramiko"
+
+msgid "Up to date — skipped (same size{and_mtime})."
+msgstr "Aggiornato — saltato (stessa dimensione{and_mtime})."
+
+msgid "a web source does not go to a cloud store — relay via an SSH or SMB destination"
+msgstr "una sorgente web non va in un archivio cloud — inoltra tramite una destinazione SSH o SMB"
+
+msgid "no destination is left to write to"
+msgstr "non resta alcuna destinazione su cui scrivere"
+
+msgid "transfer truncated"
+msgstr "trasferimento troncato"
+
+msgid "{path}: {why}"
+msgstr "{path}: {why}"
+
+msgid "Write a manifest (MHL)"
+msgstr "Scrivi un manifest (MHL)"
+
+msgid "Drop a destination that stops answering after {n} s"
+msgstr "Escludi una destinazione che non risponde per {n} s"
+
+msgid "Verify against manifest"
+msgstr "Verifica con il manifest"
+
+msgid "Check a destination against the manifest a copy wrote there, without the source (--verify-manifest)"
+msgstr "Controlla una destinazione con il manifest scritto lì da una copia, senza la sorgente (--verify-manifest)"
+
+msgid "Destination folder"
+msgstr "Cartella di destinazione"
+
+msgid "Read every file back (--deep)"
+msgstr "Rileggi ogni file (--deep)"
+
+msgid "manifest (MHL)"
+msgstr "manifest (MHL)"
+
+msgid "no manifest: {why}"
+msgstr "nessun manifest: {why}"
+
+msgid "The saved connections are locked — the run needs them"
+msgstr "Le connessioni salvate sono bloccate — l'esecuzione ne ha bisogno"
+
+msgid "{dest}: connecting…"
+msgstr "{dest}: connessione…"
+
+msgid "Check cancelled"
+msgstr "Controllo annullato"
+
+msgid "up to date"
+msgstr "aggiornato"
+
+msgid "sample-hashed"
+msgstr "hash a campione"
+
+msgid "--ui dashboard needs blitcp_dashboard.py beside blitcp.py — get it with: blitcp --fetch-modules (lines for now)"
+msgstr "--ui dashboard richiede blitcp_dashboard.py accanto a blitcp.py — ottenerlo con: blitcp --fetch-modules (righe per ora)"
+
+msgid "Write an ASC MHL generation (ascmhl/ and blitcp.xxh128) at each destination whose check found no fault, from the hashes this run already has (a local source, xxh128). What is skipped is decided as without it. Check a destination later, without the source, with --verify-manifest DEST."
+msgstr "Scrive una generazione ASC MHL (ascmhl/ e blitcp.xxh128) in ogni destinazione la cui verifica è riuscita, dagli hash che questa esecuzione ha già (un'origine locale, xxh128). Cosa viene saltato si decide come senza l'opzione. Per controllare una destinazione più tardi, senza l'origine: --verify-manifest DEST."
