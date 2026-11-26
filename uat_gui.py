@@ -1864,8 +1864,11 @@ def _xn_workspace():
     """A source and two local destinations under ~/.cache/blitcp-tests (never
     /tmp), and the engine's own state kept there too."""
     import shutil
-    base = os.path.join(os.path.expanduser("~/.cache/blitcp-tests"),
-                        "uat-gui-xn-%d" % os.getpid())
+    # normpath: on Windows expanduser("~/.cache/…") is "C:\\Users\\x/.cache/…",
+    # and the GUI prints a local destination with native separators.
+    base = os.path.normpath(os.path.join(
+        os.path.expanduser("~/.cache/blitcp-tests"),
+        "uat-gui-xn-%d" % os.getpid()))
     shutil.rmtree(base, ignore_errors=True)
     os.makedirs(os.path.join(base, "src", "sub"))
     os.makedirs(os.path.join(base, "db"))
@@ -1970,7 +1973,8 @@ def s_xn_real_engine_preview(w):
     try:
         a, b = os.path.join(base, "A"), os.path.join(base, "B")
         ok = (log.count("DRY RUN — Copy strategy") == 2
-              and ("[1] " + a) in log and ("[2] " + b) in log
+              and ("[1] " + os.path.normpath(a)) in log
+              and ("[2] " + os.path.normpath(b)) in log
               and not os.path.exists(a) and not os.path.exists(b)
               and not w.running)
         what = f"log tail={log[-600:]!r}"
