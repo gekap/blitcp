@@ -106,11 +106,9 @@ CLI：`--dry-run`
 试运行会完整读取每个源文件一次，以及目标中已有的每个大小相同的文件——它靠这些读取区分未改变的文件和重复文件。源很大时，
 请为这些读取预留时间。
 
-使用 `--dest` 或多个目标时，试运行会对每个目标列出：一次运行将写入、保持不变、
-链接（本次运行中的重复文件）或拒绝的文件，以及将作为冲突保留的文件。它会读取源
-（以区分未改变的文件和重复文件）以及每个目标的记录和文件，但在目标上不创建任何
-东西：不建文件夹、不写探测文件、不写清单、不建去重数据库；使用 `--resume` 时也不
-删除任何未完成的文件。试运行不涵盖：两个目标是否为同一位置、每个目标能否写入
+使用多个目标（`--dest`）时，试运行会在各自的 `[k]` 标题下依次显示：单独复制到
+每个目标时会做什么——写入、保持不变、链接（本次运行中的重复文件）或拒绝——并且在目标上不创建任何
+东西：不建文件夹、不写探测文件、不写清单、不建去重数据库。试运行不涵盖：两个目标是否为同一位置、每个目标能否写入
 （这两项检查都会写入探测文件），以及指向目标中已有相同文件的链接。使用
 `--log-file` 时，计划写成一条标记为 `"dry_run": true` 的记录，分类计数与一次运行
 的记录相同。
@@ -185,7 +183,7 @@ CLI：`-p`、`--progress`
 | SMB 共享 | **本次运行写入的每个文件都通过网络重新读回**并计算哈希——每个写入的文件多一次网络读取（4.3 只检查服务器报告的大小） |
 | SSH | **本次运行写入的每个文件都在远程主机上计算哈希**（xxh128sum、sha256sum、远端 Python 或 md5sum，有哪个用哪个）并比对；一个都没有，或服务器上没有 shell 时，改为通过 SFTP 逐个读回。汇总会写明用的是哪种 |
 | S3 / GCS | **每个对象**都与存储服务自己算出的校验和比对（S3：CRC32 或 SHA-256；GCS：MD5） |
-| Azure | 单次请求上传的 blob 与 Azure 算出的 Content-MD5 比对；分块上传的 blob（8 MiB 及以上）**只检查大小**——Azure 不为它保存校验和。`--deep-verify` 会下载并计算其哈希 |
+| Azure | 单次请求上传的 blob 与 Azure 算出的 Content-MD5 比对；分块上传的 blob（超过 64 MiB，即 Azure SDK 默认的单次上传大小）**只检查大小**——Azure 不为它保存校验和。`--manifest` 运行之后，`--verify-manifest DEST --deep` 会下载并计算其哈希 |
 
 **每一行成功信息都会写明每个文件是怎么检查的。** 例如
 `✓ Verified: all 12 files OK — 10 read back from the disk (O_DIRECT) · 2 by existence + size: links and clones`。
@@ -366,8 +364,7 @@ CLI：`--no-cache`
 
 ### 第二次运行：清单模式与无清单模式
 
-复制默认不保存清单，也不保存续传日志，除非加上 `--manifest`、`--resume`、
-`--overwrite-changed` 或 `--job-name`：单个目标与多个目标（`--dest`）相同。（4.4.0b2
+复制默认不保存清单，除非加上 `--manifest`：单个目标与多个目标（`--dest`）相同。（4.4.0b2
 之前，`--dest` 始终保存清单；复制到 USB 硬盘时，它的续传日志比复制本身还费时。）
 
 - **不加 `--manifest`** 时，本地目标由 blitcp 的记录决定（见上文“禁用哈希缓存”）：记录能
@@ -376,8 +373,7 @@ CLI：`--no-cache`
   重新运行时清单记录为未变化的文件不再读取即跳过（快，信任记录）：源文件必须具有记录中的大小和
   修改时间，且在保留真实变更时间的文件系统上具有记录中的变更时间。源在 FAT、exFAT、NFS、SMB 或
   FUSE 上时（例如相机存储卡），由大小和修改时间决定，修改时间与上次读取时间相差不到 2 秒的文件
-  会再次读取。**在那里，大小不变且恢复了修改时间的改动只有使用 `--verify-source`（读取并比较每个
-  源文件）才能发现。**
+  会再次读取。
 
 已经有 `ascmhl/` 文件夹的目标保持清单模式；处于清单模式的每个目标，运行时都会说明
 这一点。没有 `xxhash` 包时不保存清单（其记录为 xxh128），运行会在复制前说明。要退出清单模式，删除该
@@ -565,11 +561,11 @@ blitcp.py /data s3://my-bucket/incoming
 
 **各对象存储的校验方式。** 每个对象都与*存储*对其所保存字节计算的校验和比对，并与 blitcp 发送字节的同类摘要比较：
 
-| 存储 | 小于 8 MiB（一次请求） | 8 MiB 及以上（分段 / 分块） |
-|------|------------------------|-----------------------------|
-| S3 及 S3 兼容 | 存储的 SHA-256 | 存储的**整对象** CRC64NVME（无 `awscrt` 时为 CRC32），上传完成时由存储核对 |
+| 存储 | 一次请求上传 | 分段 / 分块上传 |
+|------|--------------|-----------------|
+| S3 及 S3 兼容（8 MiB 起分段） | 存储的 SHA-256 | 存储的**整对象** CRC64NVME（无 `awscrt` 时为 CRC32），上传完成时由存储核对 |
 | Google Cloud Storage | 存储的 MD5 | 存储的 MD5 |
-| Azure Blob | 存储的 MD5 | **仅大小**——Azure 不为分块上传的 blob 保存校验和；请使用 `--deep-verify` |
+| Azure Blob（超过 64 MiB 分块，即 SDK 默认的单次上传大小） | 存储的 MD5 | **仅大小**——Azure 不为分块上传的 blob 保存校验和 |
 
 摘要会写明每个文件达到的级别。`blitcp --verify-manifest DEST` 可在没有源的情况下稍后按相同级别检查目标
 （存储的校验和对比其清单记录的值）；`--deep` 则下载每个文件并计算哈希。
@@ -581,17 +577,20 @@ CRC64NVME——可通过可选附加项 `pip install "blitcp[cloud-crt]"`（或 
 在上传后**复制到自身**，以便其元数据带上 blitcp 的哈希。这次复制会重写整个对象——对大文件耗时较长，而在有最短
 存储期限的存储（Wasabi、Backblaze B2）上，被替换的副本可能仍按该期限计费。目标的摘要会说明是否发生以及涉及多少对象。
 
-**Azure 视频卸载。** 摄像机文件几乎都在 8 MiB 以上，因此在 Azure 上是分块 blob，Azure 不为其保存校验和。
+**Azure 视频卸载。** 超过 64 MiB（Azure SDK 默认的单次上传大小）的摄像机文件会分块上传，而 Azure 不为分块 blob 保存校验和。
 blitcp 会在每个 blob 的元数据中存入自己的 MD5 和 xxh128，但只有读回 blob 才能证明 Azure 实际保存的内容。
-请用 `--deep-verify` 指定 Azure 目标：
+复制时加上 `--manifest`，然后用 `--verify-manifest … --deep` 检查该容器，它会下载每个 blob 并计算哈希：
 
 ```
-blitcp /media/CARD01 --dest /mnt/shuttle --dest az://media/2026-11-06 \
-       --deep-verify az://media/2026-11-06
+blitcp --manifest /media/CARD01 --dest /mnt/shuttle/2026-11-26_CARD01 --dest az://media/2026-11-26_CARD01
+blitcp --verify-manifest az://media/2026-11-26_CARD01 --deep
 ```
 
-这样每个 blob 都会被下载并与卡的那一次读取比对哈希（`--deep-verify all` 对所有目标都这样做）。代价是把发送到该目标的
-全部内容下载一次。
+代价是把发送到该目标的全部内容下载一次。
+
+**每张卡一个目标文件夹。** 目标中已有同名但内容不同的文件时，该文件会被替换，运行不会对此发出警告。
+两张卡常常带有相同的文件名（`C0001.MP4`），所以把第二张卡复制到第一张卡的文件夹里会替换掉它的片段。
+请像上面那样，为每张卡使用单独的文件夹。
 
 ## 列出远程对象（`ls` / `list-objects`）
 
@@ -1361,20 +1360,10 @@ python blitcp.py /data /mnt/usb/data --log-file copy.json
 }
 ```
 
-使用 `--dest` 时，日志同样由这两部分组成，覆盖每个目标：
+`--log-file` 目前只接受一个目标：同时复制到多个目标并带 `--log-file` 时，会以一行信息拒绝
+（"--log-file takes one destination for now"，退出码 2）。只有一个 `--dest` 时，记录就是上面那样。
 
-- **`summary.destinations`** — 每个目标一条：`dest`、其结论 `verdict`
-  （`verified`、`failed` 等）和 `reason`，分类计数 `copied`、`linked`、
-  `skipped`、`refused`、`errors`、`conflicts`（目标中已有内容不同的文件，保留不动）
-  和 `not_written`（目标先失败了），以及 `verify_failed`、`bytes_written`、
-  `bytes_linked` 和它的清单。只有一个目标时，顶层汇总也以上述名称带有该目标的
-  分类计数。
-- **`files`** — 每个文件在每个目标上各一条，含 `dest`（1、2……）、`action`、
-  `path`、`size`，以及适用时的 `verified` / `verify_level`、`reason`（跳过的原因）、
-  `link_target` 或 `error`。
-
-每个目标的分类计数之和必须等于 `total_files`，并与本次运行自己的计数一致；
-不一致的日志会在 `consistency_error` 中写明，运行以 1 退出。
+各分类计数之和必须等于 `total_files`；不一致的记录会在 `consistency_error` 中写明，运行以 1 退出。
 
 ---
 

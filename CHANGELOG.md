@@ -244,10 +244,7 @@ Azure block lists by size only, said so).
 - **Several destinations** take a local source or an HTTP(S) URL, a saved
   connection as `NAME:folder/`; `--log-file` and `--small-files stream`
   take one destination. Others are refused in one line, exit 2.
-- **Refused, and no longer in `--help`:** `--partial`, `--no-partial`,
-  `--verify-source`, `--resume`, `--job-name`, `--overwrite-changed`,
-  `--deep-verify`, `--fanout-buffer` ("not available in this version",
-  exit 2); `--stall-timeout` with one destination.
+- **Refused:** `--stall-timeout` with one destination (exit 2).
 
 ## v4.2.15 — 2026-10-29
 

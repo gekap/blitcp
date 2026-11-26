@@ -1311,9 +1311,6 @@ msgstr "--dest {dest} 位于源 {src} 之内。"
 msgid "--dest {dest}: only local destinations are supported with --dest in this version."
 msgstr "--dest {dest}：此版本的 --dest 仅支持本地目标。"
 
-msgid "--fanout-buffer must be at least 1 MB."
-msgstr "--fanout-buffer 至少为 1 MB。"
-
 msgid "--stall-timeout must be at least 1 second."
 msgstr "--stall-timeout 至少为 1 秒。"
 
@@ -1331,9 +1328,6 @@ msgstr "目标"
 
 msgid "FAILED: {reason}"
 msgstr "失败：{reason}"
-
-msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
-msgstr "用于已读取但尚未写入所有目标的数据的内存；占满时由最慢的目标决定速度（默认：{n}）"
 
 msgid "Pre-flight failed; no file was written."
 msgstr "预检失败；未写入任何文件。"
@@ -1458,20 +1452,11 @@ msgstr "已写入 {size} · 此目标用时 {time}"
 msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
 msgstr "从 FILE 读取目标，每行一个，等同于逐个用 --dest 指定。跳过空行以及第一个非空白字符为 # 的行；行内其他内容不做裁剪。可重复。"
 
-msgid "A name for this copy, shown in the summary and recorded with the result."
-msgstr "此次复制的名称，显示在摘要中并随结果记录。"
-
 msgid "--dests-file {path}: cannot read it ({why})"
 msgstr "--dests-file {path}：无法读取（{why}）"
 
 msgid "--dests-file {path} names no destination."
 msgstr "--dests-file {path} 未列出任何目标。"
-
-msgid "--job-name goes with --dest or --dests-file."
-msgstr "--job-name 需与 --dest 或 --dests-file 一起使用。"
-
-msgid "--job-name must be 1 to 200 printable characters on one line."
-msgstr "--job-name 必须是一行内 1 到 200 个可打印字符。"
 
 msgid "Job: {name}"
 msgstr "任务：{name}"
@@ -1572,20 +1557,8 @@ msgstr "{n} 个文件被读取了第二次：先读取以与目标为其记录�
 msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
 msgstr "此处有 {n} 个文件是其 ASC MHL 历史中已有文件的新版本；ascmhl 会按较早的记录报告它们（ASC MHL 假定介质不变）。blitcp --verify-manifest 和 {lst} 检查当前版本。"
 
-msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
-msgstr "继续一次被中断的 --dest 运行：已写入且大小、时间和 xxh128 仍与源一致的文件不再复制（尚未校验的现在读回并校验）。"
-
-msgid "--resume goes with --dest or --dests-file."
-msgstr "--resume 需与 --dest 或 --dests-file 一起使用。"
-
 msgid "the resume journal could not be written: {why}"
 msgstr "无法写入续传日志：{why}"
-
-msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
-msgstr "替换目标清单中记录为不同内容的文件（默认保留并报告：相机在每张卡上都会重新开始片段编号）。"
-
-msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
-msgstr "此处有 {n} 个文件内容不同 — 已原样保留，未覆盖（--overwrite-changed 会替换它们；每张卡使用单独的文件夹可避免冲突）"
 
 msgid "… and {n} more"
 msgstr "… 另外 {n} 个"
@@ -1740,15 +1713,6 @@ msgstr "其中 {n} 个仅按大小检查；--deep 会读回每个文件并计算
 msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
 msgstr "在没有源的情况下，按目标（本地文件夹、SSH 文件夹、SMB 共享或存储桶）自身的清单（ascmhl/ 或 blitcp.xxh128）检查它，级别取决于目标：读回、由远程主机计算哈希，或使用存储自己的校验和（--deep 会读回每个文件）。不写入任何内容。"
 
-msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
-msgstr "--deep-verify 需与 --dest 一起使用（配合 --verify-manifest 时请用 --deep）。"
-
-msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
-msgstr "--deep-verify {dest} 不是任何一个 --dest 目标（请按 --dest 的写法给出，或用 'all'）。"
-
-msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
-msgstr "通过下载发送到指定 --dest 的每个文件并在本地计算哈希来校验它（可重复；'all' 表示全部），而不是使用存储的校验和或远程主机的哈希。对于 8 MiB 及以上的 Azure blob（视频卸载），这是唯一的内容校验：Azure 不为它们保存校验和。"
-
 msgid "content differs from the source (store CRC)"
 msgstr "内容与源不同（存储的 CRC）"
 
@@ -1775,9 +1739,6 @@ msgstr "共享上的重分析点（链接、联接点、分层或去重文件）
 
 msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
 msgstr "源自身的清单（{mhl}/、{lst}：{n} 个文件）不会被复制：每个目标都写入自己的清单。"
-
-msgid "--deep-verify: every file read back from this destination and hashed"
-msgstr "--deep-verify：从该目标读回每个文件并计算哈希"
 
 msgid "A folder on this computer or a mounted drive."
 msgstr "本机或已挂载驱动器上的文件夹。"
@@ -1871,9 +1832,6 @@ msgstr "已校验：{n} 个文件"
 
 msgid "Verify again later"
 msgstr "稍后再次校验"
-
-msgid "Verify by downloading every file (--deep-verify)"
-msgstr "下载每个文件进行校验（--deep-verify）"
 
 msgid "With several destinations, a remote source must be the only source"
 msgstr "多个目标时，远程源必须是唯一的源"
@@ -2058,12 +2016,6 @@ msgstr "其中 {n} 个与本次运行的另一个文件内容相同：在目标�
 msgid "{n} copied on the remote host (it took no hard link)"
 msgstr "{n} 个在远程主机上复制（不支持硬链接）"
 
-msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
-msgstr "本地目标：每个文件先以隐藏名称写入，刷写到磁盘后再重命名到位——不会看到写了一半的文件。不使用此选项时，新文件直接写入原位，已存在的文件通过隐藏名称替换。"
-
-msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
-msgstr "本地目标：新文件直接写入原位，已存在的文件通过隐藏名称替换；最后对目标磁盘统一刷写（默认方式，从对象存储下载时也是如此）。"
-
 msgid "{opt} goes with --dest."
 msgstr "{opt} 需与 --dest 一起使用。"
 
@@ -2118,20 +2070,8 @@ msgstr "无法读回已写入的内容（每个文件都以此方式校验）: �
 msgid "The share took {got} of {want} connections: files went {n} at a time."
 msgstr "共享接受了 {want} 个连接中的 {got} 个: 文件每次传输 {n} 个。"
 
-msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "已是最新：全部 {n} 个文件按大小和修改时间未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
-
 msgid "Up to date: nothing here needed writing"
 msgstr "已是最新：此处无需写入任何内容"
-
-msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} 个按大小和修改时间未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
-
-msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "已是最新：全部 {n} 个文件按大小和存储的版本标记未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
-
-msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} 个按大小和存储的版本标记未变（如其清单所记录）；未读取 — --verify-source 会读取并比较它们"
 
 msgid "the object changed after it was listed"
 msgstr "对象在列出后发生了变化"
@@ -2141,9 +2081,6 @@ msgstr "已删除中断的运行在此处留下的 {n} 个未完成文件："
 
 msgid "Could not look for unfinished files an interrupted run may have left: {why}"
 msgstr "无法查找中断的运行可能留下的未完成文件：{why}"
-
-msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
-msgstr "在单一目标的复制中保存 ASC MHL 清单和 blitcp.xxh128（--dest、--resume、--overwrite-changed 和 --job-name 始终保存）。加上它，未变化的文件不读取即跳过（快，信任记录）。不加它，本地目标由 blitcp 的记录决定（记录显示两端均未变化的文件不读取；其他大小相同的文件会比较）；在 SSH 和 SMB 上，只要文件的大小和修改时间仍与记录一致，就由 blitcp 存放在那里的签名哈希缓存决定，因此在 blitcp 之外被改动、大小不变且恢复了时间的目标文件，重新运行时不会被发现，除非使用 --no-cache。"
 
 msgid "hash cache not updated: {why}"
 msgstr "哈希缓存未更新：{why}"
@@ -2180,9 +2117,6 @@ msgstr "{n} 个冲突（目标中已有内容不同的文件，保留不动）"
 
 msgid "{n} unreadable at the source"
 msgstr "{n} 个在源中无法读取"
-
-msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
-msgstr "演练中不查找：被中断的运行留下的未完成文件（--resume 会删除它们）。"
 
 msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
 msgstr "演练中不检查：两个目标是否为同一位置（该检查会写入一个探测文件）。"
@@ -2234,9 +2168,6 @@ msgstr "无清单 — 由 blitcp 的记录决定：记录显示两端都未改�
 
 msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
 msgstr "禁用持久化哈希缓存：带有 blitcp 记录的去重数据库，以及不加 --manifest 时 SSH 或 SMB 目标上 blitcp 的签名哈希缓存（.blitcp_manifest.json）。此时重新运行会读取并比较本地目标上每个大小相同的文件，在 SSH 主机上计算其哈希，并重新写入 SMB 共享上的每个文件。在 FAT、exFAT、NFS、SMB 和 FUSE 上，记录依据大小和修改时间判断：在那里大小不变且恢复了修改时间的改动，只有使用 --no-cache 才能发现。"
-
-msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
-msgstr "读取每个源文件并计算哈希，即使各目标的清单记录了相同的大小、修改时间和变更时间（不加此选项时这些文件不会读取）。源在 FAT、exFAT、NFS、SMB 或 FUSE 上时，由大小和修改时间决定：在那里大小不变且恢复了修改时间的改动，只有使用 --verify-source 才能发现。"
 
 msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
 msgstr "注意：--relay-spool-mb 对此次复制不起作用：它让每个文件流经其缓冲区，不会向磁盘暂存任何内容。"
@@ -2628,14 +2559,8 @@ msgstr "（目标已有）"
 msgid "(the store's sidecar)"
 msgstr "（存储的附属文件）"
 
-msgid "(on with --manifest/--resume)"
-msgstr "（--manifest/--resume 时开启）"
-
 msgid "partial"
 msgstr "临时文件"
-
-msgid "partial (--partial)"
-msgstr "临时文件 (--partial)"
 
 msgid "partial, renamed into place"
 msgstr "临时文件，完成后改名"
@@ -2792,9 +2717,6 @@ msgstr "未写入，无需校验"
 
 msgid "the source"
 msgstr "源"
-
-msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
-msgstr "目标处内容不同，保持原样（--overwrite-changed 可替换）"
 
 msgid "hash mismatch after write"
 msgstr "写入后哈希不匹配"
@@ -3065,10 +2987,6 @@ msgstr "SSH 目标或已保存的连接暂不支持 --use-sudo — 请不带 --u
 
 msgid "{mnt} is not mounted — mount it, or name another destination"
 msgstr "{mnt} 未挂载 — 请挂载它，或指定其他目标"
-
-#: blitcp.py (the fan-out's options, gone)
-msgid "{opt} is not available in this version"
-msgstr "此版本不提供 {opt}"
 
 msgid "{opt} goes with several destinations"
 msgstr "{opt} 仅用于多个目标"

@@ -1311,9 +1311,6 @@ msgstr "Το --dest {dest} βρίσκεται μέσα στην πηγή {src}."
 msgid "--dest {dest}: only local destinations are supported with --dest in this version."
 msgstr "--dest {dest}: σε αυτή την έκδοση το --dest υποστηρίζει μόνο τοπικούς προορισμούς."
 
-msgid "--fanout-buffer must be at least 1 MB."
-msgstr "Το --fanout-buffer πρέπει να είναι τουλάχιστον 1 MB."
-
 msgid "--stall-timeout must be at least 1 second."
 msgstr "Το --stall-timeout πρέπει να είναι τουλάχιστον 1 δευτερόλεπτο."
 
@@ -1331,9 +1328,6 @@ msgstr "Προορισμοί"
 
 msgid "FAILED: {reason}"
 msgstr "ΑΠΕΤΥΧΕ: {reason}"
-
-msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
-msgstr "Μνήμη για δεδομένα που διαβάστηκαν αλλά δεν έχουν γραφτεί ακόμη σε κάθε προορισμό· όταν γεμίσει, ο πιο αργός προορισμός ορίζει τον ρυθμό (προεπιλογή: {n})"
 
 msgid "Pre-flight failed; no file was written."
 msgstr "Ο προέλεγχος απέτυχε· δεν γράφτηκε κανένα αρχείο."
@@ -1458,20 +1452,11 @@ msgstr "{size} γράφτηκαν · {time} για αυτόν τον προορ�
 msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
 msgstr "Ανάγνωση προορισμών από το FILE, ένας ανά γραμμή, σαν να δόθηκε ο καθένας με --dest. Οι κενές γραμμές και όσες ο πρώτος μη κενός χαρακτήρας τους είναι # παραλείπονται· τίποτε άλλο σε μια γραμμή δεν περικόπτεται. Επαναλαμβανόμενο."
 
-msgid "A name for this copy, shown in the summary and recorded with the result."
-msgstr "Ένα όνομα για αυτή την αντιγραφή, που εμφανίζεται στη σύνοψη και καταγράφεται με το αποτέλεσμα."
-
 msgid "--dests-file {path}: cannot read it ({why})"
 msgstr "--dests-file {path}: δεν μπορεί να διαβαστεί ({why})"
 
 msgid "--dests-file {path} names no destination."
 msgstr "Το --dests-file {path} δεν ορίζει κανέναν προορισμό."
-
-msgid "--job-name goes with --dest or --dests-file."
-msgstr "Το --job-name χρησιμοποιείται με --dest ή --dests-file."
-
-msgid "--job-name must be 1 to 200 printable characters on one line."
-msgstr "Το --job-name πρέπει να έχει 1 έως 200 εκτυπώσιμους χαρακτήρες σε μία γραμμή."
 
 msgid "Job: {name}"
 msgstr "Εργασία: {name}"
@@ -1572,20 +1557,8 @@ msgstr "{n} αρχεία διαβάστηκαν δεύτερη φορά: δια�
 msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
 msgstr "{n} αρχεία εδώ είναι νέα έκδοση αρχείου που ήδη υπήρχε στο ιστορικό ASC MHL· το ascmhl θα τα αναφέρει με βάση την προηγούμενη εγγραφή (το ASC MHL θεωρεί ότι τα μέσα δεν αλλάζουν). Το blitcp --verify-manifest και το {lst} ελέγχουν την τρέχουσα έκδοση."
 
-msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
-msgstr "Συνέχιση μιας διακοπείσας εκτέλεσης --dest: τα αρχεία που είχε ήδη γράψει και των οποίων το μέγεθος, ο χρόνος και το xxh128 ταιριάζουν ακόμη με την πηγή δεν αντιγράφονται ξανά (όσα δεν είχαν επαληθευτεί διαβάζονται ξανά και επαληθεύονται τώρα)."
-
-msgid "--resume goes with --dest or --dests-file."
-msgstr "Το --resume χρησιμοποιείται με --dest ή --dests-file."
-
 msgid "the resume journal could not be written: {why}"
 msgstr "το ημερολόγιο συνέχισης δεν μπόρεσε να γραφτεί: {why}"
-
-msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
-msgstr "Αντικατάσταση αρχείου που το manifest ενός προορισμού καταγράφει με διαφορετικό περιεχόμενο (από προεπιλογή διατηρείται και αναφέρεται: οι κάμερες ξεκινούν την αρίθμηση των clip από την αρχή σε κάθε κάρτα)."
-
-msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
-msgstr "{n} αρχεία υπάρχουν εδώ με διαφορετικό περιεχόμενο — διατηρήθηκαν ως έχουν, δεν αντικαταστάθηκαν (το --overwrite-changed τα αντικαθιστά· ένας φάκελος ανά κάρτα αποφεύγει τη σύγκρουση)"
 
 msgid "… and {n} more"
 msgstr "… και {n} ακόμη"
@@ -1740,15 +1713,6 @@ msgstr "{n} από αυτά μόνο με βάση το μέγεθος· το --
 msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
 msgstr "Έλεγχος ενός προορισμού — τοπικού φακέλου, φακέλου SSH, κοινόχρηστου SMB ή bucket — με το δικό του manifest (ascmhl/ ή blitcp.xxh128), χωρίς την πηγή, στο επίπεδο που προσφέρει: ανάγνωση ξανά, κατακερματισμός από τον απομακρυσμένο υπολογιστή ή το δικό του checksum του χώρου αποθήκευσης (το --deep διαβάζει ξανά κάθε αρχείο). Δεν γράφει τίποτα."
 
-msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
-msgstr "Το --deep-verify πάει με το --dest (με το --verify-manifest χρησιμοποιήστε --deep)."
-
-msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
-msgstr "Το --deep-verify {dest} δεν είναι ένας από τους προορισμούς --dest (δώστε το ακριβώς όπως στο --dest, ή 'all')."
-
-msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
-msgstr "Έλεγχος του --dest που ορίζεται (επαναλαμβανόμενο· 'all' για όλους) κατεβάζοντας κάθε αρχείο που του στάλθηκε και κατακερματίζοντάς το εδώ, αντί για το checksum του χώρου αποθήκευσης ή τον κατακερματισμό του απομακρυσμένου υπολογιστή. Για blobs του Azure από 8 MiB και πάνω (εκφορτώσεις βίντεο) είναι ο μόνος έλεγχος περιεχομένου: το Azure δεν κρατά checksum γι' αυτά."
-
 msgid "content differs from the source (store CRC)"
 msgstr "το περιεχόμενο διαφέρει από την πηγή (CRC του χώρου αποθήκευσης)"
 
@@ -1775,9 +1739,6 @@ msgstr "σημείο ανάλυσης (reparse point) στον κοινόχρη�
 
 msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
 msgstr "Το δικό manifest της πηγής ({mhl}/, {lst}: {n} αρχεία) δεν αντιγράφεται: κάθε προορισμός γράφει το δικό του."
-
-msgid "--deep-verify: every file read back from this destination and hashed"
-msgstr "--deep-verify: κάθε αρχείο διαβάζεται ξανά από αυτόν τον προορισμό και κατακερματίζεται"
 
 msgid "A folder on this computer or a mounted drive."
 msgstr "Ένας φάκελος σε αυτόν τον υπολογιστή ή σε προσαρτημένη μονάδα."
@@ -1871,9 +1832,6 @@ msgstr "Ελέγχθηκαν: {n} αρχεία"
 
 msgid "Verify again later"
 msgstr "Επανέλεγχος αργότερα"
-
-msgid "Verify by downloading every file (--deep-verify)"
-msgstr "Έλεγχος με λήψη κάθε αρχείου (--deep-verify)"
 
 msgid "With several destinations, a remote source must be the only source"
 msgstr "Με πολλούς προορισμούς, μια απομακρυσμένη πηγή πρέπει να είναι η μόνη πηγή"
@@ -2058,12 +2016,6 @@ msgstr "{n} από αυτά έχουν το ίδιο περιεχόμενο με
 msgid "{n} copied on the remote host (it took no hard link)"
 msgstr "{n} αντιγράφηκαν στον απομακρυσμένο υπολογιστή (δεν δέχτηκε hard link)"
 
-msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
-msgstr "Τοπικοί προορισμοί: κάθε αρχείο γράφεται με κρυφό όνομα, γράφεται στον δίσκο και μετονομάζεται στη θέση του — ένα αρχείο δεν φαίνεται ποτέ μισογραμμένο. Χωρίς αυτό, ένα νέο αρχείο γράφεται απευθείας στη θέση του και ένα αρχείο που υπάρχει ήδη αντικαθίσταται μέσω κρυφού ονόματος."
-
-msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
-msgstr "Τοπικοί προορισμοί: ένα νέο αρχείο γράφεται απευθείας στη θέση του και ένα αρχείο που υπάρχει ήδη αντικαθίσταται μέσω κρυφού ονόματος· ο δίσκος του προορισμού συγχρονίζεται στο τέλος (η προεπιλογή, και για λήψη από αποθήκη αντικειμένων)."
-
 msgid "{opt} goes with --dest."
 msgstr "Το {opt} πάει μαζί με το --dest."
 
@@ -2118,20 +2070,8 @@ msgstr "δεν είναι δυνατή η ανάγνωση όσων γράφτη
 msgid "The share took {got} of {want} connections: files went {n} at a time."
 msgstr "Ο κοινόχρηστος φάκελος δέχτηκε {got} από {want} συνδέσεις: τα αρχεία πήγαν {n} τη φορά."
 
-msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "Ενημερωμένος: και τα {n} αρχεία είναι αμετάβλητα κατά μέγεθος και χρόνο τροποποίησης (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
-
 msgid "Up to date: nothing here needed writing"
 msgstr "Ενημερωμένος: τίποτα εδώ δεν χρειάστηκε εγγραφή"
-
-msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} αμετάβλητα κατά μέγεθος και χρόνο τροποποίησης (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
-
-msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "Ενημερωμένος: και τα {n} αρχεία είναι αμετάβλητα κατά μέγεθος και ετικέτα έκδοσης του αποθηκευτικού χώρου (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
-
-msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} αμετάβλητα κατά μέγεθος και ετικέτα έκδοσης του αποθηκευτικού χώρου (όπως καταγράφει το manifest του)· δεν διαβάστηκαν — το --verify-source τα διαβάζει και τα συγκρίνει"
 
 msgid "the object changed after it was listed"
 msgstr "το αντικείμενο άλλαξε αφού καταγράφηκε στη λίστα"
@@ -2141,9 +2081,6 @@ msgstr "Αφαιρέθηκαν {n} ημιτελή αρχεία που είχε �
 
 msgid "Could not look for unfinished files an interrupted run may have left: {why}"
 msgstr "Δεν ήταν δυνατός ο έλεγχος για ημιτελή αρχεία που μπορεί να άφησε μια εκτέλεση που διακόπηκε: {why}"
-
-msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
-msgstr "Τήρηση manifest ASC MHL και blitcp.xxh128 σε αντιγραφή προς έναν προορισμό (τα --dest, --resume, --overwrite-changed και --job-name το κάνουν πάντα). Με αυτό, τα αμετάβλητα αρχεία παραλείπονται χωρίς ανάγνωση (γρήγορο, εμπιστεύεται τις εγγραφές). Χωρίς αυτό, έναν τοπικό προορισμό τον κρίνουν οι εγγραφές του blitcp (ένα αρχείο που δείχνουν αμετάβλητο και στις δύο πλευρές δεν διαβάζεται· κάθε άλλο αρχείο ίδιου μεγέθους συγκρίνεται)· σε SSH και SMB αποφασίζει η υπογεγραμμένη hash cache του blitcp εκεί, εφόσον το μέγεθος και ο χρόνος τροποποίησης ενός αρχείου είναι αυτά που κατέγραψε, οπότε ένα αρχείο προορισμού που άλλαξε εκτός blitcp με το ίδιο μέγεθος και επαναφερμένο χρόνο δεν εντοπίζεται σε νέα εκτέλεση, εκτός αν χρησιμοποιηθεί το --no-cache."
 
 msgid "hash cache not updated: {why}"
 msgstr "η hash cache δεν ενημερώθηκε: {why}"
@@ -2180,9 +2117,6 @@ msgstr "{n} συγκρούσεις (υπάρχουν εκεί με άλλο πε
 
 msgid "{n} unreadable at the source"
 msgstr "{n} μη αναγνώσιμα στην πηγή"
-
-msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
-msgstr "Δεν αναζητούνται σε δοκιμαστική εκτέλεση: ημιτελή αρχεία που άφησε μια εκτέλεση που διακόπηκε (το --resume τα αφαιρεί)."
 
 msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
 msgstr "Δεν ελέγχεται σε δοκιμαστική εκτέλεση: αν δύο προορισμοί είναι το ίδιο σημείο (ο έλεγχος γράφει ένα δοκιμαστικό αρχείο)."
@@ -2234,9 +2168,6 @@ msgstr "χωρίς manifest — αποφασίζουν οι καταγραφές
 
 msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
 msgstr "Απενεργοποίηση των μόνιμων προσωρινών μνημών hash: της βάσης dedup με τις καταγραφές του blitcp και, χωρίς --manifest, της υπογεγραμμένης προσωρινής μνήμης hash του blitcp σε προορισμό SSH ή SMB (.blitcp_manifest.json). Μια επανεκτέλεση τότε διαβάζει και συγκρίνει κάθε αρχείο ίδιου μεγέθους σε τοπικό προορισμό, τα κάνει hash στον κεντρικό υπολογιστή SSH και γράφει ξανά κάθε αρχείο σε κοινόχρηστο SMB. Σε FAT, exFAT, NFS, SMB και FUSE οι καταγραφές αποφασίζουν με βάση το μέγεθος και τον χρόνο τροποποίησης: ένα αρχείο που άλλαξε εκεί με το ίδιο μέγεθος και του επαναφέρθηκε ο χρόνος τροποποίησης εντοπίζεται μόνο με --no-cache."
-
-msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
-msgstr "Ανάγνωση και hash κάθε αρχείου πηγής, ακόμη και όσων το manifest κάθε προορισμού καταγράφει με το ίδιο μέγεθος, χρόνο τροποποίησης και χρόνο αλλαγής (αυτά δεν διαβάζονται χωρίς αυτή την επιλογή). Σε πηγή σε FAT, exFAT, NFS, SMB ή FUSE αποφασίζουν το μέγεθος και ο χρόνος τροποποίησης: ένα αρχείο που άλλαξε εκεί με το ίδιο μέγεθος και του επαναφέρθηκε ο χρόνος τροποποίησης εντοπίζεται μόνο με --verify-source."
 
 msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
 msgstr "Σημείωση: το --relay-spool-mb δεν έχει επίδραση σε αυτή την αντιγραφή: περνά κάθε αρχείο μέσα από το buffer της και δεν αποθηκεύει τίποτα προσωρινά στον δίσκο."
@@ -2631,14 +2562,8 @@ msgstr "(ο προορισμός έχει ήδη)"
 msgid "(the store's sidecar)"
 msgstr "(sidecar της αποθήκης)"
 
-msgid "(on with --manifest/--resume)"
-msgstr "(ναι με --manifest/--resume)"
-
 msgid "partial"
 msgstr "partial"
-
-msgid "partial (--partial)"
-msgstr "partial (--partial)"
 
 msgid "partial, renamed into place"
 msgstr "partial, μετονομασία στη θέση του"
@@ -2795,9 +2720,6 @@ msgstr "δεν γράφτηκε τίποτα, τίποτα για επαλήθε
 
 msgid "the source"
 msgstr "η πηγή"
-
-msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
-msgstr "υπάρχουν εκεί με άλλο περιεχόμενο, έμειναν ως έχουν (το --overwrite-changed τα αντικαθιστά)"
 
 msgid "hash mismatch after write"
 msgstr "ασυμφωνία hash μετά την εγγραφή"
@@ -3068,10 +2990,6 @@ msgstr "ένας προορισμός SSH ή μια αποθηκευμένη σ�
 
 msgid "{mnt} is not mounted — mount it, or name another destination"
 msgstr "Το {mnt} δεν είναι προσαρτημένο — προσαρτήστε το ή δώστε άλλον προορισμό"
-
-#: blitcp.py (the fan-out's options, gone)
-msgid "{opt} is not available in this version"
-msgstr "Το {opt} δεν είναι διαθέσιμο σε αυτή την έκδοση"
 
 msgid "{opt} goes with several destinations"
 msgstr "Το {opt} ισχύει μόνο με πολλούς προορισμούς"

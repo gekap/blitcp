@@ -204,7 +204,7 @@ Skips the post-copy check. How much that check does depends on where the destina
 | SMB share | Every file the run wrote **by existence and the size the server reports** — a share keeps no checksum to compare. The summary says "size checked" |
 | SSH | Every file the run wrote **by existence and size**, and **a random sample of up to 20 hashed on the remote host** (xxh128sum, sha256sum, the remote Python or md5sum, whichever it has) and compared. The summary says how many were hashed ("random sample") |
 | S3 / GCS | **Every object** against the checksum the store computed (S3: CRC32, or SHA-256; GCS: MD5) |
-| Azure | A blob sent in one request against the Content-MD5 Azure computed; a blob sent in blocks (8 MiB and over) **by size only** — Azure keeps no checksum for it. After a `--manifest` run, `--verify-manifest DEST --deep` downloads it and hashes it |
+| Azure | A blob sent in one request against the Content-MD5 Azure computed; a blob sent in blocks (over 64 MiB, the Azure SDK's default single-put size) **by size only** — Azure keeps no checksum for it. After a `--manifest` run, `--verify-manifest DEST --deep` downloads it and hashes it |
 
 **Every success line says how each file was checked.** For example
 `✓ Verified: all 12 files OK — 10 read back from the disk (O_DIRECT) · 2 by existence + size: links and clones`.
@@ -403,8 +403,14 @@ several (`--dest`) alike.
   no generation.
 
 ```bash
-blitcp --manifest /media/CARD01 --dest /mnt/shuttle --dest /mnt/archive
+blitcp --manifest /media/CARD01 --dest /mnt/shuttle/2026-11-26_CARD01 --dest /mnt/archive/2026-11-26_CARD01
 ```
+
+**One destination folder per card.** A file with the same name as one
+already at the destination and different content is replaced, and the run
+does not warn about it. Two cards often carry the same names (`C0001.MP4`),
+so a second card copied into the first card's folder replaces its clips.
+Give each card its own folder, as above.
 
 `--manifest` takes a local source, xxh128 hashes (the `xxhash` package, not
 `--hash sha256`) and verification; otherwise it is refused, exit 2. A sparse
@@ -501,9 +507,7 @@ a one-destination copy is, and given its own summary; `-q` prints one line
 per destination and a total. A destination that fails is its own failure:
 the others are copied and verified, and the run exits 1. One `--dest` is the
 same copy as `blitcp SRC DST`. For now `--log-file` and `--small-files
-stream` take one destination; `--partial`, `--no-partial`, `--resume`,
-`--job-name`, `--overwrite-changed`, `--verify-source`, `--deep-verify` and
-`--fanout-buffer` are refused in this version (exit 2).
+stream` take one destination.
 
 ### A web source to several destinations
 
@@ -689,29 +693,32 @@ out in one line before the copy. An Azure destination among several needs
 checksum the *store* computed over the bytes it holds, compared with the same
 digest of the bytes blitcp sent:
 
-| Store | Under 8 MiB (one request) | 8 MiB and over (multipart / blocks) |
-|-------|---------------------------|-------------------------------------|
-| S3 and S3-compatible | the store's SHA-256 | the store's composite SHA-256 (per part) |
+| Store | Sent in one request | Sent in parts / blocks |
+|-------|---------------------|------------------------|
+| S3 and S3-compatible (parts from 8 MiB) | the store's SHA-256 | the store's composite SHA-256 (per part) |
 | Google Cloud Storage | the store's MD5 | the store's MD5 |
-| Azure Blob | the store's MD5 | **size only** — Azure keeps no checksum for a blob sent in blocks |
+| Azure Blob (blocks over 64 MiB, the SDK's default single-put size) | the store's MD5 | **size only** — Azure keeps no checksum for a blob sent in blocks |
 
 The summary names the level each file reached. `blitcp --verify-manifest DEST`
 checks a destination later, without the source, at the same levels (the store's
 checksum against the one its manifest recorded); `--deep` downloads every file
 and hashes it instead.
 
-**Azure video offloads.** Camera files are almost always 8 MiB and over, so on
-Azure they are block blobs, which Azure keeps no checksum for. blitcp stores
+**Azure video offloads.** A camera file over 64 MiB (the Azure SDK's default
+single-put size) is sent in blocks, and Azure keeps no checksum for a block
+blob. blitcp stores
 its own hash in each blob's metadata, but only reading the blob back proves
 what Azure holds. Copy with `--manifest`, then check the container with
 `--verify-manifest … --deep`, which downloads every blob and hashes it:
 
 ```
-blitcp --manifest /media/CARD01 --dest /mnt/shuttle --dest az://media/2026-11-06
-blitcp --verify-manifest az://media/2026-11-06 --deep
+blitcp --manifest /media/CARD01 --dest /mnt/shuttle/2026-11-26_CARD01 --dest az://media/2026-11-26_CARD01
+blitcp --verify-manifest az://media/2026-11-26_CARD01 --deep
 ```
 
-It costs one download of everything sent to that destination.
+It costs one download of everything sent to that destination. A file with
+the same name and different content is replaced, so give each card its own
+destination folder, as above.
 
 ---
 

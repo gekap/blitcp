@@ -1311,9 +1311,6 @@ msgstr "--dest {dest} está dentro del origen {src}."
 msgid "--dest {dest}: only local destinations are supported with --dest in this version."
 msgstr "--dest {dest}: en esta versión --dest solo admite destinos locales."
 
-msgid "--fanout-buffer must be at least 1 MB."
-msgstr "--fanout-buffer debe ser de al menos 1 MB."
-
 msgid "--stall-timeout must be at least 1 second."
 msgstr "--stall-timeout debe ser de al menos 1 segundo."
 
@@ -1331,9 +1328,6 @@ msgstr "Destinos"
 
 msgid "FAILED: {reason}"
 msgstr "FALLÓ: {reason}"
-
-msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
-msgstr "Memoria para datos leídos pero aún no escritos en todos los destinos; cuando se llena, el destino más lento marca el ritmo (predeterminado: {n})"
 
 msgid "Pre-flight failed; no file was written."
 msgstr "La comprobación previa falló; no se escribió ningún archivo."
@@ -1458,20 +1452,11 @@ msgstr "{size} escritos · {time} para este destino"
 msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
 msgstr "Leer destinos de FILE, uno por línea, como si cada uno se diera con --dest. Se omiten las líneas vacías y aquellas cuyo primer carácter que no es un espacio es #; no se recorta nada más de una línea. Repetible."
 
-msgid "A name for this copy, shown in the summary and recorded with the result."
-msgstr "Un nombre para esta copia, mostrado en el resumen y registrado con el resultado."
-
 msgid "--dests-file {path}: cannot read it ({why})"
 msgstr "--dests-file {path}: no se puede leer ({why})"
 
 msgid "--dests-file {path} names no destination."
 msgstr "--dests-file {path} no indica ningún destino."
-
-msgid "--job-name goes with --dest or --dests-file."
-msgstr "--job-name va con --dest o --dests-file."
-
-msgid "--job-name must be 1 to 200 printable characters on one line."
-msgstr "--job-name debe tener de 1 a 200 caracteres imprimibles en una sola línea."
 
 msgid "Job: {name}"
 msgstr "Trabajo: {name}"
@@ -1572,20 +1557,8 @@ msgstr "{n} archivos se leyeron una segunda vez: se leyeron para compararlos con
 msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
 msgstr "{n} archivos aquí son una versión nueva de un archivo que su historial ASC MHL ya tenía; ascmhl los comparará con el registro anterior (ASC MHL supone que los medios no cambian). blitcp --verify-manifest y {lst} comprueban la versión actual."
 
-msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
-msgstr "Continuar una ejecución --dest interrumpida: los archivos que ya escribió y cuyo tamaño, fecha y xxh128 siguen coincidiendo con el origen no se vuelven a copiar (los que aún no había verificado se releen y verifican ahora)."
-
-msgid "--resume goes with --dest or --dests-file."
-msgstr "--resume va con --dest o --dests-file."
-
 msgid "the resume journal could not be written: {why}"
 msgstr "no se pudo escribir el diario de reanudación: {why}"
-
-msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
-msgstr "Reemplazar un archivo que el manifiesto de un destino registra con otro contenido (por defecto se conserva y se informa: las cámaras reinician los nombres de los clips en cada tarjeta)."
-
-msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
-msgstr "{n} archivos ya existen aquí con otro contenido — se conservan tal cual, no se sobrescriben (--overwrite-changed los reemplaza; una carpeta por tarjeta evita el conflicto)"
 
 msgid "… and {n} more"
 msgstr "… y {n} más"
@@ -1740,15 +1713,6 @@ msgstr "{n} de ellos solo por tamaño; --deep vuelve a leer cada archivo y calcu
 msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
 msgstr "Comprobar un destino — carpeta local, carpeta SSH, recurso SMB o bucket — con su propio manifiesto (ascmhl/ o blitcp.xxh128), sin la fuente, al nivel que ofrece: releído, hasheado por el equipo remoto, o con la suma de comprobación del propio almacén (--deep relee cada archivo). No escribe nada."
 
-msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
-msgstr "--deep-verify va con --dest (con --verify-manifest, use --deep)."
-
-msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
-msgstr "--deep-verify {dest} no es uno de los destinos --dest (indíquelo tal como en --dest, o 'all')."
-
-msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
-msgstr "Verificar el --dest indicado (repetible; 'all' para todos) descargando cada archivo que se le envió y calculando su hash aquí, en lugar de la suma del almacén o el hash del equipo remoto. Para blobs de Azure de 8 MiB o más (descargas de vídeo) es la única comprobación de contenido: Azure no guarda suma para ellos."
-
 msgid "content differs from the source (store CRC)"
 msgstr "el contenido difiere del origen (CRC del almacén)"
 
@@ -1775,9 +1739,6 @@ msgstr "un punto de análisis en el recurso compartido (enlace, unión, archivo 
 
 msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
 msgstr "El manifiesto propio del origen ({mhl}/, {lst}: {n} archivos) no se copia: cada destino escribe el suyo."
-
-msgid "--deep-verify: every file read back from this destination and hashed"
-msgstr "--deep-verify: cada archivo se vuelve a leer de este destino y se calcula su hash"
 
 msgid "A folder on this computer or a mounted drive."
 msgstr "Una carpeta en este equipo o en una unidad montada."
@@ -1871,9 +1832,6 @@ msgstr "Verificado: {n} archivos"
 
 msgid "Verify again later"
 msgstr "Volver a verificar más tarde"
-
-msgid "Verify by downloading every file (--deep-verify)"
-msgstr "Verificar descargando cada archivo (--deep-verify)"
 
 msgid "With several destinations, a remote source must be the only source"
 msgstr "Con varios destinos, un origen remoto debe ser el único origen"
@@ -2058,12 +2016,6 @@ msgstr "{n} de ellos tienen el mismo contenido que otro archivo de esta ejecuci�
 msgid "{n} copied on the remote host (it took no hard link)"
 msgstr "{n} copiados en el host remoto (no admitió enlaces duros)"
 
-msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
-msgstr "Destinos locales: escribe cada archivo con un nombre oculto, lo vuelca a disco y lo renombra en su sitio; nunca se ve un archivo a medio escribir. Sin esta opción, un archivo nuevo se escribe en su sitio y uno que ya existe se reemplaza a través de un nombre oculto."
-
-msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
-msgstr "Destinos locales: escribe un archivo nuevo en su sitio y reemplaza uno que ya existe a través de un nombre oculto; el disco del destino se vuelca al final (predeterminado, también para una descarga desde un almacén de objetos)."
-
 msgid "{opt} goes with --dest."
 msgstr "{opt} va con --dest."
 
@@ -2118,20 +2070,8 @@ msgstr "no se puede releer lo escrito (así se verifica cada archivo): los bytes
 msgid "The share took {got} of {want} connections: files went {n} at a time."
 msgstr "El recurso compartido aceptó {got} de {want} conexiones: los archivos fueron de {n} en {n}."
 
-msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "Al día: los {n} archivos no han cambiado según su tamaño y fecha de modificación (como registra su manifiesto); no se leyeron — --verify-source los lee y los compara"
-
 msgid "Up to date: nothing here needed writing"
 msgstr "Al día: aquí no hubo que escribir nada"
-
-msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} sin cambios según su tamaño y fecha de modificación (como registra su manifiesto); no se leyeron — --verify-source los lee y los compara"
-
-msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "Al día: los {n} archivos no han cambiado según su tamaño y la etiqueta de versión del almacenamiento (como registra su manifiesto); no se leyeron — --verify-source los lee y los compara"
-
-msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} sin cambios según su tamaño y la etiqueta de versión del almacenamiento (como registra su manifiesto); no se leyeron — --verify-source los lee y los compara"
 
 msgid "the object changed after it was listed"
 msgstr "el objeto cambió después de listarse"
@@ -2141,9 +2081,6 @@ msgstr "Se eliminaron {n} archivos sin terminar que una ejecución interrumpida 
 
 msgid "Could not look for unfinished files an interrupted run may have left: {why}"
 msgstr "No se pudo buscar archivos sin terminar que una ejecución interrumpida pudo dejar: {why}"
-
-msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
-msgstr "Mantener un manifiesto ASC MHL y blitcp.xxh128 en una copia a un solo destino (--dest, --resume, --overwrite-changed y --job-name siempre lo hacen). Con él, los archivos sin cambios se omiten sin leerlos (rápido, confía en los registros). Sin él, un destino local lo deciden los registros de blitcp (un archivo que muestran sin cambios en ambos lados no se lee; cualquier otro archivo del mismo tamaño se compara); en SSH y SMB decide la caché hash firmada de blitcp allí mientras el tamaño y la fecha de modificación de un archivo sean los que registró, de modo que un archivo de destino cambiado fuera de blitcp con el mismo tamaño y la fecha restaurada no se detecta en una nueva ejecución salvo con --no-cache."
 
 msgid "hash cache not updated: {why}"
 msgstr "caché hash no actualizada: {why}"
@@ -2180,9 +2117,6 @@ msgstr "{n} conflictos (allí con otro contenido, se conservan)"
 
 msgid "{n} unreadable at the source"
 msgstr "{n} ilegibles en el origen"
-
-msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
-msgstr "No se buscan en una simulación: archivos a medias que dejó una ejecución interrumpida (--resume los elimina)."
 
 msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
 msgstr "No se comprueba en una simulación: si dos destinos son el mismo lugar (esa comprobación escribe un archivo de prueba)."
@@ -2234,9 +2168,6 @@ msgstr "sin manifiesto — deciden los registros de blitcp: un archivo que muest
 
 msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
 msgstr "Desactivar las cachés de hash persistentes: la base de datos de deduplicación con los registros de blitcp y, sin --manifest, la caché de hash firmada de blitcp en un destino SSH o SMB (.blitcp_manifest.json). Entonces una nueva ejecución lee y compara cada archivo del mismo tamaño en un destino local, calcula su hash en el host SSH y vuelve a escribir cada archivo en un recurso SMB. En FAT, exFAT, NFS, SMB y FUSE los registros deciden por tamaño y hora de modificación: un archivo cambiado allí con el mismo tamaño y con su hora de modificación restaurada solo se detecta con --no-cache."
-
-msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
-msgstr "Leer y calcular el hash de cada archivo de origen, incluso uno que el manifiesto de cada destino registra con el mismo tamaño, hora de modificación y hora de cambio (sin esta opción no se leen). En un origen en FAT, exFAT, NFS, SMB o FUSE deciden el tamaño y la hora de modificación: un archivo cambiado allí con el mismo tamaño y con su hora de modificación restaurada solo se detecta con --verify-source."
 
 msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
 msgstr "Nota: --relay-spool-mb no tiene efecto en esta copia: transmite cada archivo a través de su búfer y no vuelca nada en disco."
@@ -2631,14 +2562,8 @@ msgstr "(el destino ya tiene uno)"
 msgid "(the store's sidecar)"
 msgstr "(sidecar del almacén)"
 
-msgid "(on with --manifest/--resume)"
-msgstr "(sí con --manifest/--resume)"
-
 msgid "partial"
 msgstr "parcial"
-
-msgid "partial (--partial)"
-msgstr "parcial (--partial)"
 
 msgid "partial, renamed into place"
 msgstr "parcial, renombrado al final"
@@ -2795,9 +2720,6 @@ msgstr "nada escrito, nada que verificar"
 
 msgid "the source"
 msgstr "el origen"
-
-msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
-msgstr "allí con otro contenido, se dejan como están (--overwrite-changed los reemplaza)"
 
 msgid "hash mismatch after write"
 msgstr "hash distinto tras escribir"
@@ -3068,10 +2990,6 @@ msgstr "un destino SSH o una conexión guardada aún no admite --use-sudo — co
 
 msgid "{mnt} is not mounted — mount it, or name another destination"
 msgstr "{mnt} no está montado — móntelo o indique otro destino"
-
-#: blitcp.py (the fan-out's options, gone)
-msgid "{opt} is not available in this version"
-msgstr "{opt} no está disponible en esta versión"
 
 msgid "{opt} goes with several destinations"
 msgstr "{opt} solo se usa con varios destinos"

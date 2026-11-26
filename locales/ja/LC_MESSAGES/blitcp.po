@@ -1311,9 +1311,6 @@ msgstr "--dest {dest} は転送元 {src} の中にあります。"
 msgid "--dest {dest}: only local destinations are supported with --dest in this version."
 msgstr "--dest {dest}: このバージョンの --dest はローカルの宛先のみ対応しています。"
 
-msgid "--fanout-buffer must be at least 1 MB."
-msgstr "--fanout-buffer は 1 MB 以上にしてください。"
-
 msgid "--stall-timeout must be at least 1 second."
 msgstr "--stall-timeout は 1 秒以上にしてください。"
 
@@ -1331,9 +1328,6 @@ msgstr "宛先"
 
 msgid "FAILED: {reason}"
 msgstr "失敗: {reason}"
-
-msgid "Memory for data read but not yet written to every destination; the slowest destination sets the pace when it is full (default: {n})"
-msgstr "読み込み済みで、まだすべての宛先に書き込まれていないデータ用のメモリ。いっぱいになると最も遅い宛先のペースに合わせます（既定：{n}）"
 
 msgid "Pre-flight failed; no file was written."
 msgstr "事前チェックに失敗しました。ファイルは 1 つも書き込まれていません。"
@@ -1458,20 +1452,11 @@ msgstr "{size} 書き込み · この保存先で {time}"
 msgid "Read destinations from FILE, one per line, as if each were given with --dest. Empty lines and lines whose first non-space character is # are skipped; nothing else on a line is trimmed. Repeatable."
 msgstr "FILE から保存先を 1 行に 1 つずつ読み込みます (それぞれ --dest で指定したのと同じ扱い)。空行と、空白以外の最初の文字が # の行は無視し、それ以外は行の内容をそのまま使います。複数指定可。"
 
-msgid "A name for this copy, shown in the summary and recorded with the result."
-msgstr "このコピーの名前。サマリーに表示され、結果と一緒に記録されます。"
-
 msgid "--dests-file {path}: cannot read it ({why})"
 msgstr "--dests-file {path}: 読み込めません ({why})"
 
 msgid "--dests-file {path} names no destination."
 msgstr "--dests-file {path} に保存先がありません。"
-
-msgid "--job-name goes with --dest or --dests-file."
-msgstr "--job-name は --dest または --dests-file と一緒に使います。"
-
-msgid "--job-name must be 1 to 200 printable characters on one line."
-msgstr "--job-name は 1 行で 1〜200 文字の印字可能な文字にしてください。"
 
 msgid "Job: {name}"
 msgstr "ジョブ: {name}"
@@ -1572,20 +1557,8 @@ msgstr "{n} 件のファイルを再度読み込みました: コピー先の記
 msgid "{n} files here are a new version of a file its ASC MHL history already had; ascmhl will report them against the earlier record (ASC MHL assumes media do not change). blitcp --verify-manifest and {lst} check the current version."
 msgstr "{n} 件は ASC MHL の履歴に既にあるファイルの新しいバージョンです。ascmhl は以前の記録と比較して報告します (ASC MHL はメディアが変化しない前提です)。blitcp --verify-manifest と {lst} は現在のバージョンを確認します。"
 
-msgid "Continue an interrupted --dest run: files it already wrote, whose size, time and xxh128 still match the source, are not copied again (those it had not verified yet are read back and verified now)."
-msgstr "中断した --dest の実行を再開します: 既に書き込まれ、サイズ・日時・xxh128 がコピー元と一致するファイルは再コピーしません (未検証のものは今回読み戻して検証します)。"
-
-msgid "--resume goes with --dest or --dests-file."
-msgstr "--resume は --dest または --dests-file と一緒に使います。"
-
 msgid "the resume journal could not be written: {why}"
 msgstr "再開用ジャーナルを書き込めませんでした: {why}"
-
-msgid "Replace a file a destination's manifest records with different content (by default it is kept and reported: cameras restart clip names on every card)."
-msgstr "保存先のマニフェストに異なる内容で記録されているファイルを置き換えます (既定では保持して報告します。カメラはカードごとにクリップ名を最初から付け直します)。"
-
-msgid "{n} files exist here with different content — kept as they are, not overwritten (--overwrite-changed replaces them; a folder per card avoids the clash)"
-msgstr "{n} 件のファイルが異なる内容でここに存在します — そのまま保持し、上書きしませんでした (--overwrite-changed で置き換えます。カードごとのフォルダーにすると衝突しません)"
 
 msgid "… and {n} more"
 msgstr "… ほか {n} 件"
@@ -1740,15 +1713,6 @@ msgstr "そのうち {n} 個はサイズのみ。--deep ですべてのファイ
 msgid "Check a destination — a local folder, an SSH folder, an SMB share or a bucket — against its own manifest (ascmhl/ or blitcp.xxh128), without the source, at the level it offers: read back, hashed by the remote host, or the store's own checksum (--deep reads every file back). Writes nothing."
 msgstr "コピー先 (ローカルフォルダー、SSH フォルダー、SMB 共有、バケット) を、元データなしで自身のマニフェスト (ascmhl/ または blitcp.xxh128) と照合します。レベルはコピー先次第です: 読み戻し、リモートホストでのハッシュ、またはストレージ自身のチェックサム (--deep はすべてのファイルを読み戻します)。何も書き込みません。"
 
-msgid "--deep-verify goes with --dest (with --verify-manifest, use --deep)."
-msgstr "--deep-verify は --dest と一緒に使います (--verify-manifest では --deep を使ってください)。"
-
-msgid "--deep-verify {dest} is not one of the --dest destinations (give it exactly as for --dest, or 'all')."
-msgstr "--deep-verify {dest} は --dest のコピー先のどれでもありません (--dest と同じ書き方か、'all' を指定してください)。"
-
-msgid "Verify the --dest named (repeatable; 'all' for every one) by downloading every file it was sent and hashing it here, instead of the store's checksum or the remote host's hash. For Azure blobs of 8 MiB and over (video offloads) it is the only content check: Azure keeps no checksum for them."
-msgstr "指定した --dest (繰り返し可、'all' ですべて) を、送ったすべてのファイルをダウンロードしてここでハッシュすることで確認します。ストレージのチェックサムやリモートホストのハッシュは使いません。8 MiB 以上の Azure blob (動画の取り込み) では、これが唯一の内容確認です。Azure はそれらのチェックサムを保持しません。"
-
 msgid "content differs from the source (store CRC)"
 msgstr "内容が元データと異なります (ストレージの CRC)"
 
@@ -1775,9 +1739,6 @@ msgstr "共有上のリパースポイント (リンク、ジャンクション�
 
 msgid "The source's own manifest ({mhl}/, {lst}: {n} files) is not copied: each destination writes its own."
 msgstr "元データ自身のマニフェスト ({mhl}/、{lst}: {n} ファイル) はコピーしません。各コピー先が自分のものを書きます。"
-
-msgid "--deep-verify: every file read back from this destination and hashed"
-msgstr "--deep-verify: このコピー先からすべてのファイルを読み戻してハッシュします"
 
 msgid "A folder on this computer or a mounted drive."
 msgstr "このコンピューターまたはマウントされたドライブ上のフォルダー。"
@@ -1871,9 +1832,6 @@ msgstr "検証済み: {n} ファイル"
 
 msgid "Verify again later"
 msgstr "後でもう一度確認"
-
-msgid "Verify by downloading every file (--deep-verify)"
-msgstr "すべてのファイルをダウンロードして確認 (--deep-verify)"
 
 msgid "With several destinations, a remote source must be the only source"
 msgstr "複数のコピー先では、リモートの元データは唯一の元データでなければなりません"
@@ -2058,12 +2016,6 @@ msgstr "そのうち {n} 個はこの実行の別ファイルと同じ内容: �
 msgid "{n} copied on the remote host (it took no hard link)"
 msgstr "{n} 個はリモートホスト上でコピーしました (ハードリンクを受け付けませんでした)"
 
-msgid "Local destinations: write every file under a hidden name, flush it to disk and rename it into place — a file is never seen half written. Without it, a new file is written in place and a file already there is replaced through a hidden name."
-msgstr "ローカルの宛先: 各ファイルを隠し名で書き込み、ディスクに書き出してから本来の名前に変更します。書きかけのファイルが見えることはありません。指定しない場合、新しいファイルはその場に書き込まれ、既にあるファイルは隠し名を経由して置き換えられます。"
-
-msgid "Local destinations: write a new file in place and replace a file already there through a hidden name; the destination's disk is flushed at the end (the default, and for a download from an object store too)."
-msgstr "ローカルの宛先: 新しいファイルはその場に書き込み、既にあるファイルは隠し名を経由して置き換えます。宛先のディスクは最後に書き出します (既定。オブジェクトストレージからのダウンロードでも同様)。"
-
 msgid "{opt} goes with --dest."
 msgstr "{opt} は --dest と一緒に使います。"
 
@@ -2118,20 +2070,8 @@ msgstr "書き込んだ内容を読み戻せません（各ファイルはこの
 msgid "The share took {got} of {want} connections: files went {n} at a time."
 msgstr "共有は {want} 本中 {got} 本の接続を受け付けました: ファイルは一度に {n} 個ずつ送られました。"
 
-msgid "Up to date: all {n} files are unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "最新: {n} 件すべてがサイズと更新日時で変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
-
 msgid "Up to date: nothing here needed writing"
 msgstr "最新: ここで書き込む必要のあるものはありませんでした"
-
-msgid "{n} unchanged by size and modification time (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} 件はサイズと更新日時で変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
-
-msgid "Up to date: all {n} files are unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "最新: {n} 件すべてがサイズとストレージのバージョンタグで変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
-
-msgid "{n} unchanged by size and the store's version tag (as its manifest records); not read — --verify-source reads and compares them"
-msgstr "{n} 件はサイズとストレージのバージョンタグで変更なし (マニフェストの記録どおり)。読み込んでいません — --verify-source で読み込んで比較します"
 
 msgid "the object changed after it was listed"
 msgstr "一覧取得後にオブジェクトが変更されました"
@@ -2141,9 +2081,6 @@ msgstr "中断された実行がここに残した未完了のファイル {n} �
 
 msgid "Could not look for unfinished files an interrupted run may have left: {why}"
 msgstr "中断された実行が残した可能性のある未完了のファイルを確認できませんでした: {why}"
-
-msgid "Keep an ASC MHL manifest and blitcp.xxh128 at a one-destination copy (--dest, --resume, --overwrite-changed and --job-name always do). With it, unchanged files are skipped without a read (fast, trusts the records). Without it, a local destination is decided by blitcp's records (a file they show unchanged on both sides is not read; any other same-size file is compared); on SSH and SMB blitcp's signed hash cache there decides while a file's size and modification time are the ones it recorded, so a destination file changed outside blitcp at the same size with its time put back is not detected on a re-run unless --no-cache is used."
-msgstr "コピー先が 1 つのコピーで ASC MHL マニフェストと blitcp.xxh128 を保持します (--dest、--resume、--overwrite-changed、--job-name では常に保持)。ありの場合、変更のないファイルは読み込まずにスキップします (高速、記録を信頼)。なしの場合、ローカルのコピー先は blitcp の記録で判断します (両側で変更なしと記録されたファイルは読み込まず、それ以外の同じサイズのファイルは比較します)。SSH と SMB では、ファイルのサイズと更新日時が記録どおりである間はそこにある blitcp の署名付きハッシュキャッシュが判断するため、blitcp 以外で同じサイズのまま変更され更新日時を元に戻されたコピー先ファイルは、--no-cache を使わない限り再実行で検出されません。"
 
 msgid "hash cache not updated: {why}"
 msgstr "ハッシュキャッシュを更新できませんでした: {why}"
@@ -2180,9 +2117,6 @@ msgstr "{n} 件の競合（別の内容で既に存在、保持）"
 
 msgid "{n} unreadable at the source"
 msgstr "{n} 個はソースで読み取れません"
-
-msgid "Not looked for in a dry run: unfinished files an interrupted run left (--resume removes them)."
-msgstr "ドライランでは探しません：中断された実行が残した未完成のファイル（--resume が削除します）。"
 
 msgid "Not checked in a dry run: whether two destinations are one place (that check writes a probe file)."
 msgstr "ドライランでは確認しません：2 つの宛先が同じ場所かどうか（この確認はプローブファイルを書き込みます）。"
@@ -2234,9 +2168,6 @@ msgstr "マニフェストなし — blitcp の記録で判断します：両側
 
 msgid "Disable the persistent hash caches: the dedup database with blitcp's records and, without --manifest, blitcp's signed hash cache on an SSH or SMB destination (.blitcp_manifest.json). A re-run then reads and compares every same-size file on a local destination, hashes them on the SSH host, and writes every file to an SMB share again. On FAT, exFAT, NFS, SMB and FUSE the records decide by size and modification time: a file changed there at the same size with its modification time put back is caught only with --no-cache."
 msgstr "永続的なハッシュキャッシュを無効にします：blitcp の記録を持つ重複排除データベースと、--manifest がない場合の SSH または SMB 宛先上の blitcp の署名付きハッシュキャッシュ（.blitcp_manifest.json）。再実行では、ローカル宛先の同じサイズのファイルをすべて読み取って比較し、SSH ホスト上でハッシュを計算し、SMB 共有にはすべてのファイルを再度書き込みます。FAT、exFAT、NFS、SMB、FUSE では記録がサイズと更新時刻で判断します：そこで同じサイズのまま変更され更新時刻を戻されたファイルは --no-cache でのみ検出されます。"
-
-msgid "Read and hash every source file, even one that each destination's manifest records with the same size, modification time and change time (those are not read without it). On a source on FAT, exFAT, NFS, SMB or FUSE, size and modification time decide: a file changed there at the same size with its modification time put back is caught only with --verify-source."
-msgstr "各宛先のマニフェストが同じサイズ・更新時刻・変更時刻で記録しているファイルも含め、すべてのソースファイルを読み取ってハッシュを計算します（このオプションなしでは読み取りません）。FAT、exFAT、NFS、SMB、FUSE 上のソースではサイズと更新時刻で判断します：そこで同じサイズのまま変更され更新時刻を戻されたファイルは --verify-source でのみ検出されます。"
 
 msgid "Note: --relay-spool-mb has no effect on this copy: it streams each file through its buffer and spools nothing to disk."
 msgstr "注意: --relay-spool-mb はこのコピーには効果がありません。各ファイルはバッファを通してストリーミングされ、ディスクには何も退避されません。"
@@ -2629,14 +2560,8 @@ msgstr "(宛先に既存)"
 msgid "(the store's sidecar)"
 msgstr "(ストアのサイドカー)"
 
-msgid "(on with --manifest/--resume)"
-msgstr "(--manifest/--resume でオン)"
-
 msgid "partial"
 msgstr "パーシャル"
-
-msgid "partial (--partial)"
-msgstr "パーシャル (--partial)"
 
 msgid "partial, renamed into place"
 msgstr "パーシャル後にリネーム"
@@ -2793,9 +2718,6 @@ msgstr "書き込みなし、検証対象なし"
 
 msgid "the source"
 msgstr "ソース"
-
-msgid "there with different content, kept as they are (--overwrite-changed replaces them)"
-msgstr "宛先に異なる内容で存在、そのまま保持 (--overwrite-changed で置換)"
 
 msgid "hash mismatch after write"
 msgstr "書き込み後にハッシュ不一致"
@@ -3066,10 +2988,6 @@ msgstr "SSH の宛先や保存済みの接続では、まだ --use-sudo は使�
 
 msgid "{mnt} is not mounted — mount it, or name another destination"
 msgstr "{mnt} はマウントされていません — マウントするか、別の宛先を指定してください"
-
-#: blitcp.py (the fan-out's options, gone)
-msgid "{opt} is not available in this version"
-msgstr "{opt} はこのバージョンでは使用できません"
 
 msgid "{opt} goes with several destinations"
 msgstr "{opt} は複数の宛先でのみ使用できます"

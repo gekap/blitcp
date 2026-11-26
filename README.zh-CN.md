@@ -69,7 +69,7 @@ blitcp --help                               # everything else
 
 - **不加 `--manifest`**（单一目标的默认方式）时，本地目标由 blitcp 的记录决定：一次运行写入并校验（或完整比较）的每个文件，都会在两端记录大小、修改时间、变更时间和哈希。重新运行时，记录仍然成立的文件不读取即跳过，其他大小相同的文件会读取并比较。在保留真实变更时间的文件系统上（ext4、XFS、Btrfs、ZFS、F2FS、APFS 等），被重写后又恢复修改时间的文件能被发现。**在 FAT、exFAT、NFS、SMB 和 FUSE 上，由大小和修改时间决定**（与 rsync 的快速检查相同）：在那里，这类改动只有使用 `--no-cache`（读取并比较每个文件）才能发现。在 exFAT/FAT 格式的 USB 驱动器上，请不时使用 `--no-cache` 运行一次（或在别处编辑过驱动器上的文件之后），以完整比较每个文件。
 - **SSH 和 SMB 目标**在不加 `--manifest` 时，由 blitcp 存放在那里的签名哈希缓存决定——仅限大小和修改时间仍与缓存记录一致的文件；其他大小相同的文件会在主机上计算哈希（SSH）或重新写入（SMB）。在 blitcp 之外被改动、大小不变**且恢复了修改时间**的目标文件，重新运行时**不会被发现**，除非使用 `--no-cache`。
-- **加上 `--manifest`** 时，每个目标保存一份 ASC MHL 清单（`ascmhl/`）和 `blitcp.xxh128`，重新运行时未变化的文件不再读取即跳过（快，信任记录）。`--dest`、`--resume`、`--overwrite-changed` 和 `--job-name` 始终保存清单。源在 FAT、exFAT、NFS、SMB 或 FUSE 上时（例如相机存储卡），由大小和修改时间决定：在那里恢复了时间的改动只有使用 `--verify-source` 才能发现。
+- **加上 `--manifest`** 时，每个目标保存一份 ASC MHL 清单（`ascmhl/`）和 `blitcp.xxh128`，重新运行时未变化的文件不再读取即跳过（快，信任记录）。源在 FAT、exFAT、NFS、SMB 或 FUSE 上时（例如相机存储卡），由大小和修改时间决定。
 - 已经有 `ascmhl/` 的目标保持清单模式，每次运行都会说明目标处于哪种模式。要退出清单模式，删除该目标的 `ascmhl/` 文件夹和 `blitcp.xxh128`。
 
 ## 校验
@@ -82,7 +82,7 @@ blitcp --help                               # everything else
 | SMB 共享 | 每个文件通过网络读回并计算哈希——每个写入的文件多一次网络读取 |
 | SSH | 每个文件在远程主机上计算哈希（主机没有哈希工具或 shell 时，通过 SFTP 读回） |
 | S3 / GCS | 每个对象与存储服务算出的校验和比对 |
-| Azure | 单次请求上传的 blob 与 Azure 的 MD5 比对；分块上传的 blob（8 MiB 及以上）只检查大小——`--deep-verify` 会下载并计算其哈希 |
+| Azure | 单次请求上传的 blob 与 Azure 的 MD5 比对；分块上传的 blob（超过 64 MiB，即 Azure SDK 默认的单次上传大小）只检查大小——`--manifest` 运行之后，`--verify-manifest DEST --deep` 会下载并计算其哈希 |
 
 汇总会写明每个文件是怎么检查的，只有比对过内容时才会写 "Verified"。细节见 [DOCUMENTATION.zh-CN.md](DOCUMENTATION.zh-CN.md)。
 

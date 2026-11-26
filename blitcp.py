@@ -32633,7 +32633,6 @@ FANOUT_CHUNK = 4 * 1024 * 1024
 LOCAL_BATCH_FILES = 512
 LOCAL_BATCH_BYTES = 16 * 1024 * 1024
 LOCAL_BATCH_MAX_FILE = 1024 * 1024
-DEFAULT_FANOUT_BUFFER_MB = 256
 DEFAULT_STALL_TIMEOUT = 120
 
 # errno values that say the DESTINATION is full or gone, not that one name
@@ -35499,17 +35498,8 @@ def _fanout_check_args(args, sudo_checked=False):
         if on:
             return err(_tr("{opt} is not supported with --dest yet.")
                        .format(opt=opt))
-    if args.fanout_buffer < 1:
-        return err(_tr("--fanout-buffer must be at least 1 MB."))
     if args.stall_timeout < 1:
         return err(_tr("--stall-timeout must be at least 1 second."))
-    jn = getattr(args, "job_name", None)
-    if jn is not None and (not jn.strip() or len(jn) > 200 or any(
-            ord(c) < 32 or ord(c) == 127 for c in jn)):
-        # It ends up in the summary, the JSON result and (phase 3) every
-        # destination's manifest: printable text, one line.
-        return err(_tr("--job-name must be 1 to 200 printable characters on "
-                       "one line."))
     sources = list(args.paths)
     if not sources:
         return err(_tr("--dest needs at least one source."))
@@ -35562,11 +35552,6 @@ def _fanout_check_args(args, sudo_checked=False):
                     "--dest {name} is a saved connection: write {name}: to "
                     "copy to it, or ./{name} for a local folder of that "
                     "name.").format(name=_bare_name(d)))
-    for d in getattr(args, "deep_verify", None) or []:
-        if d != "all" and d not in args.dest:
-            return err(_tr("--deep-verify {dest} is not one of the --dest "
-                           "destinations (give it exactly as for --dest, or "
-                           "'all').").format(dest=d))
     for d in args.dest:
         if not d.strip():
             # os.path.abspath("") is the current directory: an unset
@@ -36598,9 +36583,9 @@ def _apply_preserve_args(args, parser):
 # An option given where it does not apply stops the run with one line naming
 # it — never silently ignored (_check_option_modes, called from main for every
 # flow). This is the TARGET of the unification: where an option applies but a
-# mode does not carry it yet, an older, specific refusal still fires for it
-# (e.g. --job-name without --dest until C19); tests/integration/
-# test_option_modes.py lists those as known gaps and fails once one is closed.
+# mode does not carry it yet, an older, specific refusal still fires for it;
+# tests/integration/test_option_modes.py lists those as known gaps and fails
+# once one is closed.
 _M_ALL = frozenset(("single", "dest", "verify"))
 _M_COPY = frozenset(("single", "dest"))
 OPTION_MODES = {
@@ -36611,17 +36596,11 @@ OPTION_MODES = {
     "--ui": _M_COPY, "--no-color": _M_COPY,
     # several destinations
     "--dest": frozenset(("dest",)), "--dests-file": frozenset(("dest",)),
-    "--fanout-buffer": frozenset(("dest",)),
-    "--partial": _M_COPY, "--no-partial": _M_COPY,
     # a recorded destination, checked again
     "--verify-manifest": frozenset(("verify",)),
     "--deep": frozenset(("verify",)),
     # copying (one destination or several)
-    "--overwrite-changed": _M_COPY, "--resume": _M_COPY,
-    # A job names a run to several destinations; a copy to one destination
-    # takes none, on either engine (U9, decision D, 2026-11-13).
-    "--job-name": frozenset(("dest",)),
-    "--deep-verify": _M_COPY, "--stall-timeout": _M_COPY,
+    "--stall-timeout": _M_COPY,
     "--buffer": _M_COPY, "--threads": _M_COPY, "--small-files": _M_COPY,
     "--cloud-concurrency": _M_COPY,
     # C15: the one engine streams every object and spools nothing. On a
@@ -36630,7 +36609,7 @@ OPTION_MODES = {
     # (U9, decision C, 2026-11-13); with --dest it stops the run.
     "--relay-spool-mb": frozenset(("single",)),
     "--dry-run": _M_COPY, "--no-verify": _M_COPY,
-    "--verify-source": _M_COPY, "--manifest": _M_COPY,
+    "--manifest": _M_COPY,
     "--trust-remote-modes": _M_COPY, "--log-file": _M_COPY,
     "--no-dedup": _M_COPY, "--dedup-in-sync-folder": _M_COPY,
     "--hash": _M_COPY, "--force": _M_COPY, "--overwrite": _M_COPY,
@@ -36936,30 +36915,15 @@ def _multi_refusal(why):
     return 2
 
 
-# What only the fan-out engine had (MULTIDEST-REMOTE-DESIGN.md §3, owner's
-# decision (a), 2026-11-23): with that engine gone, each is refused in one
-# line — with one destination and with several, under --use-sudo before the
-# password (_use_sudo_parent_check), the run itself in main().
-_GONE_OPTIONS = (("--partial", "partial"), ("--no-partial", "no_partial"),
-                 ("--verify-source", "verify_source"),
-                 ("--resume", "resume"),
-                 ("--job-name", "job_name"),
-                 ("--overwrite-changed", "overwrite_changed"),
-                 ("--deep-verify", "deep_verify"),
-                 ("--fanout-buffer", "fanout_buffer"))
-
-
-def _gone_option_lines(args, parser):
-    """One line for each option given that only the fan-out had ([] when
-    none); --stall-timeout with one destination too — nothing applies it
-    there, and it is refused rather than ignored."""
+# --stall-timeout with one destination: nothing applies it there, and it is
+# refused rather than ignored — under --use-sudo before the password
+# (_use_sudo_parent_check), and by the run itself in main(). The options only
+# the fan-out engine had are not parsed at all: argparse refuses them as
+# unrecognized arguments (owner, 2026-11-26).
+def _stall_timeout_lines(args, parser):
+    """One line when --stall-timeout is given with one destination ([]
+    otherwise)."""
     out = []
-    for flag, dest in _GONE_OPTIONS:
-        val = getattr(args, dest, None)
-        if val in (None, False, []) or val == parser.get_default(dest):
-            continue
-        out.append(_tr("{opt} is not available in this version").format(
-            opt=flag))
     one = (len(args.dest) == 1
            or (not args.dest and len(args.paths) >= 2))
     st = getattr(args, "stall_timeout", None)
@@ -39147,17 +39111,6 @@ def _build_parser():
                                   "connection NAME:path), an SMB share "
                                   "(smb://server/share/path) or an object "
                                   "store (s3://, az://, gs://)."))
-    fan_grp.add_argument("--overwrite-changed", action="store_true",
-                         help=_tr("Replace a file a destination's manifest "
-                                  "records with different content (by "
-                                  "default it is kept and reported: cameras "
-                                  "restart clip names on every card)."))
-    fan_grp.add_argument("--resume", action="store_true",
-                         help=_tr("Continue an interrupted --dest run: files "
-                                  "it already wrote, whose size, time and "
-                                  "xxh128 still match the source, are not "
-                                  "copied again (those it had not verified "
-                                  "yet are read back and verified now)."))
     fan_grp.add_argument("--dests-file", action="append", default=[],
                          metavar="FILE",
                          help=_tr("Read destinations from FILE, one per line, "
@@ -39174,52 +39127,17 @@ def _build_parser():
                                   "remote host, or the store's own checksum "
                                   "(--deep reads every file back). Writes "
                                   "nothing."))
-    fan_grp.add_argument("--deep-verify", action="append", default=[],
-                         metavar="DEST",
-                         help=_tr("Verify the --dest named (repeatable; "
-                                  "'all' for every one) by downloading every "
-                                  "file it was sent and hashing it here, "
-                                  "instead of the store's checksum or the "
-                                  "remote host's hash. For Azure blobs of 8 "
-                                  "MiB and over (video offloads) it is the "
-                                  "only content check: Azure keeps no "
-                                  "checksum for them."))
     fan_grp.add_argument("--deep", action="store_true",
                          help=_tr("With --verify-manifest on an SSH, SMB or "
                                   "object-store destination: download every "
                                   "file and hash it here, instead of asking "
                                   "the remote host or the store."))
-    fan_grp.add_argument("--job-name", default=None, metavar="NAME",
-                         help=_tr("A name for this copy, shown in the summary "
-                                  "and recorded with the result."))
-    fan_grp.add_argument("--fanout-buffer", type=int,
-                         default=DEFAULT_FANOUT_BUFFER_MB, metavar="MB",
-                         help=_tr("Memory for data read but not yet written "
-                                  "to every destination; the slowest "
-                                  "destination sets the pace when it is full "
-                                  "(default: {n})").format(
-                                      n=DEFAULT_FANOUT_BUFFER_MB))
     fan_grp.add_argument("--stall-timeout", type=int,
                          default=DEFAULT_STALL_TIMEOUT, metavar="SECONDS",
                          help=_tr("A destination that makes no progress for "
                                   "this long is marked FAILED and the others "
                                   "carry on (default: {n})").format(
                                       n=DEFAULT_STALL_TIMEOUT))
-
-    part = fan_grp.add_mutually_exclusive_group()
-    part.add_argument("--partial", action="store_true",
-                      help=_tr("Local destinations: write every file under "
-                               "a hidden name, flush it to disk and rename it "
-                               "into place — a file is never seen half "
-                               "written. Without it, a new file is written in "
-                               "place and a file already there is replaced "
-                               "through a hidden name."))
-    part.add_argument("--no-partial", action="store_true",
-                      help=_tr("Local destinations: write a new file in place "
-                               "and replace a file already there through a "
-                               "hidden name; the destination's disk is "
-                               "flushed at the end (the default, and for a "
-                               "download from an object store too)."))
 
     copy_grp = parser.add_argument_group(_tr("copy options"))
     copy_grp.add_argument("--buffer", type=int, default=DEFAULT_BUFFER_MB,
@@ -39286,16 +39204,6 @@ def _build_parser():
                                  "skipped is decided as without it. Check a "
                                  "destination later, without the source, with "
                                  "--verify-manifest DEST."))
-    copy_grp.add_argument("--verify-source", action="store_true",
-                        help=_tr("Read and hash every source file, even one "
-                                 "that each destination's manifest records "
-                                 "with the same size, modification time and "
-                                 "change time (those are not read without "
-                                 "it). On a source on FAT, exFAT, NFS, SMB or "
-                                 "FUSE, size and modification time decide: a "
-                                 "file changed there at the same size with "
-                                 "its modification time put back is caught "
-                                 "only with --verify-source."))
     copy_grp.add_argument("--trust-remote-modes", action="store_true",
                         dest="trust_remote_modes",
                         help=_tr("Keep the group/world write bits a remote "
@@ -39468,12 +39376,6 @@ def _build_parser():
     info_grp.add_argument("--update", nargs="?", const=True, default=False,
                         metavar="VERSION",
                         help=_tr("Download and install latest (or a specific version)"))
-    # What only the fan-out engine had: still parsed — and refused, one line
-    # each (_gone_option_lines) — but not offered in --help.
-    gone = {flag for flag, _dest in _GONE_OPTIONS}
-    for action in parser._actions:
-        if gone.intersection(action.option_strings):
-            action.help = argparse.SUPPRESS
     return parser
 
 
@@ -39589,12 +39491,12 @@ def main():
             parser.error(_got)
         args.dest.extend(_got)
     # Which mode this is — and nothing given that does not apply to it.
-    # What only the fan-out had: said first, in its own words (a ×N
-    # destination's planning — main() for it alone — was checked here
-    # already, as the run).
+    # --stall-timeout with one destination and --manifest's limits: said
+    # first, in their own words (a ×N destination's planning — main() for
+    # it alone — was checked here already, as the run).
     if (args.verify_manifest is None and not _MULTI_PLAN.get("active")
             and not _MULTI_PLAN.get("dry")):
-        gone = _gone_option_lines(args, parser) + _manifest_lines(args)
+        gone = _stall_timeout_lines(args, parser) + _manifest_lines(args)
         if len(args.dest) >= 2:
             gone += _multi_shape_lines(args)
         if gone:
@@ -39730,9 +39632,13 @@ def main():
     # one line, exit 2, never a 120 s stall. ×N probes every destination
     # at once in its parent (_multi_probe), before planning.
     # An HTTP source writes only to SSH and SMB (run_http_transfer refuses
-    # the rest, with its own hint): only those are probed for it.
+    # the rest, with its own hint): only those are probed for it — and only
+    # for one URL naming a file; any other is _run_http_transfer's usage
+    # error (exit 2), said before anything connects.
     _http_ok = (not is_http_url(args.source)
-                or (not is_cloud_path(args.destination)
+                or (not getattr(args, "extra_sources", None)
+                    and _http_dest_filename(args.source)
+                    and not is_cloud_path(args.destination)
                     and (_route_as_smb(args.destination, args)
                          or parse_remote_path(args.destination) is not None)))
     if (not _MULTI_PLAN.get("active") and not args.dry_run
@@ -41917,7 +41823,7 @@ def _use_sudo_parent_check(argv):
         args.dest.extend(got)
     if args.verify_manifest is not None:
         return
-    whys = _gone_option_lines(args, parser) + _manifest_lines(args)
+    whys = _stall_timeout_lines(args, parser) + _manifest_lines(args)
     if len(args.dest) >= 2:
         whys += _multi_shape_lines(args)
     if whys:

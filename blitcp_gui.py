@@ -1943,8 +1943,7 @@ _BROWSE_KIND = {"SSH": "ssh", "SMB": "smb", "Cloud": "cloud"}
 
 class AddDestinationDialog(QDialog):
     """One more destination for a run: its kind, its path (typed, or picked
-    with the same browsers and saved connections as everywhere else) and
-    whether to verify it by downloading every file (--deep-verify)."""
+    with the same browsers and saved connections as everywhere else)."""
 
     def __init__(self, gui, initial=None):
         super().__init__(gui)
@@ -2044,8 +2043,8 @@ class AddDestinationDialog(QDialog):
             return
         if k == "Local":
             p = self.gui._normalize_local(p)
-        # No "download to verify": --deep-verify went with the fan-out
-        # engine (owner's decision (a), 2026-11-23).
+        # No "download to verify": that went with the fan-out engine
+        # (owner's decision (a), 2026-11-23).
         self.result = {"t": k, "p": p, "deep": False}
         self.accept()
 
@@ -4082,7 +4081,8 @@ class BlitcpGUI(QWidget):
         first, rest = dests[0], dests[1:]
         self.dest_type = first.get("t", "Local")
         self.dst_input.setText(first.get("p", ""))
-        # Its --deep-verify, kept until the destination row is edited.
+        # Its old "download to verify" mark, kept until the destination
+        # row is edited (never sent).
         self.main_deep = bool(first.get("deep"))
         self.extra_dests = [{"t": d.get("t", "Local"), "p": d.get("p", ""),
                              "deep": bool(d.get("deep"))} for d in rest]
@@ -4157,8 +4157,8 @@ class BlitcpGUI(QWidget):
     def _build_fanout_argv(self, sources, dests):
         """sources --dest D1 --dest D2 … for a run to several destinations.
         Only what --dest takes: verification, hash, excludes, metadata,
-        overwrite / force, node_modules (--deep-verify went with the fan-out
-        engine)."""
+        overwrite / force, node_modules ("download to verify" went with the
+        fan-out engine)."""
         argv = list(sources)
         for d in dests:
             argv += ["--dest", d["p"]]

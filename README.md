@@ -136,7 +136,7 @@ run makes are checked by existence and size:
 | SMB share | every file by existence and size (the share keeps no checksum to compare) |
 | SSH | every file by existence and size, and a random sample of up to 20 hashed on the remote host |
 | S3 / GCS | every object against the checksum the store computed |
-| Azure | a blob sent in one request against Azure's MD5; a blob sent in blocks (8 MiB and over) by size only — after a `--manifest` run, `--verify-manifest DEST --deep` downloads and hashes it |
+| Azure | a blob sent in one request against Azure's MD5; a blob sent in blocks (over 64 MiB, the Azure SDK's default single-put size) by size only — after a `--manifest` run, `--verify-manifest DEST --deep` downloads and hashes it |
 
 The summary says how each file was checked, and says "Verified" only where
 content was compared. Details: [DOCUMENTATION.md](DOCUMENTATION.md#skip-verification).
