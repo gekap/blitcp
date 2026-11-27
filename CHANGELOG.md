@@ -4,10 +4,11 @@
 
 ### New
 
-**One copy can go to several destinations, reading the source once.**
+**One copy can go to several destinations; local, SSH and SMB destinations share one read of the source.**
 `blitcp SRC --dest A --dest B …` (or `--dests-file FILE`) plans each
 destination as a copy to it alone — its dedup, incremental check and space
-check — then reads a local source once, in disk order, for all of them:
+check — then reads a local source once, in disk order, for the local, SSH
+and SMB destinations; cloud storage (S3, Azure, GCS) reads it on its own:
 - local folders: written from the one read, each read back from its disk;
 - SSH (`user@host:/path`, or a saved connection `NAME:folder/`): its own
   tar stream (SFTP without tar on the host, or with `--sftp-only`), then

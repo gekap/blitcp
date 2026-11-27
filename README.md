@@ -59,7 +59,7 @@ macOS and Windows are on the
 - **SSH transfers without SFTP** — tar batches over raw SSH channels, local↔remote and remote↔remote relay (streamed through your machine, never stored)
 - **Cloud object storage** — `s3://`, `az://`, `gs://` as source or destination, with encrypted saved connections and a built-in passphrase generator
 - **SMB / UNC shares** — copy straight to `\\server\share` with saved credentials
-- **Several destinations from one read** — `--dest` (repeatable) or `--dests-file`, to any mix of local, SSH, SMB and S3/Azure/GCS; an optional ASC MHL manifest per destination, checkable later without the source
+- **Several destinations in one run** — `--dest` (repeatable) or `--dests-file`, to any mix of local, SSH, SMB and S3/Azure/GCS (local, SSH and SMB destinations share one read of the source; cloud storage reads it on its own); an optional ASC MHL manifest per destination, checkable later without the source
 - **Full-screen dashboard** — `--ui dashboard`, or `[ui] mode` in `~/.config/blitcp/config.toml`
 - **Sparse-file awareness** — VM images copied via `SEEK_DATA`/`SEEK_HOLE`; holes never hit the wire
 - **Faithful metadata** — permissions, timestamps, owner, xattrs and POSIX ACLs / NTFS DACLs+ADS, matching `cp -a`
@@ -71,10 +71,11 @@ macOS and Windows are on the
 
 ## Several destinations
 
-`--dest` (repeatable) writes one local source to several destinations from
-one read — local folders, `user@host:/path`, `smb://`, `s3://`, `az://`,
-`gs://`, or saved connections as `NAME:folder/`; `--dests-file FILE` lists
-them one per line. Each destination is planned, verified and summarised as a
+`--dest` (repeatable) writes one local source to several destinations —
+local folders, `user@host:/path`, `smb://`, `s3://`, `az://`, `gs://`, or
+saved connections as `NAME:folder/`; `--dests-file FILE` lists them one per
+line. Local, SSH and SMB destinations share one read of the source; cloud
+storage (S3, Azure, GCS) reads it on its own. Each destination is planned, verified and summarised as a
 copy to it alone; one that fails, or makes no progress for `--stall-timeout`
 seconds (default 120), is left out and the others finish.
 

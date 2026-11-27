@@ -44,7 +44,7 @@ Both the source and destination accept **local paths** or **SSH remote paths**:
 
 All four combinations work: **local→local**, **local→remote**, **remote→local**, and **remote→remote** (relay through your machine).
 
-SMB shares (`smb://server/share/path`), object stores (`s3://`, `az://`, `gs://`) and a web URL (`https://…`, as a source) work too. To write one source to several destinations from one read, see [Several destinations](#several-destinations---dest).
+SMB shares (`smb://server/share/path`), object stores (`s3://`, `az://`, `gs://`) and a web URL (`https://…`, as a source) work too. To write one source to several destinations in one run, see [Several destinations](#several-destinations---dest).
 
 In the GUI, use the **Browse** button to select one or more files or a folder. Paths with spaces work normally — no quoting is needed inside the GUI input fields.
 
@@ -488,10 +488,11 @@ CLI: `--ssh-src-password`, `--ssh-dst-password`
 
 ## Several destinations (`--dest`)
 
-`--dest` names a destination; repeat it for several. The source is read once
-and written to every destination — local folders, `user@host:/path`,
-`smb://server/share/path`, `s3://`, `az://`, `gs://` — in any mix; a saved
-connection is written `NAME:folder/` (a bare name that is a saved connection
+`--dest` names a destination; repeat it for several: local folders,
+`user@host:/path`, `smb://server/share/path`, `s3://`, `az://`, `gs://`, in
+any mix. Local, SSH and SMB destinations share one read of the source; cloud
+storage (S3, Azure, GCS) reads it on its own. A saved connection is written
+`NAME:folder/` (a bare name that is a saved connection
 is refused: write `./NAME` for a folder here). With `--dest`, every
 positional argument is a source, and with several destinations it must be a
 local path. `--dests-file FILE` reads destinations one per line, as if each
@@ -502,7 +503,8 @@ blitcp /data --dest /mnt/usb1 --dest backup@nas.local:/backup --dest s3://my-buc
 ```
 
 Each destination is planned as a copy to it alone (its own dedup database,
-incremental check and space check), written from the one read, verified as
+incremental check and space check), written from the shared read of the
+source (cloud storage reads it on its own), verified as
 a one-destination copy is, and given its own summary; `-q` prints one line
 per destination and a total. A destination that fails is its own failure:
 the others are copied and verified, and the run exits 1. One `--dest` is the
